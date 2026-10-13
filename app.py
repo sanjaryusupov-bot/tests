@@ -2,6 +2,7 @@
 Дашборд сборки заказов: Google Таблица -> Streamlit -> Telegram WebApp.
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блок [gcp_service_account].
+requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl
 """
 import html
 import re
@@ -45,6 +46,8 @@ BOXES_GID = "2073580233"
 BOXES_TAB = "Ответы на форму (1)"
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 MODES = ["Все", "Не собрано", "Собрано", "Маршрутизация", "Рейсы"]
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
@@ -463,11 +466,13 @@ def ordinal(k: int) -> str:
     return f"{ORDINALS[k - 1]} машина" if k <= len(ORDINALS) else f"{k}-я машина"
 
 
-def plan_trips(pivot: pd.DataFrame, stats: dict) -> list:
+def plan_trips(pivot: pd.DataFrame, stats: dict, limit: int = 0) -> list:
     """Пример раскладки точек по машинам: магазины идут в том порядке, как их обычно развозили
-    (по архиву), и набираются, пока машина не достигнет среднего объёма для её номера."""
+    (по архиву), и набираются, пока машина не достигнет среднего объёма для её номера.
+    limit > 0 — жёсткий потолок штук на одну машину (магазин, который сам больше лимита, едет отдельно и помечается)."""
     def target(k):
-        return stats["qty"].get(k) or stats["avg_all"]
+        t = stats["qty"].get(k) or stats["avg_all"]
+        return min(t, limit) if limit else t
 
     rows = []
     for r in pivot.itertuples(index=False):
@@ -485,7 +490,9 @@ def plan_trips(pivot: pd.DataFrame, stats: dict) -> list:
         local, cur, cur_sum = [], [], 0
         for it in items:
             t = target(len(machines) + len(local) + 1)
-            if cur and (cur_sum >= t or (cur_sum + it["qty"] > t * 1.15 and cur_sum >= t * 0.6)):
+            over_limit = bool(limit) and cur_sum + it["qty"] > limit
+            if cur and (cur_sum >= t or over_limit or
+                        (cur_sum + it["qty"] > t * 1.15 and cur_sum >= t * 0.6)):
                 local.append(cur)
                 cur, cur_sum = [], 0
             cur.append(it)
@@ -495,16 +502,21 @@ def plan_trips(pivot: pd.DataFrame, stats: dict) -> list:
         if len(local) >= 2:                                       # маленький «хвост» присоединяем к предыдущей
             last, prev = sum(x["qty"] for x in local[-1]), sum(x["qty"] for x in local[-2])
             k_last = len(machines) + len(local)
-            if last < 0.35 * target(k_last) and prev + last <= 1.35 * target(k_last - 1):
+            if (last < 0.35 * target(k_last) and prev + last <= 1.35 * target(k_last - 1)
+                    and (not limit or prev + last <= limit)):
                 local[-2] = local[-2] + local.pop()
         machines.extend(local)
 
-    return [dict(n=i, stores=st_, qty=sum(x["qty"] for x in st_), target=target(i), time=stats["time"].get(i))
-            for i, st_ in enumerate(machines, 1)]
+    out = []
+    for i, st_ in enumerate(machines, 1):
+        q = sum(x["qty"] for x in st_)
+        out.append(dict(n=i, stores=st_, qty=q, target=target(i), time=stats["time"].get(i),
+                        over=bool(limit) and q > limit))
+    return out
 
 
 def machine_meta(m: dict) -> str:
-    return f"{n(m['qty'])} шт · точек: {len(m['stores'])}"
+    return f"{n(m['qty'])} шт · точек: {len(m['stores'])}" + (" · ⚠ выше лимита" if m.get("over") else "")
 
 
 def machine_chips(m: dict) -> str:
@@ -514,6 +526,8 @@ def machine_chips(m: dict) -> str:
              f"<span class='chip'>Точек <b>{len(m['stores'])}</b></span>")
     if m["time"] is not None:
         chips += f"<span class='chip'>🕐 {hhmm(m['time'])}</span>"
+    if m.get("over"):
+        chips += "<span class='chip wait'>⚠ выше лимита</span>"
     return (f"<div class='chips'>{chips}<span class='load{hi}'><i style='width:{min(pct, 100)}%'></i></span>"
             f"<span class='loadpct'>{pct}%</span></div>")
 
@@ -531,13 +545,16 @@ def trips_table(machines: list) -> str:
     return f"<div class='cars-wrap'><table class='cars'>{''.join(parts)}</table></div>"
 
 
-def trips_excel(machines: list, day_label: str) -> bytes:
+def trips_excel(machines: list, day_label: str, limit: int = 0) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     wb = Workbook()
     ws = wb.active
     ws.title = "Рейсы (пример)"
-    ws.append([f"ПРИМЕР маршрутизации на {day_label}. Это расчёт по средним значениям архива, а не факт."])
+    note = f"ПРИМЕР маршрутизации на {day_label}. Это расчёт по средним значениям архива, а не факт."
+    if limit:
+        note += f" Лимит на машину: {limit} шт."
+    ws.append([note])
     ws.merge_cells("A1:C1")
     ws["A1"].font = Font(bold=True, color="C00000")
     ws["A1"].alignment = Alignment(wrap_text=True, vertical="center")
@@ -634,6 +651,34 @@ def routing_excel(g: pd.DataFrame) -> bytes:
     out = BytesIO()
     wb.save(out)
     return out.getvalue()
+
+
+def _st_ver() -> tuple:
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", st.__version__)[:2])
+    except Exception:
+        return (0, 0)
+
+
+def xl_button(label: str, build, file_name: str, key: str):
+    """Кнопка скачивания Excel. Файл собирается безопасно (ошибка не роняет страницу),
+    имя файла только латиницей, без перезапуска страницы при нажатии."""
+    try:
+        data = build()
+    except Exception as e:
+        st.error(f"Не удалось собрать Excel-файл: {e}. Проверьте, что в requirements.txt есть openpyxl.")
+        return
+    kw = dict(label=label, data=data, file_name=file_name, mime=XLSX_MIME, key=key)
+    if _st_ver() >= (1, 43):
+        kw["on_click"] = "ignore"
+    try:
+        st.download_button(width="stretch", **kw)
+    except TypeError:
+        try:
+            st.download_button(use_container_width=True, **kw)
+        except TypeError:
+            kw.pop("on_click", None)
+            st.download_button(**kw)
 
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
@@ -818,6 +863,7 @@ if "f_date" not in st.session_state:
     st.session_state.f_date = next((x for x in dates if x >= now.date()), dates[-1])
 st.session_state.setdefault("f_mode", "Все")
 st.session_state.setdefault("page", PAGES[0])
+st.session_state.setdefault("trip_limit", 0)
 
 page = st.segmented_control("Раздел", PAGES, key="page", label_visibility="collapsed") or PAGES[0]
 date_label = lambda x: "Все даты" if x == ALL else f"{fmt_date(x)}, {WEEKDAYS[x.weekday()]}"
@@ -863,13 +909,8 @@ if page == PAGES[0]:
         <div class="l">бэклог, шт</div><div class="s">из {n(pcs_total)} шт</div></div>""", go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
-    st.download_button(
-        "⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
-        data=backlog_excel(df),
-        file_name=f"backlog_{now:%Y-%m-%d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
-    )
+    xl_button("⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
+              lambda: backlog_excel(df), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
 
     show_all = st.toggle(f"Показать все дни (по умолчанию только дни с готовностью ниже {HIDE_FROM_DAYS_PCT}%)",
                          value=False)
@@ -911,19 +952,17 @@ if page == PAGES[1]:
             st.caption(f"В сводной: {n(len(sub) - len(dropped))} заказов · {n(pivot['Штук'].sum())} шт · "
                        f"точек: {len(pivot)}. Не включены магазины: {', '.join(EXCLUDE_STORES)}"
                        + (f" (исключено {n(len(dropped))} заказов, {n(dropped['Штук'].sum())} шт)." if len(dropped) else "."))
-            label = "все_даты" if st.session_state.f_date == ALL else f"{st.session_state.f_date:%Y-%m-%d}"
-            st.download_button(
-                "⬇️ Скачать сводную в Excel",
-                data=routing_excel(pivot),
-                file_name=f"marshrutizatsiya_{label}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-            )
+            label = "all" if st.session_state.f_date == ALL else f"{st.session_state.f_date:%Y-%m-%d}"
+            xl_button("⬇️ Скачать сводную в Excel", lambda: routing_excel(pivot),
+                      f"marshrutizatsiya_{label}.xlsx", "dl_routing")
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
     elif mode == "Рейсы":
         st.markdown('<div class="note">⚠️ <b>Это пример маршрутизации, а не факт.</b> Точки разложены по машинам '
-                    'по средним показателям, реальные рейсы могут отличаться.</div>',
+                    'по средним показателям прошлых отгрузок (архив), реальные рейсы могут отличаться.</div>',
                     unsafe_allow_html=True)
+        st.number_input("Лимит штук на одну машину (0 — без лимита)", min_value=0, step=100, key="trip_limit",
+                        help="Сумма штук в одной машине не превысит это число.")
+        limit = int(st.session_state.trip_limit or 0)
         if st.session_state.f_date == ALL:
             st.info("Выберите конкретную дату отгрузки: рейсы считаются на один день.")
         else:
@@ -944,18 +983,21 @@ if page == PAGES[1]:
                 if pivot.empty:
                     st.info("Нет заказов для расчёта.")
                 else:
-                    machines = plan_trips(pivot, stats)
+                    machines = plan_trips(pivot, stats, limit)
+                    if limit:
+                        big = pivot[pivot["Штук"] > limit]
+                        if len(big):
+                            names = ", ".join(f"{r.Магазин} ({n(r.Штук)} шт)" for r in big.itertuples(index=False))
+                            st.warning(f"Эти точки сами больше лимита {n(limit)} шт и едут отдельной машиной "
+                                       f"(их нельзя разделить): {names}")
                     st.markdown(f"<div class='chips big'><span class='chip'>Машин <b>{len(machines)}</b></span>"
                                 f"<span class='chip'>Точек <b>{len(pivot)}</b></span>"
-                                f"<span class='chip'>Штук <b>{n(pivot['Штук'].sum())}</b></span></div>",
-                                unsafe_allow_html=True)
-                    st.download_button(
-                        "⬇️ Скачать рейсы в Excel (пример)",
-                        data=trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}"),
-                        file_name=f"reisy_primer_{st.session_state.f_date:%Y-%m-%d}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        width="stretch",
-                    )
+                                f"<span class='chip'>Штук <b>{n(pivot['Штук'].sum())}</b></span>"
+                                + (f"<span class='chip'>Лимит <b>{n(limit)}</b></span>" if limit else "")
+                                + "</div>", unsafe_allow_html=True)
+                    xl_button("⬇️ Скачать рейсы в Excel (пример)",
+                              lambda: trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}", limit),
+                              f"reisy_primer_{st.session_state.f_date:%Y-%m-%d}.xlsx", "dl_trips")
                     st.markdown(trips_table(machines), unsafe_allow_html=True)
     else:
         if mode == "Не собрано":
