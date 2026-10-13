@@ -179,6 +179,17 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .cars tr.hot td { background:$hot_bg; font-weight:700; }
 .cars td.shop { font-weight:800; white-space:nowrap; }
 .cars td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.block-container { padding-bottom: 6.5rem; }
+.st-key-deadline { position:fixed; left:0; right:0; bottom:0; z-index:1000; }
+.dl { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+      padding:10px 18px calc(10px + env(safe-area-inset-bottom, 0px)); color:#fff; font-family:'Manrope',sans-serif;
+      box-shadow:0 -4px 16px rgba(0,0,0,.2); }
+.dl.g { background:#1E9E5C; }
+.dl.y { background:#F2B705; color:#14232E; }
+.dl.r { background:#D32F2F; }
+.dl .dl-l { font-weight:700; font-size:.9rem; }
+.dl .dl-t { font-size:1.7rem; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:.02em; line-height:1.1; }
+.dl .dl-r { font-size:.82rem; opacity:.92; text-align:right; }
 </style>
 """)
 st.markdown(CSS.safe_substitute(P), unsafe_allow_html=True)
@@ -613,29 +624,15 @@ def badge(collected: bool) -> str:
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
-def orders_table(frame: pd.DataFrame, ship_map: dict = None, limit: int = 1500) -> str:
-    ship_map = ship_map or {}
-    rows = frame.head(limit).to_dict("records")
-    show_ship = any(r["Заказ"] in ship_map for r in rows)
-
-    def ship_cell(r):
-        info = ship_map.get(r["Заказ"])
-        if not info:
-            return "<td>—</td>"
-        done, trip, fact = info
-        if done:
-            when = f" {fact:%H:%M}" if pd.notna(fact) else ""
-            return f"<td><span class='badge ok'>отгружен · рейс {esc(trip)}{when}</span></td>"
-        return (f"<td><span class='badge no'>рейс {esc(trip)}</span></td>" if trip else "<td>—</td>")
-
-    head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th><th class='num'>Штук</th>"
-            "<th>Статус</th><th>WMS</th>" + ("<th>Отгрузка</th>" if show_ship else "") + "</tr>")
+def orders_table(frame: pd.DataFrame, limit: int = 1500) -> str:
+    head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
+            "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
     body = []
-    for r in rows:
+    for r in frame.head(limit).to_dict("records"):
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'])}</td><td class='num'>{n(r['Штук'])}</td><td>{badge(r['Собран'])}</td>"
-            f"<td>{esc(r['Статус WMS'] or '—')}</td>" + (ship_cell(r) if show_ship else "") + "</tr>")
+            f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
@@ -650,6 +647,53 @@ def routing_table(g: pd.DataFrame) -> str:
         prev = r.Город
     body.append(f"<tr class='total'><td colspan='3'>Общий итог</td><td class='num'>{n(g['Штук'].sum())}</td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
+
+
+DEADLINE_JS = """
+(function () {
+  if (window.__dlTimer) clearInterval(window.__dlTimer);
+  var DONE = __DONE__, TARGET = 17 * 3600;
+  var fmt = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit',
+                                               second: '2-digit', hour12: false});
+  function pad(x) { return (x < 10 ? '0' : '') + x; }
+  function nowSec() {
+    var v = {}; fmt.formatToParts(new Date()).forEach(function (x) { v[x.type] = +x.value; });
+    return (v.hour % 24) * 3600 + v.minute * 60 + v.second;
+  }
+  function tick() {
+    var bar = document.getElementById('dl-bar');
+    if (!bar) return;
+    var s = nowSec(), left = TARGET - s, cls, label, txt;
+    if (DONE) { cls = 'g'; label = 'Все заказы отгружены'; txt = '✓'; }
+    else {
+      cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
+      var a = Math.abs(left);
+      txt = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
+      label = left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл';
+    }
+    bar.className = 'dl ' + cls;
+    document.getElementById('dl-label').textContent = label;
+    document.getElementById('dl-time').textContent = txt;
+  }
+  tick();
+  window.__dlTimer = setInterval(tick, 1000);
+})();
+"""
+
+
+def deadline_bar(left_orders: int, left_pcs: int, all_done: bool):
+    """Фиксированная панель внизу: обратный отсчёт до 17:00 (Ташкент). Цвет: до 12:00 зелёный,
+    12:00–16:00 жёлтый, после 16:00 красный. Если всё отгружено — зелёная плашка без отсчёта."""
+    right = "" if all_done else f"Осталось отгрузить: {n(left_orders)} зак. · {n(left_pcs)} шт"
+    markup = (f"<div id='dl-bar' class='dl g'><div class='dl-l' id='dl-label'></div>"
+              f"<div class='dl-t' id='dl-time'>--:--:--</div><div class='dl-r'>{esc(right)}</div></div>")
+    js = DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
+    with st.container(key="deadline"):
+        try:
+            st.html(markup + f"<script>{js}</script>", unsafe_allow_javascript=True)
+        except TypeError:                                      # старая версия Streamlit без JS в st.html
+            import streamlit.components.v1 as components
+            components.html("<style>body{margin:0}</style>" + markup + f"<script>{js}</script>", height=64)
 
 
 # ───────────────────────── Загрузка и шапка ─────────────────────────
@@ -687,6 +731,10 @@ try:
 except Exception as e:                      # дашборд работает и без таблицы отгрузок
     ship_err = str(e)
 
+sm_today = None
+if ship is not None and not ship.empty and now.date() in set(ship["Дата"]):
+    sm_today = ship_summary(ship, now.date())
+
 # состояние фильтров (до создания виджетов)
 if st.session_state.get("f_date") not in [ALL] + dates:
     st.session_state.pop("f_date", None)
@@ -709,19 +757,13 @@ if page == PAGES[0]:
         sd = pick_ship_date(ship, now.date())
         sm = ship_summary(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
-        trip_chips = "".join(
-            (f"<span class='chip ok'>Рейс {esc(t['Рейс'])} · ✓ {t['t']:%H:%M}</span>" if t["done"] and pd.notna(t["t"])
-             else f"<span class='chip ok'>Рейс {esc(t['Рейс'])} · ✓</span>" if t["done"]
-             else f"<span class='chip wait'>Рейс {esc(t['Рейс'])} · в работе</span>")
-            for t in sm["trips"])
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
           <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small></div><div class="sh-p">{pct_ship}%</div></div>
           <div class="bar"><i style="width:{pct_ship}%"></i></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
-          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div>
-          <div class="chips">{trip_chips}</div></div>"""
+          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd))
         else:
@@ -846,8 +888,7 @@ if page == PAGES[1]:
         if sub.empty:
             st.info("Заказов нет.")
         else:
-            ship_map = ({r.Заказ: (r.Отгружен, r.Рейс, r.Факт) for r in ship.itertuples()} if ship is not None else {})
-            st.markdown(orders_table(sub, ship_map), unsafe_allow_html=True)
+            st.markdown(orders_table(sub), unsafe_allow_html=True)
             if len(sub) > 1500:
                 st.caption("Показаны первые 1500 заказов, уточните дату.")
 
@@ -867,3 +908,8 @@ if page == PAGES[2]:
                             unsafe_allow_html=True)
     else:
         st.info("Введите номер заказа или его часть.")
+
+# ───────────────────────── Таймер до 17:00 (внизу на всех страницах) ─────────────────────────
+if sm_today and sm_today["total"] > 0:
+    deadline_bar(sm_today["total"] - sm_today["done"], sm_today["pcs"] - sm_today["pcs_done"],
+                 sm_today["done"] >= sm_today["total"])
