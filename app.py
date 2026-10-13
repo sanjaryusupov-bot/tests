@@ -153,7 +153,27 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .cars td { padding:6px 10px; vertical-align:top; color:$ink; border-top:1px solid $line; }
 .cars tr.car td { border-top:none; }
 .cars td.carname { background:$car_bg; color:$car_fg; font-weight:800; white-space:nowrap; width:1%; }
-.cars td.carmeta { color:$mute; font-size:.8rem; vertical-align:middle; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.chip { display:inline-flex; gap:4px; align-items:baseline; background:$track; color:$ink; border-radius:99px;
+        padding:3px 10px; font-size:.8rem; font-weight:600; white-space:nowrap; }
+.chip b { font-weight:800; }
+.chip.ok { background:$ok_bg; color:$ok_fg; }
+.chip.wait { background:$no_bg; color:$no_fg; }
+.chips.big { margin:2px 0 10px; }
+.chips.big .chip { font-size:.9rem; padding:5px 14px; background:$card; border:1px solid $line; }
+.load { flex:1; min-width:80px; max-width:220px; height:6px; border-radius:99px; background:$track; overflow:hidden; }
+.load i { display:block; height:100%; background:$done; border-radius:99px; }
+.load.hi i { background:$left; }
+.loadpct { font-size:.78rem; font-weight:700; color:$mute; }
+.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:14px; padding:14px 16px; margin-bottom:12px; }
+.ship .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+.ship .sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
+.ship .sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
+.ship .sh-p { font-weight:800; font-size:1.7rem; letter-spacing:-0.02em; color:$ink; }
+.ship .bar { height:14px; margin:8px 0; }
+.ship .sh-m { font-size:.85rem; color:$mute; margin-bottom:8px; }
+.ship .sh-m b { color:$ink; }
+.cars td.carmeta { vertical-align:middle; }
 .cars tr.band td { background:$band; padding:0; height:12px; border:none; }
 .cars tr.band.thin td { height:7px; }
 .cars tr.hot td { background:$hot_bg; font-weight:700; }
@@ -212,13 +232,20 @@ def load() -> pd.DataFrame:
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600, show_spinner="Читаю архив отгрузок…")
-def load_archive_stats() -> dict:
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю отгрузки…")
+def load_ship_tabs() -> dict:
+    """Две вкладки таблицы отгрузок: «Маршруты New» (текущий день) и «Архив» (прошлые дни)."""
     sheet = _client().open_by_key(ARCHIVE_SHEET_ID)
-    ws = next((w for w in sheet.worksheets() if str(w.id) == ARCHIVE_GID), None) or sheet.worksheet(ARCHIVE_TAB)
-    rows = ws.get_all_values()
-    head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
-    return archive_stats(pd.DataFrame(rows[1:], columns=head, dtype=str).fillna(""))
+    sheets = sheet.worksheets()
+
+    def read(ws):
+        rows = ws.get_all_values()
+        head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
+        return pd.DataFrame(rows[1:], columns=head, dtype=str).fillna("")
+
+    arch = next((w for w in sheets if str(w.id) == ARCHIVE_GID), None) or sheet.worksheet(ARCHIVE_TAB)
+    cur = next((w for w in sheets if "маршрут" in w.title.lower() and "new" in w.title.lower()), None)
+    return {"archive": read(arch), "new": read(cur) if cur else None}
 
 
 def fmt_date(d: date) -> str:
@@ -314,6 +341,69 @@ def archive_stats(raw: pd.DataFrame) -> dict:
     )
 
 
+def get_archive_stats() -> dict:
+    """Средние пересчитываются при каждом чтении архива (кэш = CACHE_SECONDS, кнопка «Обновить» сбрасывает)."""
+    return archive_stats(load_ship_tabs()["archive"])
+
+
+_SHIP_COLS = ["Заказ", "Магазин", "Штук", "Дата", "Рейс", "Отгружен", "Факт"]
+
+
+def parse_ship(raw) -> pd.DataFrame:
+    """Строки вкладки отгрузок -> Заказ, Магазин, Штук, Дата (план), Рейс, Отгружен, Факт."""
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_SHIP_COLS)
+    raw = raw.copy()
+    raw.columns = [" ".join(str(c).split()) for c in raw.columns]
+
+    def find(*keys):
+        return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
+
+    c_order, c_shop, c_qty = find("№"), find("название"), find("кол-во")
+    c_plan, c_trip, c_stat, c_fact = find("дата", "план"), find("рейс"), find("статус"), find("факт")
+    if not all([c_order, c_shop, c_qty, c_plan]):
+        return pd.DataFrame(columns=_SHIP_COLS)
+    d = pd.DataFrame({
+        "Заказ": raw[c_order].str.strip(),
+        "Магазин": raw[c_shop].str.strip(),
+        "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
+        "Дата": pd.to_datetime(raw[c_plan], dayfirst=True, errors="coerce").dt.date,
+        "Рейс": raw[c_trip].str.strip() if c_trip else "",
+        "Отгружен": (raw[c_stat].str.strip().str.upper() == "ОТГРУЖЕН") if c_stat else False,
+        "Факт": (pd.to_datetime(raw[c_fact].str.strip(), format="%d.%m.%Y %H:%M", errors="coerce")
+                 if c_fact else pd.NaT),
+    })
+    return d[d["Заказ"].str.match(r"^\s*\w{1,3}-\d{4,}") & d["Дата"].notna()].reset_index(drop=True)
+
+
+def build_ship(tabs: dict) -> pd.DataFrame:
+    """Все заказы из «Маршруты New» + «Архив» без дублей (приоритет у «Маршруты New»), без исключённых магазинов."""
+    d = pd.concat([parse_ship(tabs.get("new")), parse_ship(tabs.get("archive"))], ignore_index=True)
+    d = d.drop_duplicates("Заказ", keep="first")
+    return d[~d["Магазин"].map(lambda x: norm_store(x) in EXCLUDED_KEYS)].reset_index(drop=True)
+
+
+def pick_ship_date(ship: pd.DataFrame, today: date):
+    ds = sorted(ship["Дата"].unique())
+    if not ds:
+        return None
+    if today in ds:
+        return today
+    prev = [x for x in ds if x <= today]
+    return prev[-1] if prev else ds[0]
+
+
+def ship_summary(ship: pd.DataFrame, d: date) -> dict:
+    s_ = ship[ship["Дата"] == d]
+    tr = (s_[s_["Рейс"] != ""].groupby("Рейс")
+          .agg(qty=("Штук", "sum"), done=("Отгружен", "all"), t=("Факт", "min")).reset_index())
+    tr["tn"] = pd.to_numeric(tr["Рейс"], errors="coerce").fillna(999)
+    tr = tr.sort_values(["tn", "Рейс"])
+    return dict(total=len(s_), done=int(s_["Отгружен"].sum()),
+                pcs=int(s_["Штук"].sum()), pcs_done=int(s_.loc[s_["Отгружен"], "Штук"].sum()),
+                trips=tr.to_dict("records"))
+
+
 def hhmm(minutes: float) -> str:
     m = int(round(minutes))
     return f"{m // 60:02d}:{m % 60:02d}"
@@ -369,17 +459,25 @@ def plan_trips(pivot: pd.DataFrame, stats: dict) -> list:
 
 
 def machine_meta(m: dict) -> str:
-    txt = f"{n(m['qty'])} шт · точек: {len(m['stores'])} · в среднем раньше ≈ {n(m['target'])} шт"
+    return f"{n(m['qty'])} шт · точек: {len(m['stores'])}"
+
+
+def machine_chips(m: dict) -> str:
+    pct = round(m["qty"] / m["target"] * 100) if m["target"] else 0
+    hi = " hi" if pct > 115 else ""
+    chips = (f"<span class='chip'><b>{n(m['qty'])}</b> шт</span>"
+             f"<span class='chip'>Точек <b>{len(m['stores'])}</b></span>")
     if m["time"] is not None:
-        txt += f" · обычно уезжает ≈ {hhmm(m['time'])}"
-    return txt
+        chips += f"<span class='chip'>🕐 {hhmm(m['time'])}</span>"
+    return (f"<div class='chips'>{chips}<span class='load{hi}'><i style='width:{min(pct, 100)}%'></i></span>"
+            f"<span class='loadpct'>{pct}%</span></div>")
 
 
 def trips_table(machines: list) -> str:
     parts = []
     for m in machines:
         parts.append(f"<tr class='car'><td class='carname'>{ordinal(m['n'])}</td>"
-                     f"<td class='carmeta' colspan='2'>{esc(machine_meta(m))}</td></tr>"
+                     f"<td class='carmeta' colspan='2'>{machine_chips(m)}</td></tr>"
                      "<tr class='band thin'><td colspan='3'></td></tr>")
         for s_ in m["stores"]:
             parts.append(f"<tr class='{'hot' if s_['hot'] else ''}'><td class='shop'>{esc(s_['shop'])}</td>"
@@ -515,15 +613,29 @@ def badge(collected: bool) -> str:
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
-def orders_table(frame: pd.DataFrame, limit: int = 1500) -> str:
-    head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
-            "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
+def orders_table(frame: pd.DataFrame, ship_map: dict = None, limit: int = 1500) -> str:
+    ship_map = ship_map or {}
+    rows = frame.head(limit).to_dict("records")
+    show_ship = any(r["Заказ"] in ship_map for r in rows)
+
+    def ship_cell(r):
+        info = ship_map.get(r["Заказ"])
+        if not info:
+            return "<td>—</td>"
+        done, trip, fact = info
+        if done:
+            when = f" {fact:%H:%M}" if pd.notna(fact) else ""
+            return f"<td><span class='badge ok'>отгружен · рейс {esc(trip)}{when}</span></td>"
+        return (f"<td><span class='badge no'>рейс {esc(trip)}</span></td>" if trip else "<td>—</td>")
+
+    head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th><th class='num'>Штук</th>"
+            "<th>Статус</th><th>WMS</th>" + ("<th>Отгрузка</th>" if show_ship else "") + "</tr>")
     body = []
-    for r in frame.head(limit).to_dict("records"):
+    for r in rows:
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'])}</td><td class='num'>{n(r['Штук'])}</td><td>{badge(r['Собран'])}</td>"
-            f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
+            f"<td>{esc(r['Статус WMS'] or '—')}</td>" + (ship_cell(r) if show_ship else "") + "</tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
@@ -569,6 +681,12 @@ if df.empty:
 summary = day_summary(df)
 dates = list(summary.index)
 
+ship, ship_err = None, ""
+try:
+    ship = build_ship(load_ship_tabs())
+except Exception as e:                      # дашборд работает и без таблицы отгрузок
+    ship_err = str(e)
+
 # состояние фильтров (до создания виджетов)
 if st.session_state.get("f_date") not in [ALL] + dates:
     st.session_state.pop("f_date", None)
@@ -586,6 +704,30 @@ if page == PAGES[0]:
     left = int((~df["Собран"]).sum())
     pcs_total = int(df["Штук"].sum())
     pcs_left = int(df.loc[~df["Собран"], "Штук"].sum())
+
+    if ship is not None and not ship.empty:
+        sd = pick_ship_date(ship, now.date())
+        sm = ship_summary(ship, sd)
+        pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
+        trip_chips = "".join(
+            (f"<span class='chip ok'>Рейс {esc(t['Рейс'])} · ✓ {t['t']:%H:%M}</span>" if t["done"] and pd.notna(t["t"])
+             else f"<span class='chip ok'>Рейс {esc(t['Рейс'])} · ✓</span>" if t["done"]
+             else f"<span class='chip wait'>Рейс {esc(t['Рейс'])} · в работе</span>")
+            for t in sm["trips"])
+        ship_html = f"""<div class="ship"><div class="sh-top">
+          <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
+          <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small></div><div class="sh-p">{pct_ship}%</div></div>
+          <div class="bar"><i style="width:{pct_ship}%"></i></div>
+          <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
+          <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
+          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div>
+          <div class="chips">{trip_chips}</div></div>"""
+        if sd in dates:
+            tap("ship", ship_html, go_orders, ("Все", sd))
+        else:
+            st.markdown(ship_html, unsafe_allow_html=True)
+    elif ship_err:
+        st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
     k1, k2, k3 = st.columns(3)
     with k1:
@@ -665,7 +807,7 @@ if page == PAGES[1]:
         else:
             pivot, dropped = split_routing(sub)
             try:
-                stats = load_archive_stats()
+                stats = get_archive_stats()
             except Exception as e:
                 stats = None
                 mail = ""
@@ -681,10 +823,10 @@ if page == PAGES[1]:
                     st.info("Нет заказов для расчёта.")
                 else:
                     machines = plan_trips(pivot, stats)
-                    st.caption(f"Расчёт по архиву {stats['date_from']:%d.%m}–{stats['date_to']:%d.%m.%Y} "
-                               f"({stats['n_days']} дн.): в среднем ≈ {n(stats['avg_all'])} шт на машину. "
-                               f"Здесь: машин {len(machines)}, точек {len(pivot)}, {n(pivot['Штук'].sum())} шт. "
-                               f"Не включены магазины: {', '.join(EXCLUDE_STORES)}.")
+                    st.markdown(f"<div class='chips big'><span class='chip'>Машин <b>{len(machines)}</b></span>"
+                                f"<span class='chip'>Точек <b>{len(pivot)}</b></span>"
+                                f"<span class='chip'>Штук <b>{n(pivot['Штук'].sum())}</b></span></div>",
+                                unsafe_allow_html=True)
                     st.download_button(
                         "⬇️ Скачать рейсы в Excel (пример)",
                         data=trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}"),
@@ -704,7 +846,8 @@ if page == PAGES[1]:
         if sub.empty:
             st.info("Заказов нет.")
         else:
-            st.markdown(orders_table(sub), unsafe_allow_html=True)
+            ship_map = ({r.Заказ: (r.Отгружен, r.Рейс, r.Факт) for r in ship.itertuples()} if ship is not None else {})
+            st.markdown(orders_table(sub, ship_map), unsafe_allow_html=True)
             if len(sub) > 1500:
                 st.caption("Показаны первые 1500 заказов, уточните дату.")
 
