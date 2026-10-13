@@ -922,7 +922,7 @@ if page == PAGES[1]:
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
     elif mode == "Рейсы":
         st.markdown('<div class="note">⚠️ <b>Это пример маршрутизации, а не факт.</b> Точки разложены по машинам '
-                    'по средним показателям прошлых отгрузок (архив), реальные рейсы могут отличаться.</div>',
+                    'по средним показателям, реальные рейсы могут отличаться.</div>',
                     unsafe_allow_html=True)
         if st.session_state.f_date == ALL:
             st.info("Выберите конкретную дату отгрузки: рейсы считаются на один день.")
