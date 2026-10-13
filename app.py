@@ -37,10 +37,18 @@ ARCHIVE_SHEET_ID = "1hKZ8ggNLW-OY1bV8xAW7PKl50Fof2co86oxGK92YPAA"
 ARCHIVE_GID = "2106470004"
 ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
+
+# Пустые короба (ответы формы)
+BOXES_SHEET_ID = "1FZmR7vUXAWFBJgkrCHhM_y8LoAeSjutJLHZjTJRdYw4"
+BOXES_GID = "2073580233"
+BOXES_TAB = "Ответы на форму (1)"
+MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
+          "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
 MODES = ["Все", "Не собрано", "Собрано", "Маршрутизация", "Рейсы"]
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
 
-PAGES = ["Сводка по дням", "Заказы", "Поиск заказа"]
+PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба"]
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 LIGHT = dict(scheme="light", ink="#14232E", paper="#EEF2F5", card="#FFFFFF", line="#D9E1E7",
@@ -114,6 +122,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-s
 .kpi .s { font-size:.8rem; color:$mute; margin-top:2px; }
 .kpi.left { border-left:5px solid $left; }
 .kpi.all { border-left:5px solid $ink; }
+.kpi.ok { border-left:5px solid $done; }
 
 .bar { height:10px; border-radius:99px; background:$track; overflow:hidden; }
 .bar > i { display:block; height:100%; background:$done; border-radius:99px; }
@@ -143,6 +152,9 @@ table.tbl { border-collapse:collapse; width:100%; font-size:.85rem; color:$ink; 
 .tbl td.city { font-weight:800; }
 .tbl td.shop { font-weight:700; }
 .tbl tr.total td { font-weight:800; background:$head; border-top:2px solid $line; }
+.bxbar { height:8px; min-width:110px; border-radius:99px; background:$track; overflow:hidden; }
+.bxbar i { display:block; height:100%; background:$done; border-radius:99px; }
+.sec { font-weight:800; font-size:1.05rem; margin:18px 0 8px; color:$ink; }
 
 .hit { background:$card; border:1px solid $line; border-radius:12px; padding:12px 14px; margin-bottom:8px; color:$ink; }
 .hit .n { font-weight:800; font-size:1.05rem; }
@@ -261,6 +273,37 @@ def load_ship_tabs() -> dict:
     arch = next((w for w in sheets if str(w.id) == ARCHIVE_GID), None) or sheet.worksheet(ARCHIVE_TAB)
     cur = next((w for w in sheets if "маршрут" in w.title.lower() and "new" in w.title.lower()), None)
     return {"archive": read(arch), "new": read(cur) if cur else None}
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю пустые короба…")
+def load_boxes() -> pd.DataFrame:
+    """Ответы формы: Отметка времени / Магазин / Кол-во полученных коробок."""
+    sheet = _client().open_by_key(BOXES_SHEET_ID)
+    ws = next((w for w in sheet.worksheets() if str(w.id) == BOXES_GID), None) or sheet.worksheet(BOXES_TAB)
+    rows = ws.get_all_values()
+    head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
+    raw = pd.DataFrame(rows[1:], columns=head, dtype=str).fillna("")
+
+    def find(*keys):
+        return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
+
+    c_t, c_s = find("отметка"), find("магазин")
+    c_q = find("кол-во") or find("коробок")
+    if not all([c_t, c_s, c_q]):
+        raise ValueError("Не найдены колонки: отметка времени, магазин, кол-во коробок.")
+    ts = raw[c_t].str.strip()
+    t = pd.to_datetime(ts, format="%d.%m.%Y %H:%M:%S", errors="coerce")
+    miss = t.isna() & (ts != "")
+    if miss.any():
+        t[miss] = pd.to_datetime(ts[miss], dayfirst=True, errors="coerce")
+    d = pd.DataFrame({
+        "Время": t,
+        "Магазин": raw[c_s].str.strip(),
+        "Коробок": pd.to_numeric(raw[c_q].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
+    })
+    d = d[d["Время"].notna() & (d["Магазин"] != "")].sort_values("Время").reset_index(drop=True)
+    d["Месяц"] = d["Время"].dt.strftime("%Y-%m")
+    return d
 
 
 def fmt_date(d: date) -> str:
@@ -607,10 +650,21 @@ def routing_excel(g: pd.DataFrame) -> bytes:
 
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
-def tap(key: str, card_html: str, on_click, args=()):
+def render_card(card_html: str, js: str = ""):
+    """Карточка через st.markdown, а если нужен скрипт (таймер) — через st.html, где скрипты работают."""
+    if js:
+        try:
+            st.html(card_html + f"<script>{js}</script>", unsafe_allow_javascript=True)
+            return
+        except TypeError:                                      # старая версия Streamlit без JS в st.html
+            pass
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+def tap(key: str, card_html: str, on_click, args=(), js: str = ""):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка)."""
     with st.container(key=f"tap_{key}"):
-        st.markdown(card_html, unsafe_allow_html=True)
+        render_card(card_html, js)
         st.button("открыть", key=f"btn_{key}", on_click=on_click, args=args)
 
 
@@ -664,13 +718,8 @@ DEADLINE_JS = """
     var v = {}; fmt.formatToParts(new Date()).forEach(function (x) { v[x.type] = +x.value; });
     return (v.hour % 24) * 3600 + v.minute * 60 + v.second;
   }
-  function find(id) {
-    var el = document.getElementById(id);
-    if (!el) { try { el = window.parent.document.getElementById(id); } catch (e) {} }
-    return el;
-  }
   function tick() {
-    var bar = find('dl-bar'), box = find('dl-time');
+    var bar = document.getElementById('dl-bar'), box = document.getElementById('dl-time');
     if (!bar || !box) return;
     var s = nowSec(), left = TARGET - s, cls, html;
     if (DONE) { cls = 'g'; html = '✓ Все заказы отгружены'; }
@@ -689,15 +738,30 @@ DEADLINE_JS = """
 """
 
 
-def deadline_timer(all_done: bool):
-    """Скрипт таймера до 17:00 (Ташкент): пишет время внутрь линии в виджете «Отгрузка сегодня».
+def deadline_js(all_done: bool) -> str:
+    """Таймер до 17:00 (Ташкент) внутри линии виджета «Отгрузка сегодня».
     Цвет линии: до 12:00 зелёный, 12:00–16:00 жёлтый, после 16:00 красный."""
-    js = DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
-    try:
-        st.html(f"<script>{js}</script>", unsafe_allow_javascript=True)
-    except TypeError:                                          # старая версия Streamlit без JS в st.html
-        import streamlit.components.v1 as components
-        components.html(f"<script>{js}</script>", height=0)
+    return DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
+
+
+# ── пустые короба ──
+def month_label(key: str) -> str:
+    y, m = key.split("-")
+    return f"{MONTHS[int(m) - 1].capitalize()} {y}"
+
+
+def simple_table(head: list, rows: list, num_cols=()) -> str:
+    th = "".join(f"<th class='{'num' if i in num_cols else ''}'>{esc(h)}</th>" for i, h in enumerate(head))
+    body = []
+    for r in rows:
+        tds = "".join(f"<td class='{'num' if i in num_cols else ''}'>{c}</td>" for i, c in enumerate(r))
+        body.append(f"<tr>{tds}</tr>")
+    return f"<div class='tbl-wrap'><table class='tbl'><tr>{th}</tr>{''.join(body)}</table></div>"
+
+
+def kpi_box(value, label, sub="", cls="ok") -> str:
+    return (f"<div class='kpi {cls}'><div class='v'>{value}</div><div class='l'>{esc(label)}</div>"
+            f"<div class='s'>{sub}</div></div>")
 
 
 # ───────────────────────── Загрузка и шапка ─────────────────────────
@@ -770,12 +834,11 @@ if page == PAGES[0]:
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
+        js = deadline_js(sm["done"] >= sm["total"]) if is_today else ""
         if sd in dates:
-            tap("ship", ship_html, go_orders, ("Все", sd))
+            tap("ship", ship_html, go_orders, ("Все", sd), js=js)
         else:
-            st.markdown(ship_html, unsafe_allow_html=True)
-        if is_today:
-            deadline_timer(sm["done"] >= sm["total"])
+            render_card(ship_html, js)
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
@@ -916,3 +979,117 @@ if page == PAGES[2]:
                             unsafe_allow_html=True)
     else:
         st.info("Введите номер заказа или его часть.")
+
+# ───────────────────────── 4. Пустые короба ─────────────────────────
+if page == PAGES[3]:
+    bx = None
+    try:
+        bx = load_boxes()
+    except Exception as e:
+        mail = ""
+        try:
+            mail = st.secrets["gcp_service_account"].get("client_email", "")
+        except Exception:
+            pass
+        st.warning("Не удалось прочитать таблицу пустых коробов. Откройте её для почты сервисного "
+                   f"аккаунта {mail} (роль «Читатель»).")
+        st.caption(str(e))
+
+    if bx is not None:
+        if bx.empty:
+            st.info("В таблице пока нет записей.")
+        else:
+            months = sorted(bx["Месяц"].unique(), reverse=True)
+            cur_key = f"{now:%Y-%m}"
+            if st.session_state.get("b_month") not in months:
+                st.session_state.b_month = cur_key if cur_key in months else months[0]
+            shops = sorted(bx["Магазин"].unique(), key=lambda s: s.lower())
+            if st.session_state.get("b_shop") not in [ALL] + shops:
+                st.session_state.b_shop = ALL
+
+            f1, f2 = st.columns(2)
+            with f1:
+                st.selectbox("Месяц", months, key="b_month", format_func=month_label)
+            with f2:
+                st.selectbox("Магазин", [ALL] + shops, key="b_shop",
+                             format_func=lambda s: "Все магазины" if s == ALL else s)
+            mk, shop = st.session_state.b_month, st.session_state.b_shop
+
+            base = bx if shop == ALL else bx[bx["Магазин"] == shop]
+            m = base[base["Месяц"] == mk]
+            title = month_label(mk) + ("" if shop == ALL else f" · {shop}")
+            st.markdown(f"<div class='sec'>Пустые короба: {esc(title)}</div>", unsafe_allow_html=True)
+
+            if m.empty:
+                st.info("За выбранный месяц записей нет.")
+            else:
+                last = m.iloc[-1]
+                total_b, recs, n_shops = int(m["Коробок"].sum()), len(m), m["Магазин"].nunique()
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.markdown(kpi_box(n(total_b), "коробок за месяц", f"{recs} записей"), unsafe_allow_html=True)
+                with c2:
+                    if shop == ALL:
+                        st.markdown(kpi_box(n(n_shops), "магазинов", "прислали данные", "all"), unsafe_allow_html=True)
+                    else:
+                        st.markdown(kpi_box(n(round(total_b / recs)), "в среднем за запись", "коробок", "all"),
+                                    unsafe_allow_html=True)
+                with c3:
+                    top = m.groupby("Магазин")["Коробок"].sum().sort_values(ascending=False)
+                    if shop == ALL:
+                        st.markdown(kpi_box(esc(top.index[0]), "больше всего коробок",
+                                            f"{n(top.iloc[0])} шт", "left").replace("class='v'", "class='v' style='font-size:1.4rem'"),
+                                    unsafe_allow_html=True)
+                    else:
+                        mx = m.loc[m["Коробок"].idxmax()]
+                        st.markdown(kpi_box(n(mx["Коробок"]), "максимум за запись",
+                                            f"{mx['Время']:%d.%m.%Y}", "left"), unsafe_allow_html=True)
+                with c4:
+                    st.markdown(kpi_box(n(last["Коробок"]), "последняя запись",
+                                        f"{esc(last['Магазин'])} · {last['Время']:%d.%m %H:%M}", "ok"),
+                                unsafe_allow_html=True)
+
+                if shop == ALL:
+                    st.markdown("<div class='sec'>Магазины за месяц</div>", unsafe_allow_html=True)
+                    g = (m.groupby("Магазин").agg(Записей=("Коробок", "count"), Коробок=("Коробок", "sum"),
+                                                  Последняя=("Время", "max"))
+                         .sort_values("Коробок", ascending=False).reset_index())
+                    mx = max(int(g["Коробок"].max()), 1)
+                    rows = [[f"<b>{esc(r.Магазин)}</b>", n(r.Записей),
+                             f"<div class='bxbar'><i style='width:{r.Коробок / mx * 100:.0f}%'></i></div>",
+                             f"<b>{n(r.Коробок)}</b>", f"{r.Последняя:%d.%m %H:%M}"] for r in g.itertuples(index=False)]
+                    st.markdown(simple_table(["Магазин", "Записей", "", "Коробок", "Последняя запись"], rows,
+                                             num_cols={1, 3}), unsafe_allow_html=True)
+
+                    st.markdown("<div class='sec'>По дням</div>", unsafe_allow_html=True)
+                    dd = (m.assign(День=m["Время"].dt.date).groupby("День")
+                          .agg(Записей=("Коробок", "count"), Коробок=("Коробок", "sum"))
+                          .sort_index(ascending=False).reset_index())
+                    mxd = max(int(dd["Коробок"].max()), 1)
+                    rows = [[f"{r.День:%d.%m}, {WEEKDAYS[r.День.weekday()]}", n(r.Записей),
+                             f"<div class='bxbar'><i style='width:{r.Коробок / mxd * 100:.0f}%'></i></div>",
+                             f"<b>{n(r.Коробок)}</b>"] for r in dd.itertuples(index=False)]
+                    st.markdown(simple_table(["День", "Записей", "", "Коробок"], rows, num_cols={1, 3}),
+                                unsafe_allow_html=True)
+                else:
+                    all_months = st.toggle("История за все месяцы", value=False, key="b_all")
+                    hist = base if all_months else m
+                    st.markdown(f"<div class='sec'>История: {esc(shop)}"
+                                f"{'' if all_months else ' · ' + esc(month_label(mk))}</div>", unsafe_allow_html=True)
+                    h = hist.sort_values("Время", ascending=False)
+                    rows = [[f"{r.Время:%d.%m.%Y %H:%M}", f"<b>{esc(r.Магазин)}</b>", f"<b>{n(r.Коробок)}</b>"]
+                            for r in h.head(1500).itertuples(index=False)]
+                    st.markdown(simple_table(["Дата и время", "Магазин", "Коробок"], rows, num_cols={2}),
+                                unsafe_allow_html=True)
+
+            # сводная по месяцам (с учётом выбранного магазина)
+            st.markdown("<div class='sec'>Сводка по месяцам</div>", unsafe_allow_html=True)
+            ms = (base.groupby("Месяц").agg(Записей=("Коробок", "count"), Коробок=("Коробок", "sum"),
+                                            Магазинов=("Магазин", "nunique"))
+                  .sort_index(ascending=False).reset_index())
+            mxm = max(int(ms["Коробок"].max()), 1)
+            rows = [[f"<b>{esc(month_label(r.Месяц))}</b>", n(r.Записей), n(r.Магазинов),
+                     f"<div class='bxbar'><i style='width:{r.Коробок / mxm * 100:.0f}%'></i></div>",
+                     f"<b>{n(r.Коробок)}</b>"] for r in ms.itertuples(index=False)]
+            st.markdown(simple_table(["Месяц", "Записей", "Магазинов", "", "Коробок"], rows, num_cols={1, 2, 4}),
+                        unsafe_allow_html=True)
