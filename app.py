@@ -39,6 +39,8 @@ ARCHIVE_SHEET_ID = "1hKZ8ggNLW-OY1bV8xAW7PKl50Fof2co86oxGK92YPAA"
 ARCHIVE_GID = "2106470004"
 ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
+# Координаты магазинов (вкладка «Кординаты» в той же таблице)
+COORDS_GID = "1482916811"
 
 # Пустые короба (ответы формы)
 BOXES_SHEET_ID = "1FZmR7vUXAWFBJgkrCHhM_y8LoAeSjutJLHZjTJRdYw4"
@@ -178,6 +180,10 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .chip.wait { background:$no_bg; color:$no_fg; }
 .chips.big { margin:2px 0 10px; }
 .chips.big .chip { font-size:.9rem; padding:5px 14px; background:$card; border:1px solid $line; }
+.maps { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+.cars a.mapbtn { display:inline-block; padding:4px 12px; border-radius:99px; font-size:.8rem; font-weight:700;
+                 text-decoration:none; background:$ink; color:$paper !important; white-space:nowrap; }
+.cars a.mapbtn:hover { background:$done; }
 .load { flex:1; min-width:80px; max-width:220px; height:6px; border-radius:99px; background:$track; overflow:hidden; }
 .load i { display:block; height:100%; background:$done; border-radius:99px; }
 .load.hi i { background:$left; }
@@ -326,6 +332,48 @@ def norm_store(x: str) -> str:
 
 
 EXCLUDED_KEYS = {norm_store(x) for x in EXCLUDE_STORES}
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю координаты…")
+def load_coords() -> dict:
+    """Вкладка «Кординаты»: name / latitude / longitude -> {нормализованное имя: (lat, lon)}.
+    Явно неверные координаты (вне Узбекистана, например долгота = широта) пропускаются."""
+    sheet = _client().open_by_key(ARCHIVE_SHEET_ID)
+    sheets = sheet.worksheets()
+    ws = (next((w for w in sheets if str(w.id) == COORDS_GID), None)
+          or next((w for w in sheets if "ордина" in w.title.lower()), None))
+    if ws is None:
+        raise ValueError("Не найдена вкладка с координатами («Кординаты»).")
+    rows = ws.get_all_values()
+    head = [" ".join(h.split()).lower() for h in rows[0]]
+
+    def col(keys, default):
+        for i, h in enumerate(head):
+            if any(k in h for k in keys):
+                return i
+        return default
+
+    i_name = col(["name", "назван"], 0)
+    i_lat = col(["latitude", "широт", "lat"], 3)
+    i_lon = col(["longitude", "долгот", "lon"], 4)
+
+    def num(s):
+        try:
+            return float(str(s).replace(",", ".").replace(" ", ""))
+        except ValueError:
+            return None
+
+    out = {}
+    for r in rows[1:]:
+        if len(r) <= max(i_name, i_lat, i_lon):
+            continue
+        name, lat, lon = r[i_name].strip(), num(r[i_lat]), num(r[i_lon])
+        if not name or lat is None or lon is None:
+            continue
+        if not (35 <= lat <= 46 and 55 <= lon <= 75):
+            continue
+        out[norm_store(name)] = (lat, lon)
+    return out
 
 
 def split_routing(frame: pd.DataFrame):
@@ -519,24 +567,72 @@ def machine_meta(m: dict) -> str:
     return f"{n(m['qty'])} шт · точек: {len(m['stores'])}" + (" · ⚠ выше лимита" if m.get("over") else "")
 
 
-def machine_chips(m: dict) -> str:
+# ── маршруты на картах: точки в том порядке, как стоят в машине ──
+def _chunks(pts: list) -> list:
+    """Делит точки на куски до 10 (лимит ссылок карт). Возвращает [(origin|None, [точки])]."""
+    res = [(None, pts[:10])]
+    s = 9
+    while s < len(pts) - 1:
+        res.append((pts[s], pts[s + 1:s + 10]))
+        s += 9
+    return res
+
+
+def gmaps_url(origin, pts: list) -> str:
+    url = f"https://www.google.com/maps/dir/?api=1&travelmode=driving&destination={pts[-1]}"
+    if origin:
+        url += f"&origin={origin}"
+    if len(pts) > 1:
+        url += "&waypoints=" + "%7C".join(pts[:-1])
+    return url
+
+
+def ymaps_url(origin, pts: list) -> str:
+    # пустая первая точка = «от моего местоположения»
+    return "https://yandex.ru/maps/?rtt=auto&rtext=" + "~".join([origin or ""] + pts)
+
+
+def map_buttons(m: dict, coords: dict) -> str:
+    pts, missing = [], []
+    for s_ in m["stores"]:
+        c = coords.get(norm_store(s_["shop"]))
+        if c:
+            pts.append(f"{c[0]:.6f},{c[1]:.6f}")
+        else:
+            missing.append(s_["shop"])
+    out = ""
+    if pts:
+        parts = _chunks(pts)
+        many = len(parts) > 1
+        links = []
+        for name, fn in (("Google Maps", gmaps_url), ("Яндекс Карты", ymaps_url)):
+            for i, (origin, chunk) in enumerate(parts, 1):
+                label = f"{name} {i}" if many else name
+                links.append(f"<a class='mapbtn' href='{fn(origin, chunk)}' target='_blank' "
+                             f"rel='noopener noreferrer'>{label}</a>")
+        out += f"<span class='maps'>{''.join(links)}</span>"
+    if missing:
+        out += f"<span class='chip wait'>нет координат: {esc(', '.join(missing))}</span>"
+    return out
+
+
+def machine_chips(m: dict, coords: dict = None) -> str:
     pct = round(m["qty"] / m["target"] * 100) if m["target"] else 0
     hi = " hi" if pct > 115 else ""
     chips = (f"<span class='chip'><b>{n(m['qty'])}</b> шт</span>"
              f"<span class='chip'>Точек <b>{len(m['stores'])}</b></span>")
-    if m["time"] is not None:
-        chips += f"<span class='chip'>🕐 {hhmm(m['time'])}</span>"
     if m.get("over"):
         chips += "<span class='chip wait'>⚠ выше лимита</span>"
+    extra = map_buttons(m, coords) if coords else ""
     return (f"<div class='chips'>{chips}<span class='load{hi}'><i style='width:{min(pct, 100)}%'></i></span>"
-            f"<span class='loadpct'>{pct}%</span></div>")
+            f"<span class='loadpct'>{pct}%</span>{extra}</div>")
 
 
-def trips_table(machines: list) -> str:
+def trips_table(machines: list, coords: dict = None) -> str:
     parts = []
     for m in machines:
         parts.append(f"<tr class='car'><td class='carname'>{ordinal(m['n'])}</td>"
-                     f"<td class='carmeta' colspan='2'>{machine_chips(m)}</td></tr>"
+                     f"<td class='carmeta' colspan='2'>{machine_chips(m, coords)}</td></tr>"
                      "<tr class='band thin'><td colspan='3'></td></tr>")
         for s_ in m["stores"]:
             parts.append(f"<tr class='{'hot' if s_['hot'] else ''}'><td class='shop'>{esc(s_['shop'])}</td>"
@@ -958,7 +1054,7 @@ if page == PAGES[1]:
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
     elif mode == "Рейсы":
         st.markdown('<div class="note">⚠️ <b>Это пример маршрутизации, а не факт.</b> Точки разложены по машинам '
-                    'по средним показателям, реальные рейсы могут отличаться.</div>',
+                    'по средним показателям прошлых отгрузок (архив), реальные рейсы могут отличаться.</div>',
                     unsafe_allow_html=True)
         st.number_input("Лимит штук на одну машину (0 — без лимита)", min_value=0, step=100, key="trip_limit",
                         help="Сумма штук в одной машине не превысит это число.")
@@ -984,6 +1080,11 @@ if page == PAGES[1]:
                     st.info("Нет заказов для расчёта.")
                 else:
                     machines = plan_trips(pivot, stats, limit)
+                    coords = {}
+                    try:
+                        coords = load_coords()
+                    except Exception as e:
+                        st.caption(f"Кнопки карт недоступны: не удалось прочитать координаты ({e}).")
                     if limit:
                         big = pivot[pivot["Штук"] > limit]
                         if len(big):
@@ -998,7 +1099,7 @@ if page == PAGES[1]:
                     xl_button("⬇️ Скачать рейсы в Excel (пример)",
                               lambda: trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}", limit),
                               f"reisy_primer_{st.session_state.f_date:%Y-%m-%d}.xlsx", "dl_trips")
-                    st.markdown(trips_table(machines), unsafe_allow_html=True)
+                    st.markdown(trips_table(machines, coords), unsafe_allow_html=True)
     else:
         if mode == "Не собрано":
             sub = sub[~sub["Собран"]]
