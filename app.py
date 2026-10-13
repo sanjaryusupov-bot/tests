@@ -684,7 +684,7 @@ DEADLINE_JS = """
 def deadline_bar(left_orders: int, left_pcs: int, all_done: bool):
     """Фиксированная панель внизу: обратный отсчёт до 17:00 (Ташкент). Цвет: до 12:00 зелёный,
     12:00–16:00 жёлтый, после 16:00 красный. Если всё отгружено — зелёная плашка без отсчёта."""
-    right = "" if all_done else f"Осталось отгрузить: {n(left_orders)} зак. · {n(left_pcs)} шт"
+    right = ""
     markup = (f"<div id='dl-bar' class='dl g'><div class='dl-l' id='dl-label'></div>"
               f"<div class='dl-t' id='dl-time'>--:--:--</div><div class='dl-r'>{esc(right)}</div></div>")
     js = DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
