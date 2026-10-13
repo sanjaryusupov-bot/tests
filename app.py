@@ -32,15 +32,25 @@ EXCLUDE_STORES = [
 ]
 
 ALL = "all"   # «все даты» в выпадающем списке
+# Архив отгрузок: по нему считаем, сколько штук в среднем уезжало на каждой машине
+ARCHIVE_SHEET_ID = "1hKZ8ggNLW-OY1bV8xAW7PKl50Fof2co86oxGK92YPAA"
+ARCHIVE_GID = "2106470004"
+ARCHIVE_TAB = "Архив"
+ARCHIVE_FROM = date(2026, 10, 1)
+MODES = ["Все", "Не собрано", "Собрано", "Маршрутизация", "Рейсы"]
+ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
+
 PAGES = ["Сводка по дням", "Заказы", "Поиск заказа"]
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 LIGHT = dict(scheme="light", ink="#14232E", paper="#EEF2F5", card="#FFFFFF", line="#D9E1E7",
              mute="#667985", done="#0F8B8D", left="#E8A33D", track="#E3EAEE", head="#DCE8F2",
-             ok_bg="#D6F0EF", ok_fg="#09595A", no_bg="#FBEBCF", no_fg="#7A4E05")
+             ok_bg="#D6F0EF", ok_fg="#09595A", no_bg="#FBEBCF", no_fg="#7A4E05",
+             car_bg="#FFE94A", car_fg="#14232E", band="#1565C0", hot_bg="#FBEFD2", note_bg="#FFF4D6")
 DARK = dict(scheme="dark", ink="#E6EEF3", paper="#0E1820", card="#16242E", line="#2A3B47",
             mute="#8CA1AF", done="#2FB8BA", left="#F2B65A", track="#243642", head="#1F3342",
-            ok_bg="#12393B", ok_fg="#8FE3E4", no_bg="#3D2E12", no_fg="#F5C77E")
+            ok_bg="#12393B", ok_fg="#8FE3E4", no_bg="#3D2E12", no_fg="#F5C77E",
+            car_bg="#E5C93A", car_fg="#14232E", band="#1F5FA8", hot_bg="#3A2E16", note_bg="#3A2E16")
 
 st.set_page_config(page_title="Сборка заказов", page_icon="📦", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -137,19 +147,35 @@ table.tbl { border-collapse:collapse; width:100%; font-size:.85rem; color:$ink; 
 .hit { background:$card; border:1px solid $line; border-radius:12px; padding:12px 14px; margin-bottom:8px; color:$ink; }
 .hit .n { font-weight:800; font-size:1.05rem; }
 .hit .s { color:$mute; font-size:.85rem; margin:2px 0 8px; }
+.note { background:$note_bg; border-left:5px solid $left; border-radius:10px; padding:10px 14px; margin:4px 0 10px; font-size:.9rem; color:$ink; }
+.cars-wrap { overflow-x:auto; border:1px solid $line; border-radius:12px; background:$card; }
+table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink; }
+.cars td { padding:6px 10px; vertical-align:top; color:$ink; border-top:1px solid $line; }
+.cars tr.car td { border-top:none; }
+.cars td.carname { background:$car_bg; color:$car_fg; font-weight:800; white-space:nowrap; width:1%; }
+.cars td.carmeta { color:$mute; font-size:.8rem; vertical-align:middle; }
+.cars tr.band td { background:$band; padding:0; height:12px; border:none; }
+.cars tr.band.thin td { height:7px; }
+.cars tr.hot td { background:$hot_bg; font-weight:700; }
+.cars td.shop { font-weight:800; white-space:nowrap; }
+.cars td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 </style>
 """)
 st.markdown(CSS.safe_substitute(P), unsafe_allow_html=True)
 
 
 # ───────────────────────── Данные ─────────────────────────
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Загружаю таблицу…")
-def load() -> pd.DataFrame:
+def _client():
     creds = Credentials.from_service_account_info(
         dict(st.secrets["gcp_service_account"]),
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
     )
-    sheet = gspread.authorize(creds).open_by_key(SHEET_ID)
+    return gspread.authorize(creds)
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Загружаю таблицу…")
+def load() -> pd.DataFrame:
+    sheet = _client().open_by_key(SHEET_ID)
     ws = next(w for w in sheet.worksheets() if str(w.id) == GID)
     rows = ws.get_all_values()
     head = [(h.strip() or f"col{i}") for i, h in enumerate(rows[0])]
@@ -184,6 +210,15 @@ def load() -> pd.DataFrame:
     })
     df["Собран"] = df["Сборка"].str.lower().str.contains("в сборке")
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner="Читаю архив отгрузок…")
+def load_archive_stats() -> dict:
+    sheet = _client().open_by_key(ARCHIVE_SHEET_ID)
+    ws = next((w for w in sheet.worksheets() if str(w.id) == ARCHIVE_GID), None) or sheet.worksheet(ARCHIVE_TAB)
+    rows = ws.get_all_values()
+    head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
+    return archive_stats(pd.DataFrame(rows[1:], columns=head, dtype=str).fillna(""))
 
 
 def fmt_date(d: date) -> str:
@@ -225,6 +260,178 @@ def split_routing(frame: pd.DataFrame):
     g = (keep.groupby(["Город", "Магазин", "Адрес"], as_index=False)["Штук"].sum()
          .sort_values(["Город", "Магазин", "Адрес"]).reset_index(drop=True))
     return g, dropped
+
+
+def archive_stats(raw: pd.DataFrame) -> dict:
+    """Средние по архиву: сколько штук / точек / во сколько уезжала машина №1, №2, … и к какой машине
+    обычно относится магазин. Машина = рейс внутри дня (по времени фактической отгрузки)."""
+    raw = raw.copy()
+    raw.columns = [" ".join(str(c).split()) for c in raw.columns]
+
+    def find(*keys):
+        return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
+
+    c_shop, c_qty, c_trip = find("название"), find("кол-во"), find("рейс")
+    c_stat, c_fact = find("статус"), find("факт")
+    if not all([c_shop, c_qty, c_trip, c_fact]):
+        raise ValueError("В архиве не найдены колонки: название магазина, кол-во штук, рейс, дата отгрузки факт.")
+
+    d = pd.DataFrame({
+        "shop": raw[c_shop].str.strip(),
+        "qty": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0),
+        "trip": raw[c_trip].str.strip(),
+        "fact": pd.to_datetime(raw[c_fact].str.strip(), format="%d.%m.%Y %H:%M", errors="coerce"),
+    })
+    if c_stat:
+        d["status"] = raw[c_stat].str.strip().str.upper()
+    d = d[d["fact"].notna() & (d["trip"] != "")]
+    d = d[d["fact"].dt.date >= ARCHIVE_FROM]
+    if c_stat:
+        shipped = d[d["status"] == "ОТГРУЖЕН"]
+        d = shipped if not shipped.empty else d
+    if d.empty:
+        raise ValueError(f"В архиве нет отгрузок с {ARCHIVE_FROM:%d.%m.%Y}.")
+
+    d["day"] = d["fact"].dt.date
+    trips = (d.groupby(["day", "trip"]).agg(qty=("qty", "sum"), stores=("shop", "nunique"), t=("fact", "min"))
+             .reset_index())
+    trips["tn"] = pd.to_numeric(trips["trip"], errors="coerce").fillna(999)
+    trips = trips.sort_values(["day", "t", "tn"])
+    trips["k"] = trips.groupby("day").cumcount() + 1          # какая по счёту машина в этот день
+    trips["min"] = trips["t"].dt.hour * 60 + trips["t"].dt.minute
+    by_k = trips.groupby("k").agg(qty=("qty", "mean"), stores=("stores", "mean"), time=("min", "mean"))
+
+    d = d.merge(trips[["day", "trip", "k"]], on=["day", "trip"])
+    d["key"] = d["shop"].map(norm_store)
+    return dict(
+        qty={int(k): float(v) for k, v in by_k["qty"].items()},
+        stores={int(k): float(v) for k, v in by_k["stores"].items()},
+        time={int(k): float(v) for k, v in by_k["time"].items()},
+        rank={k: float(v) for k, v in d.groupby("key")["k"].mean().items()},
+        avg_all=float(trips["qty"].mean()),
+        n_days=int(trips["day"].nunique()),
+        date_from=trips["day"].min(), date_to=trips["day"].max(),
+    )
+
+
+def hhmm(minutes: float) -> str:
+    m = int(round(minutes))
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def deadline_minutes(addr: str):
+    m = re.search(r"\bдо\s*(\d{1,2})[:.](\d{2})", str(addr).lower())
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def ordinal(k: int) -> str:
+    return f"{ORDINALS[k - 1]} машина" if k <= len(ORDINALS) else f"{k}-я машина"
+
+
+def plan_trips(pivot: pd.DataFrame, stats: dict) -> list:
+    """Пример раскладки точек по машинам: магазины идут в том порядке, как их обычно развозили
+    (по архиву), и набираются, пока машина не достигнет среднего объёма для её номера."""
+    def target(k):
+        return stats["qty"].get(k) or stats["avg_all"]
+
+    rows = []
+    for r in pivot.itertuples(index=False):
+        dl = deadline_minutes(r.Адрес)
+        hot = dl is not None and dl < 12 * 60                     # «ДО 09:45» и т.п. — срочные
+        rk = stats["rank"].get(norm_store(r.Магазин), 98.0)       # новых магазинов в архиве нет — в хвост
+        rows.append(dict(city=r.Город, shop=r.Магазин, addr=r.Адрес, qty=int(r.Штук),
+                         rk=min(rk, 1.0) if hot else rk, dl=dl, hot=hot))
+
+    cities = sorted({x["city"] for x in rows}, key=lambda c: (norm_store(c) != norm_store("Ташкент"), c))
+    machines = []
+    for city in cities:                                           # другой город — всегда отдельная машина
+        items = sorted((x for x in rows if x["city"] == city),
+                       key=lambda x: (x["rk"], x["dl"] if x["dl"] is not None else 9999, x["shop"]))
+        local, cur, cur_sum = [], [], 0
+        for it in items:
+            t = target(len(machines) + len(local) + 1)
+            if cur and (cur_sum >= t or (cur_sum + it["qty"] > t * 1.15 and cur_sum >= t * 0.6)):
+                local.append(cur)
+                cur, cur_sum = [], 0
+            cur.append(it)
+            cur_sum += it["qty"]
+        if cur:
+            local.append(cur)
+        if len(local) >= 2:                                       # маленький «хвост» присоединяем к предыдущей
+            last, prev = sum(x["qty"] for x in local[-1]), sum(x["qty"] for x in local[-2])
+            k_last = len(machines) + len(local)
+            if last < 0.35 * target(k_last) and prev + last <= 1.35 * target(k_last - 1):
+                local[-2] = local[-2] + local.pop()
+        machines.extend(local)
+
+    return [dict(n=i, stores=st_, qty=sum(x["qty"] for x in st_), target=target(i), time=stats["time"].get(i))
+            for i, st_ in enumerate(machines, 1)]
+
+
+def machine_meta(m: dict) -> str:
+    txt = f"{n(m['qty'])} шт · точек: {len(m['stores'])} · в среднем раньше ≈ {n(m['target'])} шт"
+    if m["time"] is not None:
+        txt += f" · обычно уезжает ≈ {hhmm(m['time'])}"
+    return txt
+
+
+def trips_table(machines: list) -> str:
+    parts = []
+    for m in machines:
+        parts.append(f"<tr class='car'><td class='carname'>{ordinal(m['n'])}</td>"
+                     f"<td class='carmeta' colspan='2'>{esc(machine_meta(m))}</td></tr>"
+                     "<tr class='band thin'><td colspan='3'></td></tr>")
+        for s_ in m["stores"]:
+            parts.append(f"<tr class='{'hot' if s_['hot'] else ''}'><td class='shop'>{esc(s_['shop'])}</td>"
+                         f"<td>{esc(s_['addr'])}</td><td class='num'>{n(s_['qty'])}</td></tr>")
+        parts.append("<tr class='band'><td colspan='3'></td></tr>")
+    return f"<div class='cars-wrap'><table class='cars'>{''.join(parts)}</table></div>"
+
+
+def trips_excel(machines: list, day_label: str) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Рейсы (пример)"
+    ws.append([f"ПРИМЕР маршрутизации на {day_label}. Это расчёт по средним значениям архива, а не факт."])
+    ws.merge_cells("A1:C1")
+    ws["A1"].font = Font(bold=True, color="C00000")
+    ws["A1"].alignment = Alignment(wrap_text=True, vertical="center")
+    ws.row_dimensions[1].height = 32
+    yellow, blue = PatternFill("solid", fgColor="FFEB3B"), PatternFill("solid", fgColor="1565C0")
+    hot_fill = PatternFill("solid", fgColor="FBEFD2")
+
+    def band(h):
+        ws.append([None, None, None])
+        for c in ws[ws.max_row]:
+            c.fill = blue
+        ws.row_dimensions[ws.max_row].height = h
+
+    for m in machines:
+        ws.append([ordinal(m["n"]), machine_meta(m), None])
+        ws.cell(row=ws.max_row, column=1).fill = yellow
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        band(6)
+        for s_ in m["stores"]:
+            ws.append([s_["shop"], s_["addr"], s_["qty"]])
+            row = ws.max_row
+            ws.cell(row=row, column=1).font = Font(bold=True)
+            ws.cell(row=row, column=3).number_format = "#,##0"
+            if s_["hot"]:
+                for c in ws[row]:
+                    c.fill = hot_fill
+                    c.font = Font(bold=True)
+        band(10)
+    ws.append(["Итого", None, sum(m["qty"] for m in machines)])
+    ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=3).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=3).number_format = "#,##0"
+    for col, w in zip("ABC", (24, 80, 12)):
+        ws.column_dimensions[col].width = w
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
 
 
 # ───────────────────────── Excel ─────────────────────────
@@ -423,7 +630,7 @@ if page == PAGES[0]:
 # ───────────────────────── 2. Заказы ─────────────────────────
 if page == PAGES[1]:
     st.selectbox("Дата отгрузки", [ALL] + dates, key="f_date", format_func=date_label)
-    st.segmented_control("Показать", ["Все", "Не собрано", "Собрано", "Маршрутизация"], key="f_mode")
+    st.segmented_control("Показать", MODES, key="f_mode")
     mode = st.session_state.f_mode or "Все"
 
     sub = df if st.session_state.f_date == ALL else df[df["Дата"] == st.session_state.f_date]
@@ -449,6 +656,43 @@ if page == PAGES[1]:
                 width="stretch",
             )
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
+    elif mode == "Рейсы":
+        st.markdown('<div class="note">⚠️ <b>Это пример маршрутизации, а не факт.</b> Точки разложены по машинам '
+                    'по средним показателям прошлых отгрузок (архив), реальные рейсы могут отличаться.</div>',
+                    unsafe_allow_html=True)
+        if st.session_state.f_date == ALL:
+            st.info("Выберите конкретную дату отгрузки: рейсы считаются на один день.")
+        else:
+            pivot, dropped = split_routing(sub)
+            try:
+                stats = load_archive_stats()
+            except Exception as e:
+                stats = None
+                mail = ""
+                try:
+                    mail = st.secrets["gcp_service_account"].get("client_email", "")
+                except Exception:
+                    pass
+                st.warning("Не удалось прочитать архив отгрузок. Откройте таблицу архива для почты сервисного "
+                           f"аккаунта {mail} (роль «Читатель»).")
+                st.caption(str(e))
+            if stats is not None:
+                if pivot.empty:
+                    st.info("Нет заказов для расчёта.")
+                else:
+                    machines = plan_trips(pivot, stats)
+                    st.caption(f"Расчёт по архиву {stats['date_from']:%d.%m}–{stats['date_to']:%d.%m.%Y} "
+                               f"({stats['n_days']} дн.): в среднем ≈ {n(stats['avg_all'])} шт на машину. "
+                               f"Здесь: машин {len(machines)}, точек {len(pivot)}, {n(pivot['Штук'].sum())} шт. "
+                               f"Не включены магазины: {', '.join(EXCLUDE_STORES)}.")
+                    st.download_button(
+                        "⬇️ Скачать рейсы в Excel (пример)",
+                        data=trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}"),
+                        file_name=f"reisy_primer_{st.session_state.f_date:%Y-%m-%d}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                    )
+                    st.markdown(trips_table(machines), unsafe_allow_html=True)
     else:
         if mode == "Не собрано":
             sub = sub[~sub["Собран"]]
