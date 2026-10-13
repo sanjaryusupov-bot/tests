@@ -173,23 +173,27 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .ship .bar { height:14px; margin:8px 0; }
 .ship .sh-m { font-size:.85rem; color:$mute; margin-bottom:8px; }
 .ship .sh-m b { color:$ink; }
+
+/* линия отгрузки с таймером внутри */
+.ship .bar.tm { height:32px; position:relative; margin:10px 0; }
+.ship .bar.tm > i { background-color:#1E9E5C;
+  background-image:linear-gradient(135deg, rgba(255,255,255,.25) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%);
+  background-size:32px 32px; animation:barmove 1s linear infinite; transition:background-color .6s; }
+.ship .bar.tm.y > i { background-color:#F2B705; }
+.ship .bar.tm.r > i { background-color:#D32F2F; }
+@keyframes barmove { from { background-position:0 0; } to { background-position:32px 0; } }
+.ship .bar.tm .bar-t { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:10px;
+  color:#fff; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  text-shadow:0 1px 3px rgba(0,0,0,.55); pointer-events:none; }
+.ship .bar.tm .bar-t small { font-size:.78rem; font-weight:700; opacity:.95; }
+
 .cars td.carmeta { vertical-align:middle; }
 .cars tr.band td { background:$band; padding:0; height:12px; border:none; }
 .cars tr.band.thin td { height:7px; }
 .cars tr.hot td { background:$hot_bg; font-weight:700; }
 .cars td.shop { font-weight:800; white-space:nowrap; }
 .cars td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.block-container { padding-bottom: 6.5rem; }
-.st-key-deadline { position:fixed; left:0; right:0; bottom:0; z-index:1000; }
-.dl { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
-      padding:10px 18px calc(10px + env(safe-area-inset-bottom, 0px)); color:#fff; font-family:'Manrope',sans-serif;
-      box-shadow:0 -4px 16px rgba(0,0,0,.2); }
-.dl.g { background:#1E9E5C; }
-.dl.y { background:#F2B705; color:#14232E; }
-.dl.r { background:#D32F2F; }
-.dl .dl-l { font-weight:700; font-size:.9rem; }
-.dl .dl-t { font-size:1.7rem; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:.02em; line-height:1.1; }
-.dl .dl-r { font-size:.82rem; opacity:.92; text-align:right; }
 </style>
 """)
 st.markdown(CSS.safe_substitute(P), unsafe_allow_html=True)
@@ -660,20 +664,24 @@ DEADLINE_JS = """
     var v = {}; fmt.formatToParts(new Date()).forEach(function (x) { v[x.type] = +x.value; });
     return (v.hour % 24) * 3600 + v.minute * 60 + v.second;
   }
+  function find(id) {
+    var el = document.getElementById(id);
+    if (!el) { try { el = window.parent.document.getElementById(id); } catch (e) {} }
+    return el;
+  }
   function tick() {
-    var bar = document.getElementById('dl-bar');
-    if (!bar) return;
-    var s = nowSec(), left = TARGET - s, cls, label, txt;
-    if (DONE) { cls = 'g'; label = 'Все заказы отгружены'; txt = '✓'; }
+    var bar = find('dl-bar'), box = find('dl-time');
+    if (!bar || !box) return;
+    var s = nowSec(), left = TARGET - s, cls, html;
+    if (DONE) { cls = 'g'; html = '✓ Все заказы отгружены'; }
     else {
       cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
       var a = Math.abs(left);
-      txt = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
-      label = left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл';
+      var t = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
+      html = '<small>' + (left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл') + '</small>' + t;
     }
-    bar.className = 'dl ' + cls;
-    document.getElementById('dl-label').textContent = label;
-    document.getElementById('dl-time').textContent = txt;
+    bar.className = 'bar tm ' + cls;
+    box.innerHTML = html;
   }
   tick();
   window.__dlTimer = setInterval(tick, 1000);
@@ -681,19 +689,15 @@ DEADLINE_JS = """
 """
 
 
-def deadline_bar(left_orders: int, left_pcs: int, all_done: bool):
-    """Фиксированная панель внизу: обратный отсчёт до 17:00 (Ташкент). Цвет: до 12:00 зелёный,
-    12:00–16:00 жёлтый, после 16:00 красный. Если всё отгружено — зелёная плашка без отсчёта."""
-    right = ""
-    markup = (f"<div id='dl-bar' class='dl g'><div class='dl-l' id='dl-label'></div>"
-              f"<div class='dl-t' id='dl-time'>--:--:--</div><div class='dl-r'>{esc(right)}</div></div>")
+def deadline_timer(all_done: bool):
+    """Скрипт таймера до 17:00 (Ташкент): пишет время внутрь линии в виджете «Отгрузка сегодня».
+    Цвет линии: до 12:00 зелёный, 12:00–16:00 жёлтый, после 16:00 красный."""
     js = DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
-    with st.container(key="deadline"):
-        try:
-            st.html(markup + f"<script>{js}</script>", unsafe_allow_javascript=True)
-        except TypeError:                                      # старая версия Streamlit без JS в st.html
-            import streamlit.components.v1 as components
-            components.html("<style>body{margin:0}</style>" + markup + f"<script>{js}</script>", height=64)
+    try:
+        st.html(f"<script>{js}</script>", unsafe_allow_javascript=True)
+    except TypeError:                                          # старая версия Streamlit без JS в st.html
+        import streamlit.components.v1 as components
+        components.html(f"<script>{js}</script>", height=0)
 
 
 # ───────────────────────── Загрузка и шапка ─────────────────────────
@@ -731,10 +735,6 @@ try:
 except Exception as e:                      # дашборд работает и без таблицы отгрузок
     ship_err = str(e)
 
-sm_today = None
-if ship is not None and not ship.empty and now.date() in set(ship["Дата"]):
-    sm_today = ship_summary(ship, now.date())
-
 # состояние фильтров (до создания виджетов)
 if st.session_state.get("f_date") not in [ALL] + dates:
     st.session_state.pop("f_date", None)
@@ -757,10 +757,16 @@ if page == PAGES[0]:
         sd = pick_ship_date(ship, now.date())
         sm = ship_summary(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
+        is_today = (sd == now.date()) and sm["total"] > 0
+        if is_today:   # анимированная линия, внутри неё таймер до 17:00
+            bar_html = (f'<div class="bar tm g" id="dl-bar"><i style="width:{pct_ship}%"></i>'
+                        f'<span class="bar-t" id="dl-time">--:--:--</span></div>')
+        else:
+            bar_html = f'<div class="bar"><i style="width:{pct_ship}%"></i></div>'
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
           <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small></div><div class="sh-p">{pct_ship}%</div></div>
-          <div class="bar"><i style="width:{pct_ship}%"></i></div>
+          {bar_html}
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
@@ -768,6 +774,8 @@ if page == PAGES[0]:
             tap("ship", ship_html, go_orders, ("Все", sd))
         else:
             st.markdown(ship_html, unsafe_allow_html=True)
+        if is_today:
+            deadline_timer(sm["done"] >= sm["total"])
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
@@ -908,8 +916,3 @@ if page == PAGES[2]:
                             unsafe_allow_html=True)
     else:
         st.info("Введите номер заказа или его часть.")
-
-# ───────────────────────── Таймер до 17:00 (внизу на всех страницах) ─────────────────────────
-if sm_today and sm_today["total"] > 0:
-    deadline_bar(sm_today["total"] - sm_today["done"], sm_today["pcs"] - sm_today["pcs_done"],
-                 sm_today["done"] >= sm_today["total"])
