@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 
 # ───────────────────────── Настройки ─────────────────────────
@@ -115,6 +116,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-s
 [class*="st-key-tap_"] [data-testid="stButton"] { width:100%; height:100%; display:block; }
 [class*="st-key-tap_"] button { display:block; width:100%; height:100%; min-height:0; opacity:0; cursor:pointer; padding:0; }
 [class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$done; }
+[class*="st-key-tap_"] iframe { display:block; border:0; }
 
 .kpi { background:$card; border:1px solid $line; border-radius:14px; padding:14px 16px; min-height:112px; }
 .kpi .v { font-size:2.1rem; font-weight:800; letter-spacing:-0.02em; line-height:1.1; color:$ink; }
@@ -185,21 +187,6 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .ship .bar { height:14px; margin:8px 0; }
 .ship .sh-m { font-size:.85rem; color:$mute; margin-bottom:8px; }
 .ship .sh-m b { color:$ink; }
-
-/* линия отгрузки с таймером внутри */
-.ship .bar.tm { height:32px; position:relative; margin:10px 0; }
-.ship .bar.tm > i { background-color:#1E9E5C;
-  background-image:linear-gradient(135deg, rgba(255,255,255,.25) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%);
-  background-size:32px 32px; animation:barmove 1s linear infinite; transition:background-color .6s; }
-.ship .bar.tm.y > i { background-color:#F2B705; }
-.ship .bar.tm.r > i { background-color:#D32F2F; }
-@keyframes barmove { from { background-position:0 0; } to { background-position:32px 0; } }
-.ship .bar.tm .bar-t { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:10px;
-  color:#fff; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
-  text-shadow:0 1px 3px rgba(0,0,0,.55); pointer-events:none; }
-.ship .bar.tm .bar-t small { font-size:.78rem; font-weight:700; opacity:.95; }
-
 .cars td.carmeta { vertical-align:middle; }
 .cars tr.band td { background:$band; padding:0; height:12px; border:none; }
 .cars tr.band.thin td { height:7px; }
@@ -650,21 +637,14 @@ def routing_excel(g: pd.DataFrame) -> bytes:
 
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
-def render_card(card_html: str, js: str = ""):
-    """Карточка через st.markdown, а если нужен скрипт (таймер) — через st.html, где скрипты работают."""
-    if js:
-        try:
-            st.html(card_html + f"<script>{js}</script>", unsafe_allow_javascript=True)
-            return
-        except TypeError:                                      # старая версия Streamlit без JS в st.html
-            pass
-    st.markdown(card_html, unsafe_allow_html=True)
-
-
-def tap(key: str, card_html: str, on_click, args=(), js: str = ""):
-    """Карточка, на которую можно нажать (поверх неё невидимая кнопка)."""
+def tap(key: str, card_html: str, on_click, args=(), iframe=None):
+    """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
+    iframe=(документ, высота) — карточка рисуется в отдельном блоке, где работают скрипты (таймер)."""
     with st.container(key=f"tap_{key}"):
-        render_card(card_html, js)
+        if iframe:
+            components.html(iframe[0], height=iframe[1])
+        else:
+            st.markdown(card_html, unsafe_allow_html=True)
         st.button("открыть", key=f"btn_{key}", on_click=on_click, args=args)
 
 
@@ -707,10 +687,40 @@ def routing_table(g: pd.DataFrame) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
-DEADLINE_JS = """
+# ── карточка «Отгрузка сегодня» с живым таймером (отдельный документ со своими стилями и скриптом) ──
+SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+html, body { margin:0; padding:0; background:transparent; font-family:'Manrope', sans-serif; color:$ink; }
+.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:14px;
+        padding:14px 16px; margin:0 0 12px; box-sizing:border-box; }
+.sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+.sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
+.sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
+.sh-p { font-weight:800; font-size:1.7rem; letter-spacing:-0.02em; color:$ink; }
+.bar { height:32px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:10px 0; }
+.bar > i { display:block; height:100%; border-radius:99px; background-color:#1E9E5C;
+  background-image:linear-gradient(135deg, rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.28) 50%, rgba(255,255,255,.28) 75%, transparent 75%);
+  background-size:32px 32px; animation:move 1s linear infinite; transition:background-color .6s; }
+.bar.y > i { background-color:#F2B705; }
+.bar.r > i { background-color:#D32F2F; }
+@keyframes move { from { background-position:0 0; } to { background-position:32px 0; } }
+.bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
+  gap:10px; color:#fff; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  text-shadow:0 1px 3px rgba(0,0,0,.6); }
+.bar-t small { font-size:.78rem; font-weight:700; }
+.sh-m { font-size:.85rem; color:$mute; }
+.sh-m b { color:$ink; }
+</style></head><body>
+<div class="ship">
+  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <small>$date</small></div><div class="sh-p">$pct%</div></div>
+  <div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div>
+  <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
+</div>
+<script>
 (function () {
-  if (window.__dlTimer) clearInterval(window.__dlTimer);
-  var DONE = __DONE__, TARGET = 17 * 3600;
+  var DONE = $all_done, TARGET = 17 * 3600;
   var fmt = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit',
                                                second: '2-digit', hour12: false});
   function pad(x) { return (x < 10 ? '0' : '') + x; }
@@ -720,28 +730,30 @@ DEADLINE_JS = """
   }
   function tick() {
     var bar = document.getElementById('dl-bar'), box = document.getElementById('dl-time');
-    if (!bar || !box) return;
-    var s = nowSec(), left = TARGET - s, cls, html;
-    if (DONE) { cls = 'g'; html = '✓ Все заказы отгружены'; }
+    var s = nowSec(), left = TARGET - s, cls, h;
+    if (DONE) { cls = 'g'; h = '✓ Все заказы отгружены'; }
     else {
       cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
       var a = Math.abs(left);
       var t = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
-      html = '<small>' + (left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл') + '</small>' + t;
+      h = '<small>' + (left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл') + '</small>' + t;
     }
-    bar.className = 'bar tm ' + cls;
-    box.innerHTML = html;
+    bar.className = 'bar ' + cls;
+    box.innerHTML = h;
   }
   tick();
-  window.__dlTimer = setInterval(tick, 1000);
+  setInterval(tick, 1000);
 })();
-"""
+</script></body></html>""")
 
 
-def deadline_js(all_done: bool) -> str:
-    """Таймер до 17:00 (Ташкент) внутри линии виджета «Отгрузка сегодня».
-    Цвет линии: до 12:00 зелёный, 12:00–16:00 жёлтый, после 16:00 красный."""
-    return DEADLINE_JS.replace("__DONE__", "true" if all_done else "false")
+def ship_doc(d: date, pct: int, sm: dict) -> str:
+    vals = dict(P)
+    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct,
+                done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
+                left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
+                all_done="true" if sm["done"] >= sm["total"] else "false")
+    return SHIP_DOC.safe_substitute(vals)
 
 
 # ── пустые короба ──
@@ -822,23 +834,20 @@ if page == PAGES[0]:
         sm = ship_summary(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
-        if is_today:   # анимированная линия, внутри неё таймер до 17:00
-            bar_html = (f'<div class="bar tm g" id="dl-bar"><i style="width:{pct_ship}%"></i>'
-                        f'<span class="bar-t" id="dl-time">--:--:--</span></div>')
-        else:
-            bar_html = f'<div class="bar"><i style="width:{pct_ship}%"></i></div>'
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
           <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small></div><div class="sh-p">{pct_ship}%</div></div>
-          {bar_html}
+          <div class="bar"><i style="width:{pct_ship}%"></i></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
-        js = deadline_js(sm["done"] >= sm["total"]) if is_today else ""
+        frame = (ship_doc(sd, pct_ship, sm), 168) if is_today else None   # сегодня: анимированная линия + таймер
         if sd in dates:
-            tap("ship", ship_html, go_orders, ("Все", sd), js=js)
+            tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
+        elif frame:
+            components.html(frame[0], height=frame[1])
         else:
-            render_card(ship_html, js)
+            st.markdown(ship_html, unsafe_allow_html=True)
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
