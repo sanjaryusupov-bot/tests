@@ -338,8 +338,8 @@ def load_boxes() -> pd.DataFrame:
     return d
 
 
-def fmt_date(d: date) -> str:
-    return d.strftime("%d.%m")
+def fmt_date(d) -> str:
+    return d.strftime("%d.%m") if pd.notna(d) and d is not None else "—"
 
 
 def n(x) -> str:
@@ -839,7 +839,9 @@ def toggle_theme():
     st.session_state.dark = not st.session_state.dark
 
 
-def badge(collected: bool) -> str:
+def badge(collected: bool, new: bool = False) -> str:
+    if new:
+        return '<span class="badge no">не маршрутизирован</span>'
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
@@ -850,7 +852,8 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500) -> str:
     for r in frame.head(limit).to_dict("records"):
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
-            f"<td>{esc(r['Город'])}</td><td class='num'>{n(r['Штук'])}</td><td>{badge(r['Собран'])}</td>"
+            f"<td>{esc(r['Город'] or '—')}</td><td class='num'>{n(r['Штук'])}</td>"
+            f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
@@ -983,6 +986,7 @@ if df.empty:
     st.info("В таблице нет заказов.")
     st.stop()
 
+df["Новый"] = False
 summary = day_summary(df)
 dates = list(summary.index)
 
@@ -1002,11 +1006,17 @@ except Exception as e:                      # дашборд работает и
 new_cnt = len(new_orders)
 new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
 
+# общий список для страницы «Заказы»: обычные + новые (не собраны, статус «не маршрутизирован»)
+new_rows = (new_orders.rename(columns={"Статус": "Статус WMS"})
+            .assign(Адрес="", Город="", Сборка="", Собран=False, Новый=True))
+df_all = pd.concat([df, new_rows], ignore_index=True)
+all_dates = sorted(set(dates) | {x for x in new_orders["Дата"] if pd.notna(x)})
+
 # состояние фильтров (до создания виджетов)
-if st.session_state.get("f_date") not in [ALL] + dates:
+if st.session_state.get("f_date") not in [ALL] + all_dates:
     st.session_state.pop("f_date", None)
 if "f_date" not in st.session_state:
-    st.session_state.f_date = next((x for x in dates if x >= now.date()), dates[-1])
+    st.session_state.f_date = next((x for x in all_dates if x >= now.date()), all_dates[-1])
 st.session_state.setdefault("f_mode", "Все")
 st.session_state.setdefault("page", PAGES[0])
 st.session_state.setdefault("trip_limit", 0)
@@ -1048,8 +1058,8 @@ if page == PAGES[0]:
         tap("all", f"""<div class="kpi all" title="Открыть список всех заказов"><div class="v">{n(total)}</div>
         <div class="l">всего заказов</div><div class="s">{n(pcs_total)} шт</div></div>""", go_orders, ("Все", ALL))
     with k2:
-        tap("left", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(left)}</div>
-        <div class="l">не собрано заказов</div><div class="s">из {n(total)}</div></div>""", go_orders, ("Не собрано", ALL))
+        tap("left", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(left + new_cnt)}</div>
+        <div class="l">не собрано заказов</div><div class="s">из {n(total + new_cnt)}</div></div>""", go_orders, ("Не собрано", ALL))
     with k3:
         new_note = f" · в т.ч. {n(new_pcs)} шт не маршрутизировано" if new_pcs else ""
         tap("pcs", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(pcs_left)}</div>
@@ -1057,34 +1067,27 @@ if page == PAGES[0]:
             go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
-    # ── виджет «Новые заказы (не маршрутизированы)» ──
+    # ── новые заказы по датам доставки: нажатие открывает список «Не собрано» на эту дату ──
     if new_err:
         st.caption(f"Новые заказы недоступны: {new_err}")
     elif new_cnt:
-        st.markdown("<div class='sec'>Новые заказы · не маршрутизированы</div>", unsafe_allow_html=True)
-        w1, w2 = st.columns(2)
-        with w1:
-            st.markdown(kpi_box(n(new_cnt), "новых заказов", "не маршрутизировано", "left"), unsafe_allow_html=True)
-        with w2:
-            st.markdown(kpi_box(n(new_pcs), "шт в новых заказах", "входят в бэклог", "left"), unsafe_allow_html=True)
-
-        nd = (new_orders.assign(_k=new_orders["Дата"].map(lambda x: x if pd.notna(x) else None))
-              .groupby("_k", dropna=False)
-              .agg(Заказов=("Заказ", "count"), Штук=("Штук", "sum")).reset_index())
-        nd["_s"] = nd["_k"].map(lambda x: (1, date.max) if x is None or pd.isna(x) else (0, x))
-        nd = nd.sort_values("_s").reset_index(drop=True)
-        for r in nd.itertuples(index=False):
-            dt = r._0 if hasattr(r, "_0") else None
-            dt = r[0]
-            if dt is None or pd.isna(dt):
-                d_html, w_html = "—<small>без даты</small>", ""
+        has_date = new_orders["Дата"].map(pd.notna)
+        groups = [(d_, g_) for d_, g_ in new_orders[has_date].groupby("Дата")]
+        groups.sort(key=lambda x: x[0])
+        if (~has_date).any():
+            groups.append((None, new_orders[~has_date]))
+        for d_, g_ in groups:
+            if d_ is None:
+                d_html, key, target = "—<small>без даты</small>", "new_none", ALL
             else:
-                d_html = f"{fmt_date(dt)}<small>{WEEKDAYS[dt.weekday()]}, {dt:%Y}</small>"
-            st.markdown(f"""<div class="day">
+                d_html = f"{fmt_date(d_)}<small>{WEEKDAYS[d_.weekday()]}, {d_:%Y}</small>"
+                key, target = f"new_{d_:%Y%m%d}", d_
+            tap(key, f"""<div class="day">
               <div class="d">{d_html}</div>
               <div class="mid"><span class="badge no">не маршрутизировано</span>
-              <div class="meta">заказов <b>{n(r.Заказов)}</b> · <b>{n(r.Штук)}</b> шт</div></div>
-              <div class="pct">{n(r.Штук)}<small>шт</small></div></div>""", unsafe_allow_html=True)
+              <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div></div>
+              <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div></div>""",
+                go_orders, ("Не собрано", target))
 
     xl_button("⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
               lambda: backlog_excel(df, new_orders), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
@@ -1111,22 +1114,23 @@ if page == PAGES[0]:
 
 # ───────────────────────── 2. Заказы ─────────────────────────
 if page == PAGES[1]:
-    st.selectbox("Дата отгрузки", [ALL] + dates, key="f_date", format_func=date_label)
+    st.selectbox("Дата отгрузки", [ALL] + all_dates, key="f_date", format_func=date_label)
     st.segmented_control("Показать", MODES, key="f_mode")
     mode = st.session_state.f_mode or "Все"
 
-    sub = df if st.session_state.f_date == ALL else df[df["Дата"] == st.session_state.f_date]
+    sub = df_all if st.session_state.f_date == ALL else df_all[df_all["Дата"] == st.session_state.f_date]
+    sub_main = sub[~sub["Новый"]]           # для маршрутизации и рейсов — только маршрутизированные заказы
     done_pcs = int(sub.loc[sub["Собран"], "Штук"].sum())
     left_pcs = int(sub.loc[~sub["Собран"], "Штук"].sum())
     st.caption(f"За выбранную дату: собрано {n(done_pcs)} шт · осталось {n(left_pcs)} шт · "
                f"заказов {len(sub)} · всего {n(sub['Штук'].sum())} шт")
     if mode == "Маршрутизация":
         # сводная по выбранной дате: все заказы даты, без исключённых магазинов
-        pivot, dropped = split_routing(sub)
+        pivot, dropped = split_routing(sub_main)
         if pivot.empty:
             st.info("Нет заказов для сводной.")
         else:
-            st.caption(f"В сводной: {n(len(sub) - len(dropped))} заказов · {n(pivot['Штук'].sum())} шт · "
+            st.caption(f"В сводной: {n(len(sub_main) - len(dropped))} заказов · {n(pivot['Штук'].sum())} шт · "
                        f"точек: {len(pivot)}. Не включены магазины: {', '.join(EXCLUDE_STORES)}"
                        + (f" (исключено {n(len(dropped))} заказов, {n(dropped['Штук'].sum())} шт)." if len(dropped) else "."))
             label = "all" if st.session_state.f_date == ALL else f"{st.session_state.f_date:%Y-%m-%d}"
@@ -1143,7 +1147,7 @@ if page == PAGES[1]:
         if st.session_state.f_date == ALL:
             st.info("Выберите конкретную дату отгрузки: рейсы считаются на один день.")
         else:
-            pivot, dropped = split_routing(sub)
+            pivot, dropped = split_routing(sub_main)
             try:
                 stats = get_archive_stats()
             except Exception as e:
@@ -1187,7 +1191,8 @@ if page == PAGES[1]:
         elif mode == "Собрано":
             sub = sub[sub["Собран"]]
 
-        sub = sub.sort_values(["Дата", "Заказ"])
+        sub = (sub.assign(_d=sub["Дата"].map(lambda x: x if pd.notna(x) else date.max))
+               .sort_values(["_d", "Заказ"]).drop(columns="_d"))
         st.markdown(f"**{mode}: {len(sub)} заказов · {n(sub['Штук'].sum())} шт**")
         if sub.empty:
             st.info("Заказов нет.")
