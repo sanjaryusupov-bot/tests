@@ -20,6 +20,7 @@ from google.oauth2.service_account import Credentials
 # ───────────────────────── Настройки ─────────────────────────
 SHEET_ID = "12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw"
 GID = "1369918403"
+NEW_GID = "750257398"        # вкладка «Новые заказы» (не маршрутизированные)
 CACHE_SECONDS = 120          # как часто перечитывать таблицу
 TZ = ZoneInfo("Asia/Tashkent")
 HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию прячем дни с готовностью от этого процента
@@ -253,6 +254,41 @@ def load() -> pd.DataFrame:
     })
     df["Собран"] = df["Сборка"].str.lower().str.contains("в сборке")
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю новые заказы…")
+def load_new_orders() -> pd.DataFrame:
+    """Вкладка «Новые заказы» (не маршрутизированные):
+    Номер_заказа / Статус_заказа / Дата_доставки / Товаров_зарезервировано / Точка_доставки / Магазин."""
+    sheet = _client().open_by_key(SHEET_ID)
+    ws = next((w for w in sheet.worksheets() if str(w.id) == NEW_GID), None) \
+        or next((w for w in sheet.worksheets() if "новые" in w.title.lower()), None)
+    if ws is None:
+        raise ValueError("Не найдена вкладка «Новые заказы».")
+    rows = ws.get_all_values()
+    head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
+    raw = pd.DataFrame(rows[1:], columns=head, dtype=str).fillna("")
+
+    def find(*keys):
+        return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
+
+    c_order = find("номер") or find("заказ")
+    c_stat = find("статус")
+    c_date = find("дата")
+    c_qty = find("зарезерв") or find("товар") or find("кол-во")
+    c_shop = find("магазин")
+    if not all([c_order, c_date, c_qty]):
+        raise ValueError("Во вкладке «Новые заказы» не найдены колонки: номер заказа, дата доставки, товаров зарезервировано.")
+
+    raw = raw[raw[c_order].str.match(r"^\s*\w{1,3}-\d{4,}")].copy()
+    d = pd.DataFrame({
+        "Заказ": raw[c_order].str.strip(),
+        "Статус": raw[c_stat].str.strip() if c_stat else "",
+        "Дата": pd.to_datetime(raw[c_date].str.strip(), dayfirst=True, errors="coerce").dt.date,
+        "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
+        "Магазин": raw[c_shop].str.strip() if c_shop else "",
+    })
+    return d.drop_duplicates("Заказ").reset_index(drop=True)
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю отгрузки…")
@@ -691,10 +727,14 @@ def trips_excel(machines: list, day_label: str, limit: int = 0) -> bytes:
 
 
 # ───────────────────────── Excel ─────────────────────────
-def backlog_excel(frame: pd.DataFrame) -> bytes:
-    """Все несобранные заказы по датам: ДАТА и КОЛ-ВО (шт)."""
+def backlog_excel(frame: pd.DataFrame, extra: pd.DataFrame = None) -> bytes:
+    """Все несобранные заказы по датам: ДАТА и КОЛ-ВО (шт).
+    extra — новые (не маршрутизированные) заказы, их штуки добавляются в бэклог по датам."""
     from openpyxl.styles import Font
-    b = (frame[~frame["Собран"]].groupby("Дата")["Штук"].sum().reset_index()
+    parts = [frame.loc[~frame["Собран"], ["Дата", "Штук"]]]
+    if extra is not None and not extra.empty:
+        parts.append(extra.loc[extra["Дата"].notna(), ["Дата", "Штук"]])
+    b = (pd.concat(parts, ignore_index=True).groupby("Дата")["Штук"].sum().reset_index()
          .rename(columns={"Дата": "ДАТА", "Штук": "КОЛ-ВО"}).sort_values("ДАТА"))
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as xw:
@@ -952,6 +992,16 @@ try:
 except Exception as e:                      # дашборд работает и без таблицы отгрузок
     ship_err = str(e)
 
+# новые (не маршрутизированные) заказы; те, что уже есть в основной таблице, не считаем повторно
+new_orders, new_err = pd.DataFrame(columns=["Заказ", "Статус", "Дата", "Штук", "Магазин"]), ""
+try:
+    new_orders = load_new_orders()
+    new_orders = new_orders[~new_orders["Заказ"].isin(df["Заказ"])].reset_index(drop=True)
+except Exception as e:                      # дашборд работает и без вкладки «Новые заказы»
+    new_err = str(e)
+new_cnt = len(new_orders)
+new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
+
 # состояние фильтров (до создания виджетов)
 if st.session_state.get("f_date") not in [ALL] + dates:
     st.session_state.pop("f_date", None)
@@ -969,7 +1019,7 @@ if page == PAGES[0]:
     total = len(df)
     left = int((~df["Собран"]).sum())
     pcs_total = int(df["Штук"].sum())
-    pcs_left = int(df.loc[~df["Собран"], "Штук"].sum())
+    pcs_left = int(df.loc[~df["Собран"], "Штук"].sum()) + new_pcs      # бэклог = несобранное + новые не маршрутизированные
 
     if ship is not None and not ship.empty:
         sd = pick_ship_date(ship, now.date())
@@ -1001,12 +1051,43 @@ if page == PAGES[0]:
         tap("left", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(left)}</div>
         <div class="l">не собрано заказов</div><div class="s">из {n(total)}</div></div>""", go_orders, ("Не собрано", ALL))
     with k3:
+        new_note = f" · в т.ч. {n(new_pcs)} шт не маршрутизировано" if new_pcs else ""
         tap("pcs", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(pcs_left)}</div>
-        <div class="l">бэклог, шт</div><div class="s">из {n(pcs_total)} шт</div></div>""", go_orders, ("Не собрано", ALL))
+        <div class="l">бэклог, шт</div><div class="s">из {n(pcs_total + new_pcs)} шт{new_note}</div></div>""",
+            go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
+    # ── виджет «Новые заказы (не маршрутизированы)» ──
+    if new_err:
+        st.caption(f"Новые заказы недоступны: {new_err}")
+    elif new_cnt:
+        st.markdown("<div class='sec'>Новые заказы · не маршрутизированы</div>", unsafe_allow_html=True)
+        w1, w2 = st.columns(2)
+        with w1:
+            st.markdown(kpi_box(n(new_cnt), "новых заказов", "не маршрутизировано", "left"), unsafe_allow_html=True)
+        with w2:
+            st.markdown(kpi_box(n(new_pcs), "шт в новых заказах", "входят в бэклог", "left"), unsafe_allow_html=True)
+
+        nd = (new_orders.assign(_k=new_orders["Дата"].map(lambda x: x if pd.notna(x) else None))
+              .groupby("_k", dropna=False)
+              .agg(Заказов=("Заказ", "count"), Штук=("Штук", "sum")).reset_index())
+        nd["_s"] = nd["_k"].map(lambda x: (1, date.max) if x is None or pd.isna(x) else (0, x))
+        nd = nd.sort_values("_s").reset_index(drop=True)
+        for r in nd.itertuples(index=False):
+            dt = r._0 if hasattr(r, "_0") else None
+            dt = r[0]
+            if dt is None or pd.isna(dt):
+                d_html, w_html = "—<small>без даты</small>", ""
+            else:
+                d_html = f"{fmt_date(dt)}<small>{WEEKDAYS[dt.weekday()]}, {dt:%Y}</small>"
+            st.markdown(f"""<div class="day">
+              <div class="d">{d_html}</div>
+              <div class="mid"><span class="badge no">не маршрутизировано</span>
+              <div class="meta">заказов <b>{n(r.Заказов)}</b> · <b>{n(r.Штук)}</b> шт</div></div>
+              <div class="pct">{n(r.Штук)}<small>шт</small></div></div>""", unsafe_allow_html=True)
+
     xl_button("⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
-              lambda: backlog_excel(df), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
+              lambda: backlog_excel(df, new_orders), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
 
     show_all = st.toggle(f"Показать все дни (по умолчанию только дни с готовностью ниже {HIDE_FROM_DAYS_PCT}%)",
                          value=False)
