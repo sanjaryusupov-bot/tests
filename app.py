@@ -5,6 +5,7 @@
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl
 """
 import html
+import json
 import re
 from datetime import datetime, date
 from io import BytesIO
@@ -42,6 +43,10 @@ ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
 # Координаты магазинов (вкладка «Кординаты» в той же таблице)
 COORDS_GID = "1482916811"
+
+# Сохранение ручных рейсов: вкладка в основной таблице (нужен доступ «Редактор» для сервисного аккаунта)
+PLAN_TAB = "Рейсы_план"
+PLAN_FILE = "trip_plans.json"   # запасной вариант: файл на сервере
 
 # Пустые короба (ответы формы)
 BOXES_SHEET_ID = "1FZmR7vUXAWFBJgkrCHhM_y8LoAeSjutJLHZjTJRdYw4"
@@ -213,6 +218,15 @@ def _client():
     creds = Credentials.from_service_account_info(
         dict(st.secrets["gcp_service_account"]),
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    )
+    return gspread.authorize(creds)
+
+
+def _client_rw():
+    """Клиент с правом записи — только для сохранения ручных рейсов."""
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     return gspread.authorize(creds)
 
@@ -653,15 +667,18 @@ def map_buttons(m: dict, coords: dict) -> str:
 
 
 def machine_chips(m: dict, coords: dict = None) -> str:
-    pct = round(m["qty"] / m["target"] * 100) if m["target"] else 0
-    hi = " hi" if pct > 115 else ""
     chips = (f"<span class='chip'><b>{n(m['qty'])}</b> шт</span>"
              f"<span class='chip'>Точек <b>{len(m['stores'])}</b></span>")
     if m.get("over"):
         chips += "<span class='chip wait'>⚠ выше лимита</span>"
+    bar = ""
+    if m.get("target"):                                           # без лимита полоску загрузки не рисуем
+        pct = round(m["qty"] / m["target"] * 100)
+        hi = " hi" if pct > 115 else ""
+        bar = (f"<span class='load{hi}'><i style='width:{min(pct, 100)}%'></i></span>"
+               f"<span class='loadpct'>{pct}%</span>")
     extra = map_buttons(m, coords) if coords else ""
-    return (f"<div class='chips'>{chips}<span class='load{hi}'><i style='width:{min(pct, 100)}%'></i></span>"
-            f"<span class='loadpct'>{pct}%</span>{extra}</div>")
+    return f"<div class='chips'>{chips}{bar}{extra}</div>"
 
 
 def trips_table(machines: list, coords: dict = None) -> str:
@@ -677,18 +694,21 @@ def trips_table(machines: list, coords: dict = None) -> str:
     return f"<div class='cars-wrap'><table class='cars'>{''.join(parts)}</table></div>"
 
 
-def trips_excel(machines: list, day_label: str, limit: int = 0) -> bytes:
+def trips_excel(machines: list, day_label: str, limit: int = 0, example: bool = True) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     wb = Workbook()
     ws = wb.active
-    ws.title = "Рейсы (пример)"
-    note = f"ПРИМЕР маршрутизации на {day_label}. Это расчёт по средним значениям архива, а не факт."
+    ws.title = "Рейсы (пример)" if example else "Рейсы"
+    if example:
+        note = f"ПРИМЕР маршрутизации на {day_label}. Это расчёт по средним значениям архива, а не факт."
+    else:
+        note = f"Рейсы на {day_label} (собраны вручную)."
     if limit:
         note += f" Лимит на машину: {limit} шт."
     ws.append([note])
     ws.merge_cells("A1:C1")
-    ws["A1"].font = Font(bold=True, color="C00000")
+    ws["A1"].font = Font(bold=True, color="C00000" if example else "14232E")
     ws["A1"].alignment = Alignment(wrap_text=True, vertical="center")
     ws.row_dimensions[1].height = 32
     yellow, blue = PatternFill("solid", fgColor="FFEB3B"), PatternFill("solid", fgColor="1565C0")
@@ -960,6 +980,210 @@ def kpi_box(value, label, sub="", cls="ok") -> str:
             f"<div class='s'>{sub}</div></div>")
 
 
+# ───────────────────────── Ручные рейсы: хранение ─────────────────────────
+# plan = {"2026-10-15": {"1": ["Магазин А", "Магазин Б"], "2": [...]}, ...}
+def _plan_rows(plan: dict) -> list:
+    rows = [["Дата", "Машина", "Магазин"]]
+    for dk in sorted(plan):
+        for k in sorted(plan[dk], key=int):
+            shops = plan[dk][k]
+            if shops:
+                rows += [[dk, str(k), s] for s in shops]
+            else:
+                rows.append([dk, str(k), ""])
+    return rows
+
+
+def _plan_from_rows(rows: list) -> dict:
+    plan = {}
+    for r in rows[1:]:
+        if len(r) < 2 or not r[0].strip() or not r[1].strip().isdigit():
+            continue
+        dk, k = r[0].strip(), str(int(r[1].strip()))
+        s = r[2].strip() if len(r) > 2 else ""
+        lst = plan.setdefault(dk, {}).setdefault(k, [])
+        if s and s not in lst:
+            lst.append(s)
+    return plan
+
+
+def plan_load():
+    """Возвращает (plan, где_хранится): 'table' — вкладка в таблице, 'file' — файл на сервере, '' — пока нигде."""
+    try:
+        sh = _client_rw().open_by_key(SHEET_ID)
+        ws = next((w for w in sh.worksheets() if w.title == PLAN_TAB), None)
+        if ws is not None:
+            return _plan_from_rows(ws.get_all_values()), "table"
+    except Exception:
+        pass
+    try:
+        with open(PLAN_FILE, encoding="utf-8") as f:
+            return json.load(f), "file"
+    except Exception:
+        return {}, ""
+
+
+def plan_save(dk: str):
+    """Сохраняет рейсы выбранной даты (остальные даты подтягиваются из хранилища, чтобы не затереть чужие правки)."""
+    mine = st.session_state.plan.get(dk, {})
+    remote, _ = plan_load()
+    remote[dk] = mine
+    st.session_state.plan = remote
+    try:
+        sh = _client_rw().open_by_key(SHEET_ID)
+        ws = next((w for w in sh.worksheets() if w.title == PLAN_TAB), None)
+        if ws is None:
+            ws = sh.add_worksheet(PLAN_TAB, rows=1000, cols=3)
+        rows = _plan_rows(remote)
+        ws.clear()
+        ws.update(values=rows, range_name="A1", value_input_option="RAW")
+        st.session_state.plan_backend = "table"
+        return
+    except Exception:
+        pass
+    try:
+        with open(PLAN_FILE, "w", encoding="utf-8") as f:
+            json.dump(remote, f, ensure_ascii=False)
+        st.session_state.plan_backend = "file"
+    except Exception:
+        st.session_state.plan_backend = "none"
+
+
+def ensure_plan():
+    if "plan" not in st.session_state:
+        st.session_state.plan, st.session_state.plan_backend = plan_load()
+
+
+def stores_of(pivot: pd.DataFrame) -> dict:
+    """Магазины выбранной даты: {название: {city, addr, qty}} (одинаковые названия суммируются)."""
+    out = {}
+    for r in pivot.itertuples(index=False):
+        if r.Магазин in out:
+            out[r.Магазин]["qty"] += int(r.Штук)
+        else:
+            out[r.Магазин] = dict(city=r.Город, addr=r.Адрес, qty=int(r.Штук))
+    return out
+
+
+def _on_stores(dk, k, key):
+    st.session_state.plan.setdefault(dk, {})[k] = list(st.session_state[key])
+    plan_save(dk)
+
+
+def _on_add_machine(dk):
+    p = st.session_state.plan.setdefault(dk, {"1": []})
+    nk = str(max(int(x) for x in p) + 1)
+    p[nk] = []
+    st.session_state[f"sel_{dk}"] = nk
+    plan_save(dk)
+
+
+def _on_del_machine(dk):
+    p = st.session_state.plan.setdefault(dk, {"1": []})
+    if len(p) > 1:
+        p.pop(str(max(int(x) for x in p)), None)
+        st.session_state[f"sel_{dk}"] = str(max(int(x) for x in p))
+        plan_save(dk)
+
+
+def _on_limit():
+    st.session_state.lim_val = int(st.session_state.get("trip_limit_w") or 0)
+
+
+def plan_machines(dk: str, stores: dict, limit: int) -> list:
+    """Готовые рейсы в том же формате, что использует таблица/Excel/кнопки карт."""
+    out = []
+    mach = st.session_state.plan.get(dk, {})
+    for k in sorted(mach, key=int):
+        lst = [s for s in mach[k] if s in stores]
+        if not lst:
+            continue
+        items = []
+        for s in lst:
+            dl = deadline_minutes(stores[s]["addr"])
+            items.append(dict(shop=s, addr=stores[s]["addr"], qty=stores[s]["qty"],
+                              hot=dl is not None and dl < 12 * 60))
+        q = sum(x["qty"] for x in items)
+        out.append(dict(n=int(k), stores=items, qty=q, target=limit, over=bool(limit) and q > limit))
+    return out
+
+
+def plan_ui(dk: str, stores: dict):
+    """Ручная раскладка: выбираем машину, добавляем в неё магазины, смотрим счётчик."""
+    ensure_plan()
+    plan = st.session_state.plan
+    mach = plan.setdefault(dk, {"1": []})
+    if not mach:
+        mach["1"] = []
+    ks = sorted(mach, key=int)
+
+    st.markdown("<div class='sec'>Рейсы: собрать вручную</div>", unsafe_allow_html=True)
+    sel_key = f"sel_{dk}"
+    if st.session_state.get(sel_key) not in ks:
+        st.session_state[sel_key] = ks[0]
+
+    c1, c2, c3 = st.columns([3, 1.3, 1.6], vertical_alignment="bottom")
+    with c1:
+        k = st.selectbox("Машина", ks, key=sel_key, format_func=lambda x: ordinal(int(x)))
+    with c2:
+        st.button("➕ Машина", on_click=_on_add_machine, args=(dk,), width="stretch", key=f"add_{dk}")
+    with c3:
+        st.button("🗑 Удалить последнюю", on_click=_on_del_machine, args=(dk,), width="stretch",
+                  key=f"del_{dk}", disabled=len(ks) < 2)
+
+    st.number_input("Лимит штук на одну машину (0 — без лимита)", min_value=0, step=100,
+                    value=int(st.session_state.get("lim_val", 0)), key="trip_limit_w", on_change=_on_limit)
+    limit = int(st.session_state.get("lim_val", 0))
+
+    other = {s for kk, v in mach.items() if kk != k for s in v}
+    options = [s for s in stores if s not in other]
+    ms_key = f"ms_{dk}_{k}"
+    st.session_state[ms_key] = [s for s in mach[k] if s in options]
+    st.multiselect(f"Магазины в машине: {ordinal(int(k)).lower()} (начните вводить название)", options,
+                   key=ms_key, on_change=_on_stores, args=(dk, k, ms_key),
+                   format_func=lambda s: f"{s} · {n(stores[s]['qty'])} шт")
+
+    # ── счётчик ──
+    cur = [s for s in mach[k] if s in stores]
+    cur_q = sum(stores[s]["qty"] for s in cur)
+    assigned = {s for v in mach.values() for s in v if s in stores}
+    total_q = sum(v["qty"] for v in stores.values())
+    assigned_q = sum(stores[s]["qty"] for s in assigned)
+    left = [s for s in stores if s not in assigned]
+    left_q = total_q - assigned_q
+
+    sub = f"точек: {len(cur)}"
+    if limit:
+        rem = limit - cur_q
+        sub += f" · до лимита {n(rem)} шт" if rem >= 0 else f" · выше лимита на {n(-rem)} шт"
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.markdown(kpi_box(n(cur_q), f"в машине: {ordinal(int(k)).lower()}", sub,
+                            "left" if limit and cur_q > limit else "ok"), unsafe_allow_html=True)
+    with k2:
+        st.markdown(kpi_box(n(assigned_q), "распределено всего", f"из {n(total_q)} шт · точек: {len(assigned)}", "all"),
+                    unsafe_allow_html=True)
+    with k3:
+        st.markdown(kpi_box(n(left_q), "осталось распределить", f"точек: {len(left)}", "left" if left else "ok"),
+                    unsafe_allow_html=True)
+
+    if left:
+        st.caption("Не распределено: " + ", ".join(f"{s} ({n(stores[s]['qty'])})" for s in left))
+    else:
+        st.success("Все точки распределены по машинам. Готовый результат смотрите в «Рейсы».")
+
+    be = st.session_state.get("plan_backend", "")
+    if be == "table":
+        st.caption(f"Изменения сохраняются автоматически (вкладка «{PLAN_TAB}» в таблице). Готовый файл — в разделе «Рейсы».")
+    elif be == "file":
+        st.caption("Изменения сохраняются в файл на сервере: он может пропасть при перезапуске приложения. "
+                   "Дайте сервисному аккаунту доступ «Редактор» к таблице, чтобы рейсы хранились в ней.")
+    elif be == "none":
+        st.warning("Не удалось сохранить рейсы: дайте сервисному аккаунту доступ «Редактор» к таблице.")
+    else:
+        st.caption("Изменения сохраняются автоматически. Готовый файл — в разделе «Рейсы».")
+
+
 # ───────────────────────── Загрузка и шапка ─────────────────────────
 try:
     df = load()
@@ -980,6 +1204,7 @@ with h2:
 with h3:
     if st.button("🔄 Обновить", width="stretch"):
         st.cache_data.clear()
+        st.session_state.pop("plan", None)      # рейсы тоже перечитаем из хранилища
         st.rerun()
 
 if df.empty:
@@ -1056,15 +1281,13 @@ if page == PAGES[0]:
     k1, k2, k3 = st.columns(3)
     with k1:
         tap("all", f"""<div class="kpi all" title="Открыть список всех заказов"><div class="v">{n(total)}</div>
-        <div class="l">всего заказов</div><div class="s">{n(pcs_total)} шт</div></div>""", go_orders, ("Все", ALL))
+        <div class="l">всего заказов</div></div>""", go_orders, ("Все", ALL))
     with k2:
         tap("left", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(left + new_cnt)}</div>
-        <div class="l">не собрано заказов</div><div class="s">из {n(total + new_cnt)}</div></div>""", go_orders, ("Не собрано", ALL))
+        <div class="l">не собрано заказов</div></div>""", go_orders, ("Не собрано", ALL))
     with k3:
-        new_note = f" · в т.ч. {n(new_pcs)} шт не маршрутизировано" if new_pcs else ""
         tap("pcs", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(pcs_left)}</div>
-        <div class="l">бэклог, шт</div><div class="s">из {n(pcs_total + new_pcs)} шт{new_note}</div></div>""",
-            go_orders, ("Не собрано", ALL))
+        <div class="l">бэклог, шт</div></div>""", go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
     # ── новые заказы по датам доставки: нажатие открывает список «Не собрано» на эту дату ──
@@ -1125,11 +1348,18 @@ if page == PAGES[1]:
     st.caption(f"За выбранную дату: собрано {n(done_pcs)} шт · осталось {n(left_pcs)} шт · "
                f"заказов {len(sub)} · всего {n(sub['Штук'].sum())} шт")
     if mode == "Маршрутизация":
-        # сводная по выбранной дате: все заказы даты, без исключённых магазинов
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
             st.info("Нет заказов для сводной.")
         else:
+            # ручная раскладка по машинам (по выбранной дате)
+            if st.session_state.f_date == ALL:
+                st.info("Чтобы собрать рейсы, выберите конкретную дату отгрузки.")
+            else:
+                plan_ui(f"{st.session_state.f_date:%Y-%m-%d}", stores_of(pivot))
+
+            # сводная по выбранной дате: все заказы даты, без исключённых магазинов
+            st.markdown("<div class='sec'>Сводная по точкам</div>", unsafe_allow_html=True)
             st.caption(f"В сводной: {n(len(sub_main) - len(dropped))} заказов · {n(pivot['Штук'].sum())} шт · "
                        f"точек: {len(pivot)}. Не включены магазины: {', '.join(EXCLUDE_STORES)}"
                        + (f" (исключено {n(len(dropped))} заказов, {n(dropped['Штук'].sum())} шт)." if len(dropped) else "."))
@@ -1138,52 +1368,41 @@ if page == PAGES[1]:
                       f"marshrutizatsiya_{label}.xlsx", "dl_routing")
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
     elif mode == "Рейсы":
-        st.markdown('<div class="note">⚠️ <b>Это пример маршрутизации, а не факт.</b> Точки разложены по машинам '
-                    'по средним показателям, реальные рейсы могут отличаться.</div>',
-                    unsafe_allow_html=True)
-        st.number_input("Лимит штук на одну машину (0 — без лимита)", min_value=0, step=100, key="trip_limit",
-                        help="Сумма штук в одной машине не превысит это число.")
-        limit = int(st.session_state.trip_limit or 0)
         if st.session_state.f_date == ALL:
-            st.info("Выберите конкретную дату отгрузки: рейсы считаются на один день.")
+            st.info("Выберите конкретную дату отгрузки: рейсы собираются на один день.")
         else:
             pivot, dropped = split_routing(sub_main)
-            try:
-                stats = get_archive_stats()
-            except Exception as e:
-                stats = None
-                mail = ""
-                try:
-                    mail = st.secrets["gcp_service_account"].get("client_email", "")
-                except Exception:
-                    pass
-                st.warning("Не удалось прочитать архив отгрузок. Откройте таблицу архива для почты сервисного "
-                           f"аккаунта {mail} (роль «Читатель»).")
-                st.caption(str(e))
-            if stats is not None:
-                if pivot.empty:
-                    st.info("Нет заказов для расчёта.")
+            if pivot.empty:
+                st.info("Нет заказов для рейсов.")
+            else:
+                ensure_plan()
+                dk = f"{st.session_state.f_date:%Y-%m-%d}"
+                stores = stores_of(pivot)
+                limit = int(st.session_state.get("lim_val", 0))
+                machines = plan_machines(dk, stores, limit)
+                assigned = {s_["shop"] for m in machines for s_ in m["stores"]}
+                left = [s for s in stores if s not in assigned]
+
+                if not machines:
+                    st.info("Рейсы на эту дату ещё не собраны. Откройте «Маршрутизация», выберите машину "
+                            "и добавьте в неё магазины.")
                 else:
-                    machines = plan_trips(pivot, stats, limit)
                     coords = {}
                     try:
                         coords = load_coords()
                     except Exception as e:
                         st.caption(f"Кнопки карт недоступны: не удалось прочитать координаты ({e}).")
-                    if limit:
-                        big = pivot[pivot["Штук"] > limit]
-                        if len(big):
-                            names = ", ".join(f"{r.Магазин} ({n(r.Штук)} шт)" for r in big.itertuples(index=False))
-                            st.warning(f"Эти точки сами больше лимита {n(limit)} шт и едут отдельной машиной "
-                                       f"(их нельзя разделить): {names}")
                     st.markdown(f"<div class='chips big'><span class='chip'>Машин <b>{len(machines)}</b></span>"
-                                f"<span class='chip'>Точек <b>{len(pivot)}</b></span>"
-                                f"<span class='chip'>Штук <b>{n(pivot['Штук'].sum())}</b></span>"
+                                f"<span class='chip'>Точек <b>{len(assigned)}</b></span>"
+                                f"<span class='chip'>Штук <b>{n(sum(m['qty'] for m in machines))}</b></span>"
                                 + (f"<span class='chip'>Лимит <b>{n(limit)}</b></span>" if limit else "")
                                 + "</div>", unsafe_allow_html=True)
-                    xl_button("⬇️ Скачать рейсы в Excel (пример)",
-                              lambda: trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}", limit),
-                              f"reisy_primer_{st.session_state.f_date:%Y-%m-%d}.xlsx", "dl_trips")
+                    if left:
+                        st.warning("Не распределено по машинам: " + ", ".join(
+                            f"{s} ({n(stores[s]['qty'])} шт)" for s in left))
+                    xl_button("⬇️ Скачать рейсы в Excel",
+                              lambda: trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}", limit, example=False),
+                              f"reisy_{st.session_state.f_date:%Y-%m-%d}.xlsx", "dl_trips")
                     st.markdown(trips_table(machines, coords), unsafe_allow_html=True)
     else:
         if mode == "Не собрано":
