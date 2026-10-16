@@ -202,6 +202,11 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .ship .bar { height:14px; margin:8px 0; }
 .ship .sh-m { font-size:.85rem; color:$mute; margin-bottom:8px; }
 .ship .sh-m b { color:$ink; }
+.sync { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center;
+        margin-left:8px; vertical-align:middle; font-size:.75rem; font-weight:800; box-sizing:border-box; }
+.sync.ok { background:#1E9E5C; color:#fff; }
+.sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
+@keyframes syncspin { to { transform:rotate(360deg); } }
 .cars td.carmeta { vertical-align:middle; }
 .cars tr.band td { background:$band; padding:0; height:12px; border:none; }
 .cars tr.band.thin td { height:7px; }
@@ -303,6 +308,24 @@ def load_new_orders() -> pd.DataFrame:
         "Магазин": raw[c_shop].str.strip() if c_shop else "",
     })
     return d.drop_duplicates("Заказ").reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
+def load_status_orders() -> set:
+    """Вкладка «Статус по отгрузкам» основной таблицы: множество номеров заказов, которые уже туда попали
+    (ищем номера во всех ячейках вкладки, поэтому расположение колонок не важно)."""
+    sheet = _client().open_by_key(SHEET_ID)
+    ws = next((w for w in sheet.worksheets()
+               if "статус" in w.title.lower() and "отгруз" in w.title.lower()), None)
+    if ws is None:
+        raise ValueError("Не найдена вкладка «Статус по отгрузкам».")
+    pat = re.compile(r"^\s*\w{1,3}-\d{4,}\s*$")
+    out = set()
+    for row in ws.get_all_values():
+        for cell in row:
+            if pat.match(cell):
+                out.add(cell.strip().upper())
+    return out
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю отгрузки…")
@@ -548,6 +571,23 @@ def ship_summary(ship: pd.DataFrame, d: date) -> dict:
     return dict(total=len(s_), done=int(s_["Отгружен"].sum()),
                 pcs=int(s_["Штук"].sum()), pcs_done=int(s_.loc[s_["Отгружен"], "Штук"].sum()),
                 trips=tr.to_dict("records"))
+
+
+def sync_icon(ship: pd.DataFrame, d: date) -> str:
+    """Значок синхронизации: ✓ — все отгруженные за дату заказы уже есть во вкладке «Статус по отгрузкам»,
+    вращающийся — часть ещё не попала. Если вкладка недоступна или отгруженных нет — значка нет."""
+    try:
+        have = load_status_orders()
+    except Exception:
+        return ""
+    shipped = ship[(ship["Дата"] == d) & ship["Отгружен"]]["Заказ"].str.strip().str.upper()
+    if shipped.empty:
+        return ""
+    missing = int((~shipped.isin(have)).sum())
+    if missing == 0:
+        return "<span class='sync ok' title='Все данные попали в таблицу «Статус по отгрузкам»'>✓</span>"
+    return (f"<span class='sync spin' title='В таблицу «Статус по отгрузкам» не попало заказов: {missing} "
+            f"из {len(shipped)}. Данные обновляются'></span>")
 
 
 def hhmm(minutes: float) -> str:
@@ -902,6 +942,11 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Manrope',
 .sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
 .sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
 .sh-p { font-weight:800; font-size:1.7rem; letter-spacing:-0.02em; color:$ink; }
+.sync { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center;
+        margin-left:8px; vertical-align:middle; font-size:.75rem; font-weight:800; box-sizing:border-box; }
+.sync.ok { background:#1E9E5C; color:#fff; }
+.sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
+@keyframes syncspin { to { transform:rotate(360deg); } }
 .bar { height:32px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:10px 0; }
 .bar > i { display:block; height:100%; border-radius:99px; background-color:#1E9E5C;
   background-image:linear-gradient(135deg, rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%,
@@ -918,7 +963,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Manrope',
 .sh-m b { color:$ink; }
 </style></head><body>
 <div class="ship">
-  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <small>$date</small></div><div class="sh-p">$pct%</div></div>
+  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <small>$date</small>$sync</div><div class="sh-p">$pct%</div></div>
   <div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div>
   <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
 </div>
@@ -951,9 +996,9 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Manrope',
 </script></body></html>""")
 
 
-def ship_doc(d: date, pct: int, sm: dict) -> str:
+def ship_doc(d: date, pct: int, sm: dict, sync: str = "") -> str:
     vals = dict(P)
-    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct,
+    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync,
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
                 all_done="true" if sm["done"] >= sm["total"] else "false")
@@ -1259,16 +1304,17 @@ if page == PAGES[0]:
     if ship is not None and not ship.empty:
         sd = pick_ship_date(ship, now.date())
         sm = ship_summary(ship, sd)
+        sync_html = sync_icon(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
-          <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small></div><div class="sh-p">{pct_ship}%</div></div>
+          <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
           <div class="bar"><i style="width:{pct_ship}%"></i></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
-        frame = (ship_doc(sd, pct_ship, sm), 168) if is_today else None   # сегодня: анимированная линия + таймер
+        frame = (ship_doc(sd, pct_ship, sm, sync_html), 168) if is_today else None   # сегодня: анимированная линия + таймер
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
         elif frame:
