@@ -57,7 +57,7 @@ MONTHS = ["январь", "февраль", "март", "апрель", "май"
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-MODES = ["Все", "Не собрано", "Собрано", "Маршрутизация", "Рейсы"]
+MODES = ["Все", "Не собрано", "Собрано", "Прочие заказы", "Маршрутизация", "Рейсы"]
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
 
 PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба"]
@@ -895,6 +895,11 @@ def go_orders(mode: str, d):
     st.session_state.f_date = d
 
 
+def set_oth(name):
+    """«Прочие заказы»: открыть магазин (name) или вернуться к общему списку (None)."""
+    st.session_state.oth_store = name
+
+
 def toggle_theme():
     st.session_state.dark = not st.session_state.dark
 
@@ -1393,7 +1398,66 @@ if page == PAGES[1]:
     left_pcs = int(sub.loc[~sub["Собран"], "Штук"].sum())
     st.caption(f"За выбранную дату: собрано {n(done_pcs)} шт · осталось {n(left_pcs)} шт · "
                f"заказов {len(sub)} · всего {n(sub['Штук'].sum())} шт")
-    if mode == "Маршрутизация":
+    if mode == "Прочие заказы":
+        # статистика по магазинам из EXCLUDE_STORES: все даты сразу, без разбивки по дням
+        today = now.date()
+        oth = df_all[~df_all["Собран"]].copy()
+        oth["_k"] = oth["Магазин"].map(norm_store)
+        # «не подобрано вовремя»: не собран, а дата доставки уже сегодня или раньше
+        oth["late"] = oth["Дата"].map(lambda x: bool(pd.notna(x) and x <= today))
+        oth = oth[oth["_k"].isin(EXCLUDED_KEYS)]
+
+        sel = st.session_state.get("oth_store")
+        if sel not in EXCLUDE_STORES:
+            sel = None
+
+        if sel is None:
+            late_all = oth[oth["late"]]
+            st.markdown(kpi_box(n(len(late_all)), "не подобрано вовремя",
+                                f"{n(late_all['Штук'].sum())} шт · срок доставки уже наступил или прошёл",
+                                "left" if len(late_all) else "ok"), unsafe_allow_html=True)
+            st.markdown("<div class='sec'>Не собрано по магазинам</div>", unsafe_allow_html=True)
+            cols = st.columns(3)
+            for i, name in enumerate(EXCLUDE_STORES):
+                part = oth[oth["_k"] == norm_store(name)]
+                late_n = int(part["late"].sum())
+                with cols[i % 3]:
+                    tap(f"oth_{i}", f"""<div class="kpi {'left' if len(part) else 'ok'}" title="Открыть детали">
+                        <div class="v">{n(len(part))}</div>
+                        <div class="l">{esc(name)}</div>
+                        <div class="s">не собрано заказов · {n(part['Штук'].sum())} шт · не вовремя: {n(late_n)}</div></div>""",
+                        set_oth, (name,))
+            st.caption("Нажмите на карточку, чтобы открыть список заказов магазина.")
+        else:
+            part = oth[oth["_k"] == norm_store(sel)]
+            late_p = part[part["late"]]
+            st.button("← Все прочие заказы", on_click=set_oth, args=(None,), key="oth_back")
+            st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
+            o1, o2, o3 = st.columns(3)
+            with o1:
+                st.markdown(kpi_box(n(len(part)), "не собрано заказов", "", "left" if len(part) else "ok"),
+                            unsafe_allow_html=True)
+            with o2:
+                st.markdown(kpi_box(n(part["Штук"].sum()), "не собрано, шт", "", "left" if len(part) else "ok"),
+                            unsafe_allow_html=True)
+            with o3:
+                st.markdown(kpi_box(n(len(late_p)), "не подобрано вовремя",
+                                    f"{n(late_p['Штук'].sum())} шт · срок наступил или прошёл",
+                                    "left" if len(late_p) else "ok"), unsafe_allow_html=True)
+
+            def _sorted(f):
+                return (f.assign(_d=f["Дата"].map(lambda x: x if pd.notna(x) else date.max))
+                        .sort_values(["_d", "Заказ"]).drop(columns="_d"))
+
+            if part.empty:
+                st.success("Не собранных заказов нет.")
+            else:
+                if not late_p.empty:
+                    st.markdown("<div class='sec'>Не подобрано вовремя</div>", unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(late_p)), unsafe_allow_html=True)
+                st.markdown("<div class='sec'>Все не собранные заказы</div>", unsafe_allow_html=True)
+                st.markdown(orders_table(_sorted(part)), unsafe_allow_html=True)
+    elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
             st.info("Нет заказов для сводной.")
