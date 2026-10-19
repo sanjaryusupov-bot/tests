@@ -1238,9 +1238,19 @@ def plan_ui(dk: str, stores: dict):
 try:
     df = load()
 except Exception as e:
-    st.error("Не удалось прочитать таблицу. Проверьте, что таблица открыта для почты "
-             "сервисного аккаунта (роль «Читатель») и ключ добавлен в Secrets.")
-    st.caption(str(e))
+    import traceback
+    st.error("Не удалось прочитать таблицу.")
+    st.code(f"{type(e).__module__}.{type(e).__name__}: {e!r}\n\n{traceback.format_exc()}")
+    try:
+        _c = _client()
+        st.write("1. Ключ принят, авторизация прошла")
+        _sh = _c.open_by_key(SHEET_ID)
+        st.write("2. Таблица открылась:", _sh.title)
+        st.write("3. Вкладки (title, gid):", [(w.title, w.id) for w in _sh.worksheets()])
+        st.write("Ищем GID:", GID)
+    except Exception as e2:
+        st.write("Остановились на шаге после последнего успешного пункта выше:")
+        st.code(f"{type(e2).__name__}: {e2!r}")
     st.stop()
 
 now = datetime.now(TZ)
