@@ -57,10 +57,11 @@ BOXES_TAB = "Ответы на форму (1)"
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
-# Metabase: ID таблиц (можно переопределить в Secrets, блок [metabase]: stock_table, magnit_table)
-MB_STOCK_T = 48      # «Stock Invoice Sku Cell» — история снимков остатков
-MB_MAGNIT_T = 58     # «Magnit Stock»
-MB_STOCK_DAYS = 90   # сколько последних дней истории остатков грузить
+# Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table)
+MB_STOCK_T = 48     # «Stock Invoice Sku Cell» — история снимков остатков
+MB_MAGNIT_T = 58    # «Magnit Stock»
+MB_STOCK_DAYS = 90  # за сколько последних дней можно выбирать период
+MB_CAT_DAYS = 14    # за сколько последних дней собирать каталог товаров
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -388,38 +389,55 @@ def _nk(x) -> str:
     return re.sub(r"[^0-9a-zа-я]", "", str(x).lower())
 
 
-def mb_table(key: str, default_id: int, days: int = 0) -> pd.DataFrame:
-    """Читает таблицу Metabase напрямую (url, api_key и ID таблицы — в Secrets, блок [metabase]).
-    days > 0 — только последние N дней по колонке Snapshot Date."""
+def _mb_cfg():
+    """url (без /api...), заголовок с ключом и секция [metabase] из Secrets."""
     try:
         cfg = st.secrets["metabase"]
         url = re.sub(r"/api(/.*)?$", "", str(cfg["url"]).strip().rstrip("/"))
-        api_key = str(cfg["api_key"]).strip()
+        hdr = {"x-api-key": str(cfg["api_key"]).strip()}
     except Exception:
         raise ValueError("В Secrets нет блока [metabase] с url и api_key.")
-    tid = int(cfg.get(key, default_id) or 0)
-    if not tid:
-        raise ValueError(f"Не указан ID таблицы: добавьте {key} в блок [metabase] в Secrets.")
-    hdr = {"x-api-key": api_key}
-    meta = requests.get(f"{url}/api/table/{tid}/query_metadata", headers=hdr, timeout=60)
-    meta.raise_for_status()
-    m = meta.json()
-    query = {"source-table": tid}
-    if days:
-        fld = next((f for f in m.get("fields", []) if "snapshot" in str(f.get("name", "")).lower()), None)
-        if fld:
-            since = (datetime.now(TZ).date() - timedelta(days=days)).isoformat()
-            query["filter"] = [">=", ["field", fld["id"], None], since]
-    q = {"database": m["db_id"], "type": "query", "query": query}
+    return cfg, url, hdr
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def mb_meta(tid: int):
+    """db_id и поля таблицы: {нормализованное имя: (id, тип)}."""
+    _, url, hdr = _mb_cfg()
+    r = requests.get(f"{url}/api/table/{tid}/query_metadata", headers=hdr, timeout=60)
+    r.raise_for_status()
+    m = r.json()
+    flds = {}
+    for f in m.get("fields", []):
+        flds[_nk(f.get("name"))] = (f["id"], str(f.get("base_type", "")))
+        flds.setdefault(_nk(f.get("display_name")), (f["id"], str(f.get("base_type", ""))))
+    return m["db_id"], flds
+
+
+def mb_run(db: int, query: dict) -> pd.DataFrame:
+    """Выполняет MBQL-запрос в Metabase и возвращает таблицу."""
+    _, url, hdr = _mb_cfg()
+    q = {"database": db, "type": "query", "query": query}
     r = requests.post(f"{url}/api/dataset/json", headers=hdr,
                       data={"query": json.dumps(q), "format_rows": "false"}, timeout=300)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict):
         raise ValueError(str(data.get("error") or data)[:300])
-    if not data:
-        raise ValueError("Таблица вернула 0 строк.")
     return pd.DataFrame(data)
+
+
+def mb_table(key: str, default_id: int) -> pd.DataFrame:
+    """Читает таблицу Metabase целиком (используется для Magnit Stock)."""
+    cfg, _, _ = _mb_cfg()
+    tid = int(cfg.get(key, default_id) or 0)
+    if not tid:
+        raise ValueError(f"Не указан ID таблицы: добавьте {key} в блок [metabase] в Secrets.")
+    db, _f = mb_meta(tid)
+    raw = mb_run(db, {"source-table": tid})
+    if raw.empty:
+        raise ValueError("Таблица вернула 0 строк.")
+    return raw
 
 
 def _to_date(ser: pd.Series) -> pd.Series:
@@ -439,10 +457,13 @@ def _sku(ser: pd.Series) -> pd.Series:
     return ser.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
 
 
-@st.cache_data(ttl=600, show_spinner="Читаю остатки из Metabase…")
-def load_stock_hist() -> pd.DataFrame:
-    """История снимков: дата / sku / название / ячейка / накладная / зона / в ячейке / доступно."""
-    raw = mb_table("stock_table", MB_STOCK_T, days=MB_STOCK_DAYS)
+def _stock_tid() -> int:
+    cfg, _, _ = _mb_cfg()
+    return int(cfg.get("stock_table", MB_STOCK_T) or MB_STOCK_T)
+
+
+def _norm_stock(raw: pd.DataFrame) -> pd.DataFrame:
+    """Приводит выгрузку остатков к колонкам: date / sku / name / cell / inv / zone / loc / avail."""
     cols = {_nk(c): c for c in raw.columns}
     need = {"snapshotdate": "Snapshot Date", "skuwmsid": "Sku Wms ID", "name": "Name",
             "cellbarcode": "Cell Barcode", "amountinlocation": "Amount In Location"}
@@ -464,10 +485,40 @@ def load_stock_hist() -> pd.DataFrame:
     return d[d["date"].notna() & (d["sku"] != "")].reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner="Читаю список товаров из Metabase…")
 def load_stock_catalog() -> pd.DataFrame:
-    h = load_stock_hist()
-    return h.groupby("sku", as_index=False).agg(name=("name", "first"))
+    """Каталог товаров (sku, name) за последние MB_CAT_DAYS дней — лёгкий запрос, группировка на стороне Metabase."""
+    tid = _stock_tid()
+    db, f = mb_meta(tid)
+    since = (datetime.now(TZ).date() - timedelta(days=MB_CAT_DAYS)).isoformat()
+    query = {"source-table": tid,
+             "aggregation": [["count"]],
+             "breakout": [["field", f["skuwmsid"][0], None], ["field", f["name"][0], None]],
+             "filter": [">=", ["field", f["snapshotdate"][0], None], since]}
+    raw = mb_run(db, query)
+    if raw.empty:
+        raise ValueError("За последние дни в таблице остатков нет данных.")
+    cols = {_nk(c): c for c in raw.columns}
+    d = pd.DataFrame({"sku": _sku(raw[cols["skuwmsid"]]), "name": raw[cols["name"]].astype(str).str.strip()})
+    return d[d["sku"] != ""].drop_duplicates("sku").reset_index(drop=True)
+
+
+@st.cache_data(ttl=1800, show_spinner="Читаю движения из Metabase…")
+def load_stock_rows(skus: tuple, d_from: date, d_to: date) -> pd.DataFrame:
+    """Снимки остатков только по выбранным товарам и периоду — фильтрует Metabase."""
+    tid = _stock_tid()
+    db, f = mb_meta(tid)
+    sku_id, sku_type = f["skuwmsid"]
+    numeric = ("Integer" in sku_type or "Number" in sku_type) and all(s.isdigit() for s in skus)
+    vals = [int(s) for s in skus] if numeric else list(skus)
+    flt = ["and",
+           [">=", ["field", f["snapshotdate"][0], None], d_from.isoformat()],
+           ["<=", ["field", f["snapshotdate"][0], None], d_to.isoformat()],
+           ["=", ["field", sku_id, None], *vals]]
+    raw = mb_run(db, {"source-table": tid, "filter": flt})
+    if raw.empty:
+        return pd.DataFrame(columns=["date", "sku", "name", "cell", "inv", "zone", "loc", "avail"])
+    return _norm_stock(raw)
 
 
 @st.cache_data(ttl=600, show_spinner="Читаю Magnit Stock из Metabase…")
@@ -1895,74 +1946,70 @@ if page == PAGES[3]:
 # ───────────────────────── 5. Движения по остаткам ─────────────────────────
 if page == PAGES[4]:
     st.markdown("<div class='sec'>Движения по остаткам</div>", unsafe_allow_html=True)
-    hist, cat = None, None
+    cat = None
     try:
-        hist = load_stock_hist()
         cat = load_stock_catalog()
     except Exception as e:
         st.warning("Не удалось прочитать остатки из Metabase. Проверьте блок [metabase] в Secrets "
-                   "(url, api_key) и доступность Metabase из интернета.")
+                   "(url, api_key, stock_table) и доступность Metabase из интернета.")
         st.caption(str(e))
 
-    if hist is not None:
-        if hist.empty:
-            st.info("В таблице нет данных.")
+    if cat is not None:
+        today = now.date()
+        dmin, dmax = today - timedelta(days=MB_STOCK_DAYS), today
+        st.caption(f"Товаров в каталоге: {n(len(cat))} · выбрать период можно за последние {MB_STOCK_DAYS} дней")
+
+        q = st.text_input("Название товара или SKU WMS ID", key="mv_q",
+                          placeholder="например, MIXIT или 100000000000011427").strip()
+        if q:
+            found = cat[cat["sku"].str.contains(q, case=False, regex=False)
+                        | cat["name"].str.contains(q, case=False, regex=False)]
         else:
-            dmin, dmax = hist["date"].min(), hist["date"].max()
-            st.caption(f"Снимки остатков: {dmin:%d.%m.%Y} — {dmax:%d.%m.%Y} · "
-                       f"дней со снимком: {hist['date'].nunique()} · товаров: {n(len(cat))}")
+            found = cat.iloc[0:0]
+        opts = found["sku"].tolist()[:200]
+        nm = dict(zip(cat["sku"], cat["name"]))
+        if q and found.empty:
+            st.warning("Ничего не найдено.")
+        elif q:
+            st.caption(f"Найдено товаров: {len(found)}" + (" (показаны первые 200, уточните запрос)" if len(found) > 200 else ""))
+        chosen = st.multiselect("Товары", opts, default=opts if len(opts) <= 10 else [],
+                                format_func=lambda s: f"{nm.get(s, '')} · {s}", key=f"mv_sel_{q}")
 
-            q = st.text_input("Название товара или SKU WMS ID", key="mv_q",
-                              placeholder="например, MIXIT или 100000000000011427").strip()
-            if q:
-                found = cat[cat["sku"].str.contains(q, case=False, regex=False)
-                            | cat["name"].str.contains(q, case=False, regex=False)]
-            else:
-                found = cat.iloc[0:0]
-            opts = found["sku"].tolist()[:200]
-            nm = dict(zip(cat["sku"], cat["name"]))
-            if q and found.empty:
-                st.warning("Ничего не найдено.")
-            elif q:
-                st.caption(f"Найдено товаров: {len(found)}" + (" (показаны первые 200, уточните запрос)" if len(found) > 200 else ""))
-            chosen = st.multiselect("Товары", opts, default=opts if len(opts) <= 10 else [],
-                                    format_func=lambda s: f"{nm.get(s, '')} · {s}", key=f"mv_sel_{q}")
+        period = st.date_input("Период", value=(max(dmin, dmax - timedelta(days=13)), dmax),
+                               min_value=dmin, max_value=dmax, key="mv_period", format="DD.MM.YYYY")
+        d1, d2 = (period[0], period[1]) if isinstance(period, (tuple, list)) and len(period) == 2 else (None, None)
 
-            default_from = max(dmin, dmax - timedelta(days=13))
-            period = st.date_input("Период", value=(default_from, dmax), min_value=dmin, max_value=dmax,
-                                   key="mv_period", format="DD.MM.YYYY")
-            d1, d2 = (period[0], period[1]) if isinstance(period, (tuple, list)) and len(period) == 2 else (None, None)
-
-            if st.button("Сформировать Excel", key="mv_go", disabled=not chosen or d1 is None):
-                try:
-                    rep = stock_report(hist, chosen, d1, d2)
-                    if len(rep["dates"]) < 2:
-                        st.session_state.mv_res = None
-                        st.warning("В выбранном периоде нет снимков для сравнения. Расширьте период.")
-                    else:
-                        data = to_xlsx({"Хронология движений": rep["movements"], "Итого по товарам": rep["summary"],
-                                        "Остаток по дням": rep["daily"], "Параметры": rep["params"]})
-                        st.session_state.mv_res = dict(sig=(tuple(chosen), d1, d2), data=data, rep=rep,
-                                                       name=f"dvizheniya_{d1:%Y%m%d}_{d2:%Y%m%d}.xlsx")
-                except Exception as e:
+        if st.button("Сформировать Excel", key="mv_go", disabled=not chosen or d1 is None):
+            try:
+                hist = load_stock_rows(tuple(sorted(chosen)), d1 - timedelta(days=7), d2)
+                rep = stock_report(hist, chosen, d1, d2)
+                if len(rep["dates"]) < 2:
                     st.session_state.mv_res = None
-                    st.error(f"Не удалось сформировать файл: {e}")
+                    st.warning("В выбранном периоде нет снимков для сравнения. Расширьте период.")
+                else:
+                    data = to_xlsx({"Хронология движений": rep["movements"], "Итого по товарам": rep["summary"],
+                                    "Остаток по дням": rep["daily"], "Параметры": rep["params"]})
+                    st.session_state.mv_res = dict(sig=(tuple(chosen), d1, d2), data=data, rep=rep,
+                                                   name=f"dvizheniya_{d1:%Y%m%d}_{d2:%Y%m%d}.xlsx")
+            except Exception as e:
+                st.session_state.mv_res = None
+                st.error(f"Не удалось сформировать файл: {e}")
 
-            res = st.session_state.get("mv_res")
-            if res and res["sig"] == (tuple(chosen), d1, d2):
-                rep = res["rep"]
-                mv_cnt = len(rep["movements"])
-                st.markdown(f"<div class='chips big'><span class='chip'>Товаров <b>{len(chosen)}</b></span>"
-                            f"<span class='chip'>Снимков <b>{len(rep['dates'])}</b></span>"
-                            f"<span class='chip'>Движений <b>{n(mv_cnt)}</b></span></div>", unsafe_allow_html=True)
-                dl_button("⬇️ Скачать Excel: движения по остаткам", res["data"], res["name"], "dl_mv")
-                sm_ = rep["summary"]
-                rows = [[esc(r["Sku Wms ID"]), esc(r["Товар"]), n(r["Остаток на начало"]), n(r["Остаток на конец"]),
-                         n(r["Поступило"]), n(r["Убыло"]), n(r["Движений"])] for _, r in sm_.iterrows()]
-                st.markdown(simple_table(["Sku Wms ID", "Товар", "На начало", "На конец", "Поступило", "Убыло", "Движений"],
-                                         rows, num_cols={2, 3, 4, 5, 6}), unsafe_allow_html=True)
-                st.caption("Движения считаются между ежедневными снимками остатков «В ячейках». "
-                           "Полная хронология по ячейкам — в файле.")
+        res = st.session_state.get("mv_res")
+        if res and res["sig"] == (tuple(chosen), d1, d2):
+            rep = res["rep"]
+            st.markdown(f"<div class='chips big'><span class='chip'>Товаров <b>{len(chosen)}</b></span>"
+                        f"<span class='chip'>Снимков <b>{len(rep['dates'])}</b></span>"
+                        f"<span class='chip'>Движений <b>{n(len(rep['movements']))}</b></span></div>",
+                        unsafe_allow_html=True)
+            dl_button("⬇️ Скачать Excel: движения по остаткам", res["data"], res["name"], "dl_mv")
+            sm_ = rep["summary"]
+            rows = [[esc(r["Sku Wms ID"]), esc(r["Товар"]), n(r["Остаток на начало"]), n(r["Остаток на конец"]),
+                     n(r["Поступило"]), n(r["Убыло"]), n(r["Движений"])] for _, r in sm_.iterrows()]
+            st.markdown(simple_table(["Sku Wms ID", "Товар", "На начало", "На конец", "Поступило", "Убыло", "Движений"],
+                                     rows, num_cols={2, 3, 4, 5, 6}), unsafe_allow_html=True)
+            st.caption("Движения считаются между ежедневными снимками остатков «В ячейках». "
+                       "Полная хронология по ячейкам — в файле.")
 
     # ── выгрузка Magnit Stock ──
     st.markdown("<div class='sec'>Magnit Stock</div>", unsafe_allow_html=True)
