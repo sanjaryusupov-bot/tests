@@ -387,24 +387,37 @@ def _nk(x) -> str:
     return re.sub(r"[^0-9a-zа-я]", "", str(x).lower())
 
 
-def mb_question(key: str, default_id: int) -> pd.DataFrame:
-    """Читает сохранённый вопрос Metabase (url, api_key и ID вопроса — в Secrets, блок [metabase])."""
+def mb_table(key: str, default_id: int, days: int = 0) -> pd.DataFrame:
+    """Читает таблицу Metabase напрямую (url, api_key и ID таблицы — в Secrets, блок [metabase]).
+    days > 0 — только последние N дней по колонке Snapshot Date."""
     try:
         cfg = st.secrets["metabase"]
-        url, api_key = str(cfg["url"]).rstrip("/"), str(cfg["api_key"])
+        url = re.sub(r"/api(/.*)?$", "", str(cfg["url"]).strip().rstrip("/"))
+        api_key = str(cfg["api_key"]).strip()
     except Exception:
         raise ValueError("В Secrets нет блока [metabase] с url и api_key.")
-    qid = int(cfg.get(key, default_id) or 0)
-    if not qid:
-        raise ValueError(f"Не указан ID вопроса: добавьте {key} в блок [metabase] в Secrets.")
-    r = requests.post(f"{url}/api/card/{qid}/query/json", headers={"x-api-key": api_key},
-                      data={"parameters": "[]", "format_rows": "false"}, timeout=300)
+    tid = int(cfg.get(key, default_id) or 0)
+    if not tid:
+        raise ValueError(f"Не указан ID таблицы: добавьте {key} в блок [metabase] в Secrets.")
+    hdr = {"x-api-key": api_key}
+    meta = requests.get(f"{url}/api/table/{tid}/query_metadata", headers=hdr, timeout=60)
+    meta.raise_for_status()
+    m = meta.json()
+    query = {"source-table": tid}
+    if days:
+        fld = next((f for f in m.get("fields", []) if "snapshot" in str(f.get("name", "")).lower()), None)
+        if fld:
+            since = (datetime.now(TZ).date() - timedelta(days=days)).isoformat()
+            query["filter"] = [">=", ["field", fld["id"], None], since]
+    q = {"database": m["db_id"], "type": "query", "query": query}
+    r = requests.post(f"{url}/api/dataset/json", headers=hdr,
+                      data={"query": json.dumps(q), "format_rows": "false"}, timeout=300)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict):
         raise ValueError(str(data.get("error") or data)[:300])
     if not data:
-        raise ValueError("Вопрос вернул 0 строк.")
+        raise ValueError("Таблица вернула 0 строк.")
     return pd.DataFrame(data)
 
 
