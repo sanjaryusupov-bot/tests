@@ -57,9 +57,10 @@ BOXES_TAB = "Ответы на форму (1)"
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
-# Metabase: ID сохранённых вопросов (лучше задавать в Secrets: stock_question, magnit_question)
-MB_STOCK_Q = 0      # «Stock Invoice Sku Cell» — история снимков остатков
-MB_MAGNIT_Q = 0     # «Magnit Stock»
+# Metabase: ID таблиц (можно переопределить в Secrets, блок [metabase]: stock_table, magnit_table)
+MB_STOCK_T = 48      # «Stock Invoice Sku Cell» — история снимков остатков
+MB_MAGNIT_T = 58     # «Magnit Stock»
+MB_STOCK_DAYS = 90   # сколько последних дней истории остатков грузить
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -441,13 +442,13 @@ def _sku(ser: pd.Series) -> pd.Series:
 @st.cache_data(ttl=600, show_spinner="Читаю остатки из Metabase…")
 def load_stock_hist() -> pd.DataFrame:
     """История снимков: дата / sku / название / ячейка / накладная / зона / в ячейке / доступно."""
-    raw = mb_question("stock_question", MB_STOCK_Q)
+    raw = mb_table("stock_table", MB_STOCK_T, days=MB_STOCK_DAYS)
     cols = {_nk(c): c for c in raw.columns}
     need = {"snapshotdate": "Snapshot Date", "skuwmsid": "Sku Wms ID", "name": "Name",
             "cellbarcode": "Cell Barcode", "amountinlocation": "Amount In Location"}
     miss = [t for k, t in need.items() if k not in cols]
     if miss:
-        raise ValueError("В вопросе нет колонок: " + ", ".join(miss) + ". Есть: " + ", ".join(map(str, raw.columns)))
+        raise ValueError("В таблице нет колонок: " + ", ".join(miss) + ". Есть: " + ", ".join(map(str, raw.columns)))
     c_inv, c_zone, c_av = cols.get("originalinvoicenumber"), cols.get("zoneprefix"), cols.get("amountavailable")
     cell = raw[cols["cellbarcode"]].astype(str).str.strip()
     d = pd.DataFrame({
@@ -471,7 +472,7 @@ def load_stock_catalog() -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner="Читаю Magnit Stock из Metabase…")
 def load_magnit() -> pd.DataFrame:
-    return mb_question("magnit_question", MB_MAGNIT_Q)
+    return mb_table("magnit_table", MB_MAGNIT_T)
 
 
 def _xl_safe(df: pd.DataFrame) -> pd.DataFrame:
@@ -1900,12 +1901,12 @@ if page == PAGES[4]:
         cat = load_stock_catalog()
     except Exception as e:
         st.warning("Не удалось прочитать остатки из Metabase. Проверьте блок [metabase] в Secrets "
-                   "(url, api_key, stock_question) и доступность Metabase из интернета.")
+                   "(url, api_key) и доступность Metabase из интернета.")
         st.caption(str(e))
 
     if hist is not None:
         if hist.empty:
-            st.info("В вопросе нет данных.")
+            st.info("В таблице нет данных.")
         else:
             dmin, dmax = hist["date"].min(), hist["date"].max()
             st.caption(f"Снимки остатков: {dmin:%d.%m.%Y} — {dmax:%d.%m.%Y} · "
@@ -1965,7 +1966,7 @@ if page == PAGES[4]:
 
     # ── выгрузка Magnit Stock ──
     st.markdown("<div class='sec'>Magnit Stock</div>", unsafe_allow_html=True)
-    st.caption("Загружает вопрос Magnit Stock из Metabase целиком и готовит файл Excel.")
+    st.caption("Загружает таблицу Magnit Stock из Metabase целиком и готовит файл Excel.")
     if st.button("Подготовить файл Magnit Stock", key="mg_go"):
         try:
             mg = load_magnit()
