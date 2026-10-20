@@ -450,7 +450,8 @@ def _to_date(ser: pd.Series) -> pd.Series:
 
 
 def _num(ser: pd.Series) -> pd.Series:
-    return pd.to_numeric(ser.astype(str).str.replace(r"[\s\u00a0]", "", regex=True), errors="coerce").fillna(0)
+    s = ser.astype(str).str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
+    return pd.to_numeric(s.str.replace(",", ".", regex=False), errors="coerce").fillna(0)
 
 
 def _sku(ser: pd.Series) -> pd.Series:
