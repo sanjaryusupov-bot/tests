@@ -464,7 +464,8 @@ def _stock_tid() -> int:
 
 
 def _norm_stock(raw: pd.DataFrame) -> pd.DataFrame:
-    """Приводит выгрузку остатков к колонкам: date / sku / name / cell / inv / zone / loc / avail."""
+    """Приводит выгрузку остатков к колонкам: date / sku / name / cell / inv / zone / loc / avail.
+    Индекс строк сохраняется (по нему можно отобрать те же строки в исходной выгрузке)."""
     cols = {_nk(c): c for c in raw.columns}
     need = {"snapshotdate": "Snapshot Date", "skuwmsid": "Sku Wms ID", "name": "Name",
             "cellbarcode": "Cell Barcode", "amountinlocation": "Amount In Location"}
@@ -483,7 +484,7 @@ def _norm_stock(raw: pd.DataFrame) -> pd.DataFrame:
         "loc": _num(raw[cols["amountinlocation"]]),
         "avail": _num(raw[c_av]) if c_av else _num(raw[cols["amountinlocation"]]),
     })
-    return d[d["date"].notna() & (d["sku"] != "")].reset_index(drop=True)
+    return d[d["date"].notna() & (d["sku"] != "")]
 
 
 @st.cache_data(ttl=3600, show_spinner="Читаю список товаров из Metabase…")
@@ -505,8 +506,9 @@ def load_stock_catalog() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner="Читаю движения из Metabase…")
-def load_stock_rows(skus: tuple, d_from: date, d_to: date) -> pd.DataFrame:
-    """Снимки остатков только по выбранным товарам и периоду — фильтрует Metabase."""
+def load_stock_rows(skus: tuple, d_from: date, d_to: date):
+    """Снимки остатков только по выбранным товарам и периоду — фильтрует Metabase.
+    Возвращает (нормализованная таблица, исходные строки Metabase со всеми колонками)."""
     tid = _stock_tid()
     db, f = mb_meta(tid)
     sku_id, sku_type = f["skuwmsid"]
@@ -518,8 +520,9 @@ def load_stock_rows(skus: tuple, d_from: date, d_to: date) -> pd.DataFrame:
            ["=", ["field", sku_id, None], *vals]]
     raw = mb_run(db, {"source-table": tid, "filter": flt})
     if raw.empty:
-        return pd.DataFrame(columns=["date", "sku", "name", "cell", "inv", "zone", "loc", "avail"])
-    return _norm_stock(raw)
+        return pd.DataFrame(columns=["date", "sku", "name", "cell", "inv", "zone", "loc", "avail"]), raw
+    d = _norm_stock(raw)
+    return d.reset_index(drop=True), raw.loc[d.index].reset_index(drop=True)
 
 
 @st.cache_data(ttl=600, show_spinner="Читаю Magnit Stock из Metabase…")
@@ -557,8 +560,9 @@ def to_xlsx(sheets: dict) -> bytes:
     return out.getvalue()
 
 
-def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date) -> dict:
-    """Хронология движений по выбранным товарам между ежедневными снимками остатков."""
+def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date, raw: pd.DataFrame = None) -> dict:
+    """Хронология движений, резервы и остатки по выбранным товарам между ежедневными снимками.
+    Резерв = «В ячейках» (Amount In Location) − «Доступно» (Amount Available)."""
     all_dates = sorted(h["date"].unique())
     prev = [x for x in all_dates if x < d1]
     dates = prev[-1:] + [x for x in all_dates if d1 <= x <= d2]
@@ -567,41 +571,51 @@ def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date) -> dict:
     names = base.groupby("sku")["name"].first()
     keys = ["sku", "cell", "inv"]
 
-    # остаток по дням
+    # остаток по дням: в ячейках / доступно / резерв
     if sub.empty:
         daily = pd.DataFrame(columns=["sku", "date", "loc", "avail"])
     else:
         daily = sub.groupby(["sku", "date"]).agg(loc=("loc", "sum"), avail=("avail", "sum"))
         idx = pd.MultiIndex.from_product([sorted(sub["sku"].unique()), dates], names=["sku", "date"])
         daily = daily.reindex(idx, fill_value=0).reset_index()
+    daily["res"] = daily["loc"] - daily["avail"]
 
-    # движения между соседними снимками
+    # движения между соседними снимками (по ячейкам и накладным)
     parts = []
     if len(dates) >= 2 and not sub.empty:
-        g = sub.groupby(keys + ["date"], as_index=False).agg(loc=("loc", "sum"), zone=("zone", "first"))
+        g = sub.groupby(keys + ["date"], as_index=False).agg(loc=("loc", "sum"), avail=("avail", "sum"),
+                                                              zone=("zone", "first"))
         pq = (g.pivot_table(index=keys, columns="date", values="loc", aggfunc="sum", fill_value=0)
               .reindex(columns=dates, fill_value=0))
+        pa = (g.pivot_table(index=keys, columns="date", values="avail", aggfunc="sum", fill_value=0)
+              .reindex(columns=dates, fill_value=0).reindex(pq.index, fill_value=0))
         zone_of = g.groupby(keys)["zone"].first()
         for a, b in zip(dates[:-1], dates[1:]):
-            ch = pd.DataFrame({"was": pq[a], "now": pq[b]})
+            ch = pd.DataFrame({"was": pq[a], "now": pq[b], "aw": pa[a], "an": pa[b]})
             ch["delta"] = ch["now"] - ch["was"]
-            ch = ch[ch["delta"] != 0].reset_index()
+            ch["rw"] = ch["was"] - ch["aw"]
+            ch["rn"] = ch["now"] - ch["an"]
+            ch = ch[(ch["delta"] != 0) | (ch["rw"] != ch["rn"])].reset_index()
             if ch.empty:
                 continue
             ch["date"], ch["prev"] = b, a
             ch["zone"] = [zone_of.get((r.sku, r.cell, r.inv), "") for r in ch.itertuples()]
             parts.append(ch)
     cols_mv = ["Дата снимка", "Предыдущий снимок", "Sku Wms ID", "Товар", "Зона", "Ячейка", "Накладная",
-               "Было", "Стало", "Изменение", "Тип движения"]
+               "Было в ячейке", "Стало в ячейке", "Изменение", "Доступно было", "Доступно стало",
+               "Резерв было", "Резерв стало", "Тип движения"]
     if parts:
         mv = pd.concat(parts, ignore_index=True)
-        mv["type"] = np.select([mv["was"] == 0, mv["now"] == 0, mv["delta"] > 0],
-                               ["Поступление в ячейку", "Ячейка опустела", "Увеличение"], "Уменьшение")
+        mv["type"] = np.select([mv["delta"] == 0, mv["was"] == 0, mv["now"] == 0, mv["delta"] > 0],
+                               ["Изменение резерва", "Поступление в ячейку", "Ячейка опустела", "Увеличение"],
+                               "Уменьшение")
         mv["name"] = mv["sku"].map(names)
         mv = mv.sort_values(["sku", "date", "cell"]).reset_index(drop=True)
         mv_out = mv.rename(columns={"date": "Дата снимка", "prev": "Предыдущий снимок", "sku": "Sku Wms ID",
                                     "name": "Товар", "zone": "Зона", "cell": "Ячейка", "inv": "Накладная",
-                                    "was": "Было", "now": "Стало", "delta": "Изменение",
+                                    "was": "Было в ячейке", "now": "Стало в ячейке", "delta": "Изменение",
+                                    "aw": "Доступно было", "an": "Доступно стало",
+                                    "rw": "Резерв было", "rn": "Резерв стало",
                                     "type": "Тип движения"})[cols_mv]
     else:
         mv = pd.DataFrame(columns=["sku", "delta"])
@@ -609,27 +623,52 @@ def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date) -> dict:
 
     # итоги по товарам
     first, last = (dates[0], dates[-1]) if dates else (None, None)
-    d_idx = daily.set_index(["sku", "date"])["loc"] if not daily.empty else pd.Series(dtype=float)
+    d_loc = daily.set_index(["sku", "date"])["loc"] if not daily.empty else pd.Series(dtype=float)
+    d_av = daily.set_index(["sku", "date"])["avail"] if not daily.empty else pd.Series(dtype=float)
     rows = []
     for sku in skus:
-        m = mv[mv["sku"] == sku] if not mv.empty else mv
+        m = mv[(mv["sku"] == sku) & (mv["delta"] != 0)] if not mv.empty else mv
         inc = float(m.loc[m["delta"] > 0, "delta"].sum()) if len(m) else 0.0
         out_ = float(-m.loc[m["delta"] < 0, "delta"].sum()) if len(m) else 0.0
-        start = float(d_idx.get((sku, first), 0)) if first else 0.0
-        end = float(d_idx.get((sku, last), 0)) if last else 0.0
+        start = float(d_loc.get((sku, first), 0)) if first else 0.0
+        end = float(d_loc.get((sku, last), 0)) if last else 0.0
+        av_end = float(d_av.get((sku, last), 0)) if last else 0.0
         rows.append({"Sku Wms ID": sku, "Товар": names.get(sku, ""), "Остаток на начало": start,
-                     "Остаток на конец": end, "Поступило": inc, "Убыло": out_,
-                     "Чистое изменение": end - start, "Движений": int(len(m))})
+                     "Остаток на конец": end, "Доступно на конец": av_end, "Резерв на конец": end - av_end,
+                     "Поступило": inc, "Убыло": out_, "Чистое изменение": end - start, "Движений": int(len(m))})
     summ = pd.DataFrame(rows)
 
+    cols_daily = ["Дата снимка", "Sku Wms ID", "Товар", "В ячейках", "Доступно", "Резерв"]
     daily_out = daily.copy()
     if not daily_out.empty:
         daily_out["Товар"] = daily_out["sku"].map(names)
-        daily_out = daily_out.rename(columns={"date": "Дата снимка", "sku": "Sku Wms ID",
-                                              "loc": "В ячейках", "avail": "Доступно"})[
-            ["Дата снимка", "Sku Wms ID", "Товар", "В ячейках", "Доступно"]]
+        daily_out = daily_out.rename(columns={"date": "Дата снимка", "sku": "Sku Wms ID", "loc": "В ячейках",
+                                              "avail": "Доступно", "res": "Резерв"})[cols_daily]
     else:
-        daily_out = pd.DataFrame(columns=["Дата снимка", "Sku Wms ID", "Товар", "В ячейках", "Доступно"])
+        daily_out = pd.DataFrame(columns=cols_daily)
+
+    # последний остаток по ячейкам (на последнюю дату снимка)
+    cols_last = ["Дата снимка", "Sku Wms ID", "Товар", "Зона", "Ячейка", "Накладная", "В ячейках", "Доступно", "Резерв"]
+    lst = sub[sub["date"] == last] if last else sub.iloc[0:0]
+    if not lst.empty:
+        lst = (lst.groupby(keys, as_index=False).agg(zone=("zone", "first"), loc=("loc", "sum"), avail=("avail", "sum")))
+        lst["res"] = lst["loc"] - lst["avail"]
+        lst["date"] = last
+        lst["name"] = lst["sku"].map(names)
+        last_out = (lst.sort_values(["sku", "cell"])
+                    .rename(columns={"date": "Дата снимка", "sku": "Sku Wms ID", "name": "Товар", "zone": "Зона",
+                                     "cell": "Ячейка", "inv": "Накладная", "loc": "В ячейках",
+                                     "avail": "Доступно", "res": "Резерв"})[cols_last])
+    else:
+        last_out = pd.DataFrame(columns=cols_last)
+
+    # все данные по товару (все колонки Metabase) + резерв
+    all_out = pd.DataFrame()
+    if raw is not None and not raw.empty and len(raw) == len(h):
+        order = h.sort_values(["sku", "date", "cell"]).index
+        all_out = raw.loc[order].copy()
+        all_out["Резерв (В ячейке − Доступно)"] = (h["loc"] - h["avail"]).loc[order].values
+        all_out = all_out.reset_index(drop=True)
 
     params = pd.DataFrame([
         ["Период", f"{d1:%d.%m.%Y} — {d2:%d.%m.%Y}"],
@@ -638,10 +677,13 @@ def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date) -> dict:
         ["Снимков в расчёте", ", ".join(f"{x:%d.%m}" for x in dates) or "—"],
         ["Товаров", len(skus)],
         ["Сформировано", f"{datetime.now(TZ):%d.%m.%Y %H:%M}"],
+        ["Резерв", "Резерв = «В ячейках» (Amount In Location) − «Доступно» (Amount Available). "
+                   "Например, в ячейке 10, доступно 5 — резерв 5."],
         ["Примечание", "Движения — разница остатка «В ячейках» между соседними снимками, а не точное время операций. "
                        "Перемещение между ячейками видно как «убыло» в одной и «поступило» в другой."],
     ], columns=["Параметр", "Значение"])
-    return dict(dates=dates, movements=mv_out, summary=summ, daily=daily_out, params=params)
+    return dict(dates=dates, movements=mv_out, summary=summ, daily=daily_out, last=last_out,
+                all=all_out, params=params)
 
 
 def fmt_date(d) -> str:
@@ -1982,14 +2024,18 @@ if page == PAGES[4]:
 
         if st.button("Сформировать Excel", key="mv_go", disabled=not chosen or d1 is None):
             try:
-                hist = load_stock_rows(tuple(sorted(chosen)), d1 - timedelta(days=7), d2)
-                rep = stock_report(hist, chosen, d1, d2)
+                hist, raw_rows = load_stock_rows(tuple(sorted(chosen)), d1 - timedelta(days=7), d2)
+                rep = stock_report(hist, chosen, d1, d2, raw_rows)
                 if len(rep["dates"]) < 2:
                     st.session_state.mv_res = None
                     st.warning("В выбранном периоде нет снимков для сравнения. Расширьте период.")
                 else:
-                    data = to_xlsx({"Хронология движений": rep["movements"], "Итого по товарам": rep["summary"],
-                                    "Остаток по дням": rep["daily"], "Параметры": rep["params"]})
+                    sheets = {"Хронология движений": rep["movements"], "Итого по товарам": rep["summary"],
+                              "Остаток по дням": rep["daily"], "Последний остаток": rep["last"]}
+                    if not rep["all"].empty:
+                        sheets["Все данные по товару"] = rep["all"]
+                    sheets["Параметры"] = rep["params"]
+                    data = to_xlsx(sheets)
                     st.session_state.mv_res = dict(sig=(tuple(chosen), d1, d2), data=data, rep=rep,
                                                    name=f"dvizheniya_{d1:%Y%m%d}_{d2:%Y%m%d}.xlsx")
             except Exception as e:
@@ -1999,18 +2045,16 @@ if page == PAGES[4]:
         res = st.session_state.get("mv_res")
         if res and res["sig"] == (tuple(chosen), d1, d2):
             rep = res["rep"]
-            st.markdown(f"<div class='chips big'><span class='chip'>Товаров <b>{len(chosen)}</b></span>"
-                        f"<span class='chip'>Снимков <b>{len(rep['dates'])}</b></span>"
-                        f"<span class='chip'>Движений <b>{n(len(rep['movements']))}</b></span></div>",
-                        unsafe_allow_html=True)
             dl_button("⬇️ Скачать Excel: движения по остаткам", res["data"], res["name"], "dl_mv")
             sm_ = rep["summary"]
             rows = [[esc(r["Sku Wms ID"]), esc(r["Товар"]), n(r["Остаток на начало"]), n(r["Остаток на конец"]),
+                     n(r["Доступно на конец"]), n(r["Резерв на конец"]),
                      n(r["Поступило"]), n(r["Убыло"]), n(r["Движений"])] for _, r in sm_.iterrows()]
-            st.markdown(simple_table(["Sku Wms ID", "Товар", "На начало", "На конец", "Поступило", "Убыло", "Движений"],
-                                     rows, num_cols={2, 3, 4, 5, 6}), unsafe_allow_html=True)
-            st.caption("Движения считаются между ежедневными снимками остатков «В ячейках». "
-                       "Полная хронология по ячейкам — в файле.")
+            st.markdown(simple_table(["Sku Wms ID", "Товар", "На начало", "На конец", "Доступно", "Резерв",
+                                      "Поступило", "Убыло", "Движений"],
+                                     rows, num_cols={2, 3, 4, 5, 6, 7, 8}), unsafe_allow_html=True)
+            st.caption("Резерв = «В ячейках» − «Доступно». Движения считаются между ежедневными снимками. "
+                       "Полная хронология, остаток по дням, последний остаток по ячейкам и все данные по товару — в файле.")
 
     # ── выгрузка Magnit Stock ──
     st.markdown("<div class='sec'>Magnit Stock</div>", unsafe_allow_html=True)
