@@ -2129,7 +2129,7 @@ if page == PAGES[5]:
                              color=alt.Color("Статус:N", title=None,
                                              scale=alt.Scale(domain=["Собрано", "Не собрано"],
                                                              range=["#0F8B8D", "#E8A33D"]),
-                                                                                          legend=alt.Legend(orientation="top")),
+                                                                                          legend=alt.Legend(orient="top")),
                              tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
                                       alt.Tooltip("Статус:N"),
                                       alt.Tooltip("Штук:Q", title="Штук", format=",.0f")])
