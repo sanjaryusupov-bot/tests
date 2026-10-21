@@ -2088,55 +2088,119 @@ if page == PAGES[4]:
         st.caption(f"Готово: {n(mg_res['rows'])} строк.")
         dl_button("⬇️ Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
 # ───────────────────────── 6. Аналитика ─────────────────────────
+# ───────────────────────── 6. Аналитика ─────────────────────────
 if page == PAGES[5]:
     import altair as alt
-    st.markdown("<div class='sec'>Аналитика: количество штук по дням</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sec'>Аналитика: количество штук</div>", unsafe_allow_html=True)
 
     src = df_all.dropna(subset=["Дата"])
     if src.empty:
         st.info("Нет данных для графика.")
     else:
+        by = st.segmented_control("Группировка", ["По дням", "По неделям"], key="an_by") or "По дням"
+        weekly = by == "По неделям"
         dmin_a, dmax_a = min(src["Дата"]), max(src["Дата"])
-        start = max(dmin_a, dmax_a - timedelta(days=13))
+        start = max(dmin_a, dmax_a - timedelta(days=55 if weekly else 13))
         per = st.date_input("Период", value=(start, dmax_a), min_value=dmin_a, max_value=dmax_a,
-                            key="an_period", format="DD.MM.YYYY")
+                            key=f"an_period_{'w' if weekly else 'd'}", format="DD.MM.YYYY")
         if isinstance(per, (tuple, list)) and len(per) == 2:
             a1, a2 = per
-            part = src[(src["Дата"] >= a1) & (src["Дата"] <= a2)]
+            part = src[(src["Дата"] >= a1) & (src["Дата"] <= a2)].copy()
             if part.empty:
                 st.info("За выбранный период заказов нет.")
             else:
-                g = (part.assign(Статус=np.where(part["Собран"], "Собрано", "Не собрано"))
-                     .groupby(["Дата", "Статус"], as_index=False)["Штук"].sum())
-                g["Дата"] = pd.to_datetime(g["Дата"])
-
+                part["Статус"] = np.where(part["Собран"], "Собрано", "Не собрано")
                 tot = int(part["Штук"].sum())
                 done_ = int(part.loc[part["Собран"], "Штук"].sum())
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.markdown(kpi_box(n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all"),
-                                unsafe_allow_html=True)
-                with c2:
-                    st.markdown(kpi_box(n(done_), "собрано, шт", "", "ok"), unsafe_allow_html=True)
-                with c3:
-                    st.markdown(kpi_box(n(tot - done_), "не собрано, шт", "", "left"), unsafe_allow_html=True)
+                colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#0F8B8D", "#E8A33D"])
 
-                chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
-                         .encode(
-                             x=alt.X("yearmonthdate(Дата):T", title=None,
-                                     axis=alt.Axis(format="%d.%m", labelAngle=-45)),
-                             y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
-                             color=alt.Color("Статус:N", title=None,
-                                             scale=alt.Scale(domain=["Собрано", "Не собрано"],
-                                                             range=["#0F8B8D", "#E8A33D"]),
-                                                                                          legend=alt.Legend(orient="top")),
-                             tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
-                                      alt.Tooltip("Статус:N"),
-                                      alt.Tooltip("Штук:Q", title="Штук", format=",.0f")])
-                         .properties(height=400))
+                if not weekly:
+                    g = part.groupby(["Дата", "Статус"], as_index=False)["Штук"].sum()
+                    g["Дата"] = pd.to_datetime(g["Дата"])
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.markdown(kpi_box(n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all"),
+                                    unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(kpi_box(n(done_), "собрано, шт", "", "ok"), unsafe_allow_html=True)
+                    with c3:
+                        st.markdown(kpi_box(n(tot - done_), "не собрано, шт", "", "left"), unsafe_allow_html=True)
+                    chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
+                             .encode(x=alt.X("yearmonthdate(Дата):T", title=None,
+                                             axis=alt.Axis(format="%d.%m", labelAngle=-45)),
+                                     y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
+                                     color=alt.Color("Статус:N", title=None, scale=colors,
+                                                     legend=alt.Legend(orient="top")),
+                                     tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
+                                              alt.Tooltip("Статус:N"),
+                                              alt.Tooltip("Штук:Q", title="Штук", format=",.0f")])
+                             .properties(height=400))
+                else:
+                    dd = pd.to_datetime(part["Дата"])
+                    part["W"] = (dd - pd.to_timedelta(dd.dt.weekday, unit="D")).dt.normalize()
+                    wk = (part.groupby("W")
+                          .agg(Штук=("Штук", "sum"),
+                               Собрано=("Штук", lambda s: int(s[part.loc[s.index, "Собран"]].sum())))
+                          .reset_index().sort_values("W"))
+                    wk["Не собрано"] = wk["Штук"] - wk["Собрано"]
+                    wk["Неделя"] = (wk["W"].dt.strftime("%d.%m") + "–" +
+                                    (wk["W"] + pd.Timedelta(days=6)).dt.strftime("%d.%m"))
+                    wk["Δ"] = wk["Штук"].diff()
+                    wk["Δ%"] = wk["Штук"].pct_change() * 100
+                    order = wk["Неделя"].tolist()
+
+                    last_w = wk.iloc[-1]
+                    if len(wk) > 1 and pd.notna(last_w["Δ%"]):
+                        arrow = "▲" if last_w["Δ"] > 0 else ("▼" if last_w["Δ"] < 0 else "■")
+                        sub3 = f"{arrow} {last_w['Δ']:+,.0f} шт ({last_w['Δ%']:+.0f}%) к прошлой неделе".replace(",", " ")
+                    else:
+                        sub3 = "нет предыдущей недели для сравнения"
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.markdown(kpi_box(n(tot), "всего штук за период", f"недель: {len(wk)}", "all"),
+                                    unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(kpi_box(n(wk["Штук"].mean()), "в среднем за неделю, шт", "", "ok"),
+                                    unsafe_allow_html=True)
+                    with c3:
+                        st.markdown(kpi_box(n(last_w["Штук"]), f"последняя неделя ({last_w['Неделя']})", sub3,
+                                            "left" if len(wk) > 1 and last_w["Δ"] < 0 else "ok"),
+                                    unsafe_allow_html=True)
+
+                    g = (part.groupby(["W", "Статус"], as_index=False)["Штук"].sum())
+                    g["Неделя"] = (g["W"].dt.strftime("%d.%m") + "–" +
+                                   (g["W"] + pd.Timedelta(days=6)).dt.strftime("%d.%m"))
+                    xenc = alt.X("Неделя:N", sort=order, title=None, axis=alt.Axis(labelAngle=-30))
+                    bars = (alt.Chart(g).mark_bar(size=38)
+                            .encode(x=xenc,
+                                    y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
+                                    color=alt.Color("Статус:N", title=None, scale=colors,
+                                                    legend=alt.Legend(orient="top")),
+                                    tooltip=[alt.Tooltip("Неделя:N"), alt.Tooltip("Статус:N"),
+                                             alt.Tooltip("Штук:Q", title="Штук", format=",.0f")]))
+                    labels = (alt.Chart(wk).mark_text(dy=-8, fontWeight="bold")
+                              .encode(x=xenc, y=alt.Y("Штук:Q"), text=alt.Text("Штук:Q", format=",.0f")))
+                    chart = (bars + labels).properties(height=400)
+
                 try:
                     st.altair_chart(chart, width="stretch")
                 except TypeError:
                     st.altair_chart(chart, use_container_width=True)
-                st.caption("Столбец = один день. Бирюзовая часть — собранные штуки, оранжевая — не собранные "
-                           "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
+
+                if weekly:
+                    def _chg(r):
+                        if pd.isna(r["Δ"]):
+                            return "—"
+                        arrow = "▲" if r["Δ"] > 0 else ("▼" if r["Δ"] < 0 else "■")
+                        pct = f" ({r['Δ%']:+.0f}%)" if pd.notna(r["Δ%"]) else ""
+                        return f"{arrow} {r['Δ']:+,.0f}{pct}".replace(",", " ")
+                    rows = [[f"<b>{r.Неделя}</b>", n(r.Штук), n(r.Собрано),
+                             f"{(r.Собрано / r.Штук * 100 if r.Штук else 0):.0f}%", _chg(wk.loc[i])]
+                            for i, r in wk.iterrows()]
+                    st.markdown(simple_table(["Неделя", "Штук", "Собрано", "Доля собранного", "К прошлой неделе"],
+                                             rows[::-1], num_cols={1, 2, 3}), unsafe_allow_html=True)
+                    st.caption("Неделя считается с понедельника по воскресенье. Первая и последняя недели периода "
+                               "могут быть неполными: для честного сравнения выбирайте период от понедельника до воскресенья.")
+                else:
+                    st.caption("Столбец = один день. Бирюзовая часть — собранные штуки, оранжевая — не собранные "
+                               "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
