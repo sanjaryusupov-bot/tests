@@ -543,22 +543,38 @@ def _xl_safe(df: pd.DataFrame) -> pd.DataFrame:
 def to_xlsx(sheets: dict) -> bytes:
     from openpyxl.styles import Font, PatternFill
     out = BytesIO()
+
+    def _cell(v):
+        if isinstance(v, (list, dict, tuple, set)):
+            return json.dumps(v, ensure_ascii=False, default=str)
+        return v
+
     with pd.ExcelWriter(out, engine="openpyxl", date_format="DD.MM.YYYY",
                         datetime_format="DD.MM.YYYY HH:MM") as xw:
         for name, frame in sheets.items():
             nm = name[:31]
-            frame = _xl_safe(frame)
+            frame = _xl_safe(frame).copy()
+            # уникальные строковые названия колонок
+            seen, cols = {}, []
+            for c in frame.columns:
+                c = str(c)
+                seen[c] = seen.get(c, 0) + 1
+                cols.append(c if seen[c] == 1 else f"{c} ({seen[c]})")
+            frame.columns = cols
+            for c in cols:
+                if frame[c].dtype == object:
+                    frame[c] = frame[c].map(_cell)
             frame.to_excel(xw, sheet_name=nm, index=False)
             ws = xw.sheets[nm]
             ws.freeze_panes = "A2"
             for c in ws[1]:
                 c.font, c.fill = Font(bold=True), PatternFill("solid", fgColor="DCE8F2")
-            for i, col in enumerate(frame.columns, 1):
-                sample = frame[col].astype(str).head(300)
-                w = max([len(str(col))] + [len(x) for x in sample]) + 2
+            for i, col in enumerate(cols, 1):
+                sample = frame[col].head(300).map(lambda x: "" if pd.isna(x) else str(x)) \
+                    if frame[col].dtype != object else frame[col].head(300).map(lambda x: "" if x is None else str(x))
+                w = max([len(col)] + [len(x) for x in sample]) + 2
                 ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(max(w, 10), 60)
     return out.getvalue()
-
 
 def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date, raw: pd.DataFrame = None) -> dict:
     """Хронология движений, резервы и остатки по выбранным товарам между ежедневными снимками.
