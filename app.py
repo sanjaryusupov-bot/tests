@@ -68,7 +68,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MODES = ["Все", "Не собрано", "Собрано", "Прочие заказы", "Маршрутизация", "Рейсы"]
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
 
-PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам"]
+PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 LIGHT = dict(scheme="light", ink="#14232E", paper="#EEF2F5", card="#FFFFFF", line="#D9E1E7",
@@ -2087,3 +2087,56 @@ if page == PAGES[4]:
     if mg_res:
         st.caption(f"Готово: {n(mg_res['rows'])} строк.")
         dl_button("⬇️ Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
+# ───────────────────────── 6. Аналитика ─────────────────────────
+if page == PAGES[5]:
+    import altair as alt
+    st.markdown("<div class='sec'>Аналитика: количество штук по дням</div>", unsafe_allow_html=True)
+
+    src = df_all.dropna(subset=["Дата"])
+    if src.empty:
+        st.info("Нет данных для графика.")
+    else:
+        dmin_a, dmax_a = min(src["Дата"]), max(src["Дата"])
+        start = max(dmin_a, dmax_a - timedelta(days=13))
+        per = st.date_input("Период", value=(start, dmax_a), min_value=dmin_a, max_value=dmax_a,
+                            key="an_period", format="DD.MM.YYYY")
+        if isinstance(per, (tuple, list)) and len(per) == 2:
+            a1, a2 = per
+            part = src[(src["Дата"] >= a1) & (src["Дата"] <= a2)]
+            if part.empty:
+                st.info("За выбранный период заказов нет.")
+            else:
+                g = (part.assign(Статус=np.where(part["Собран"], "Собрано", "Не собрано"))
+                     .groupby(["Дата", "Статус"], as_index=False)["Штук"].sum())
+                g["Дата"] = pd.to_datetime(g["Дата"])
+
+                tot = int(part["Штук"].sum())
+                done_ = int(part.loc[part["Собран"], "Штук"].sum())
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.markdown(kpi_box(n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all"),
+                                unsafe_allow_html=True)
+                with c2:
+                    st.markdown(kpi_box(n(done_), "собрано, шт", "", "ok"), unsafe_allow_html=True)
+                with c3:
+                    st.markdown(kpi_box(n(tot - done_), "не собрано, шт", "", "left"), unsafe_allow_html=True)
+
+                chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
+                         .encode(
+                             x=alt.X("yearmonthdate(Дата):T", title=None,
+                                     axis=alt.Axis(format="%d.%m", labelAngle=-45)),
+                             y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
+                             color=alt.Color("Статус:N", title=None,
+                                             scale=alt.Scale(domain=["Собрано", "Не собрано"],
+                                                             range=["#0F8B8D", "#E8A33D"]),
+                                             legend=alt.Legend(orientation="bottom")),
+                             tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
+                                      alt.Tooltip("Статус:N"),
+                                      alt.Tooltip("Штук:Q", title="Штук", format=",.0f")])
+                         .properties(height=400))
+                try:
+                    st.altair_chart(chart, width="stretch")
+                except TypeError:
+                    st.altair_chart(chart, use_container_width=True)
+                st.caption("Столбец = один день. Бирюзовая часть — собранные штуки, оранжевая — не собранные "
+                           "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
