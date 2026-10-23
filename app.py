@@ -28,6 +28,10 @@ CACHE_SECONDS = 120          # как часто перечитывать таб
 TZ = ZoneInfo("Asia/Tashkent")
 HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию прячем дни с готовностью от этого процента
 
+# Логотип: ссылка на PNG/SVG с настоящим логотипом M Cosmetic.
+# Если пусто — рисуется упрощённый логотип (значок + надпись).
+LOGO_URL = ""
+
 # Магазины, которых НЕ должно быть в сводной «Маршрутизация»
 EXCLUDE_STORES = [
     "Узуммаркет",
@@ -71,16 +75,19 @@ ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая"
 PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
-LIGHT = dict(scheme="light", ink="#14232E", paper="#EEF2F5", card="#FFFFFF", line="#D9E1E7",
-             mute="#667985", done="#0F8B8D", left="#E8A33D", track="#E3EAEE", head="#DCE8F2",
-             ok_bg="#D6F0EF", ok_fg="#09595A", no_bg="#FBEBCF", no_fg="#7A4E05",
-             car_bg="#FFE94A", car_fg="#14232E", band="#1565C0", hot_bg="#FBEFD2", note_bg="#FFF4D6")
-DARK = dict(scheme="dark", ink="#E6EEF3", paper="#0E1820", card="#16242E", line="#2A3B47",
-            mute="#8CA1AF", done="#2FB8BA", left="#F2B65A", track="#243642", head="#1F3342",
-            ok_bg="#12393B", ok_fg="#8FE3E4", no_bg="#3D2E12", no_fg="#F5C77E",
-            car_bg="#E5C93A", car_fg="#14232E", band="#1F5FA8", hot_bg="#3A2E16", note_bg="#3A2E16")
+# Палитра в стиле M Cosmetic WMS Reports: малиновый акцент, мягкие серые поверхности
+LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
+             mute="#6F6B76", done="#1E9E5C", left="#E8A33D", track="#EEE9EC", head="#F8F3F6",
+             ok_bg="#E3F6EC", ok_fg="#1B7A48", no_bg="#FDEBD3", no_fg="#8A5206",
+             car_bg="#FDE7F3", car_fg="#8E1B5E", band="#C2308B", hot_bg="#FFF1DA", note_bg="#FFF4D6",
+             accent="#C2308B", accent_soft="#FDE7F3", accent_ink="#A8206F")
+DARK = dict(scheme="dark", ink="#ECE8EE", paper="#14111A", card="#1D1923", line="#2F2937",
+            mute="#9A93A5", done="#34C27A", left="#F2B65A", track="#2B2433", head="#262030",
+            ok_bg="#16382A", ok_fg="#8FE3B4", no_bg="#3D2E12", no_fg="#F5C77E",
+            car_bg="#3A1F31", car_fg="#F5A9D6", band="#A8206F", hot_bg="#3A2E16", note_bg="#3A2E16",
+            accent="#E256A8", accent_soft="#3A1F31", accent_ink="#F5A9D6")
 
-st.set_page_config(page_title="Сборка заказов", page_icon="📦", layout="wide",
+st.set_page_config(page_title="M Cosmetic · Сборка заказов", page_icon="📦", layout="wide",
                    initial_sidebar_state="collapsed")
 
 # ───────────────────────── Тема (день / ночь) ─────────────────────────
@@ -93,8 +100,8 @@ P = DARK if st.session_state.dark else LIGHT
 
 CSS = Template("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
 .stApp { background:$paper; color:$ink; color-scheme:$scheme; }
 #MainMenu, footer, header[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
 .block-container { padding: 1.2rem 1rem 3rem; max-width: 1100px; }
@@ -105,28 +112,39 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-s
 
 /* кнопки и поля */
 .stApp .stButton > button, .stApp .stDownloadButton > button {
-  background:$card; color:$ink; border:1px solid $line; border-radius:10px; font-weight:700; }
-.stApp .stButton > button:hover, .stApp .stDownloadButton > button:hover { border-color:$done; color:$ink; }
+  background:$card; color:$ink; border:1px solid $line; border-radius:12px; font-weight:600; }
+.stApp .stButton > button:hover, .stApp .stDownloadButton > button:hover { border-color:$accent; color:$accent; }
 .stApp .stButton > button p, .stApp .stDownloadButton > button p { color:inherit; }
-.stApp [data-testid="stButtonGroup"] button { background:$card; color:$ink; border:1px solid $line; font-weight:700; }
+.stApp [data-testid="stButtonGroup"] button { background:$card; color:$ink; border:1px solid $line; font-weight:600; }
 .stApp [data-testid="stButtonGroup"] button p { color:inherit; }
-.stApp [data-testid="stButtonGroup"] button[aria-checked="true"] { background:$ink; color:$paper; border-color:$ink; }
+.stApp [data-testid="stButtonGroup"] button[aria-checked="true"] { background:$accent_soft; color:$accent_ink; border-color:$accent_soft; }
 .stApp [data-baseweb="select"] > div, .stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp input {
-  background:$card !important; color:$ink !important; border-color:$line !important; }
+  background:$card !important; color:$ink !important; border-color:$line !important; border-radius:12px !important; }
 .stApp [data-baseweb="select"] * { color:$ink !important; }
 .stApp [data-baseweb="select"] svg { fill:$mute !important; }
-.stApp [data-baseweb="tag"] { background:$done !important; }
+.stApp [data-baseweb="tag"] { background:$accent !important; }
 .stApp [data-baseweb="tag"] * { color:#fff !important; }
 [data-baseweb="popover"] ul, [data-baseweb="popover"] li, [data-baseweb="menu"] { background:$card !important; color:$ink !important; }
 [data-baseweb="popover"] li * { color:$ink !important; }
-[data-baseweb="popover"] li:hover, [data-baseweb="popover"] li[aria-selected="true"] { background:$head !important; }
-.stApp [data-testid="stExpander"] { background:$card; border:1px solid $line; border-radius:12px; }
+[data-baseweb="popover"] li:hover, [data-baseweb="popover"] li[aria-selected="true"] { background:$accent_soft !important; }
+.stApp [data-testid="stExpander"] { background:$card; border:1px solid $line; border-radius:16px; }
 .stApp [data-testid="stExpander"] summary p { color:$ink; font-weight:700; }
-.stApp [data-testid="stAlert"] { background:$card; border:1px solid $line; }
+.stApp [data-testid="stAlert"] { background:$card; border:1px solid $line; border-radius:12px; }
 
-/* шапка */
-.top { display:flex; flex-direction:column; gap:2px; }
-.top h1 { font-size:1.7rem; font-weight:800; letter-spacing:-0.02em; margin:0; color:$ink; }
+/* шапка: логотип + заголовок */
+.brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
+            display:flex; align-items:center; justify-content:space-between; }
+.brand { display:flex; align-items:center; gap:10px; }
+.brand img { height:34px; display:block; }
+.brand .bi { width:30px; height:30px; border-radius:9px; background:$accent; color:#fff; display:flex;
+             align-items:center; justify-content:center; font-weight:800; font-size:1.05rem; letter-spacing:-0.02em; }
+.brand .bt { display:flex; flex-direction:column; line-height:1.05; }
+.brand .bn { font-weight:800; font-size:1.05rem; letter-spacing:.02em; color:$accent; }
+.brand .bs { font-weight:600; font-size:.62rem; letter-spacing:.16em; color:$mute; margin-top:3px; }
+.brandbar .live { font-size:.78rem; color:$mute; }
+.top { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+.top .crumb { font-size:.8rem; color:$mute; }
+.top h1 { font-size:1.75rem; font-weight:800; letter-spacing:-0.02em; margin:0; color:$ink; }
 .top .upd { font-size:.8rem; color:$mute; }
 
 /* карточки-кнопки: невидимая кнопка накрывает всю карточку */
@@ -134,20 +152,20 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-s
 [class*="st-key-tap_"] [data-testid="stElementContainer"]:has(button) { position:absolute; inset:0; z-index:5; margin:0; width:100%; height:100%; }
 [class*="st-key-tap_"] [data-testid="stButton"] { width:100%; height:100%; display:block; }
 [class*="st-key-tap_"] button { display:block; width:100%; height:100%; min-height:0; opacity:0; cursor:pointer; padding:0; }
-[class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$done; }
+[class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$accent; }
 [class*="st-key-tap_"] iframe { display:block; border:0; }
 
-.kpi { background:$card; border:1px solid $line; border-radius:14px; padding:14px 16px; min-height:112px; }
+.kpi { background:$card; border:1px solid $line; border-radius:16px; padding:14px 16px; min-height:112px; }
 .kpi .v { font-size:2.1rem; font-weight:800; letter-spacing:-0.02em; line-height:1.1; color:$ink; }
 .kpi .l { font-size:.88rem; font-weight:700; margin-top:4px; color:$ink; }
 .kpi .s { font-size:.8rem; color:$mute; margin-top:2px; }
 .kpi.left { border-left:5px solid $left; }
-.kpi.all { border-left:5px solid $ink; }
+.kpi.all { border-left:5px solid $accent; }
 .kpi.ok { border-left:5px solid $done; }
 
 .bar { height:10px; border-radius:99px; background:$track; overflow:hidden; }
 .bar > i { display:block; height:100%; background:$done; border-radius:99px; }
-.day { background:$card; border:1px solid $line; border-radius:12px; padding:12px 14px; margin-bottom:2px;
+.day { background:$card; border:1px solid $line; border-radius:16px; padding:12px 14px; margin-bottom:2px;
        display:grid; grid-template-columns: 92px 1fr 90px; gap:14px; align-items:center; }
 .day .d { font-weight:800; font-size:1.05rem; line-height:1.15; color:$ink; }
 .day .d small { display:block; font-weight:500; color:$mute; font-size:.78rem; }
@@ -165,23 +183,23 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Manrope', sans-s
 .badge.ok { background:$ok_bg; color:$ok_fg; }
 .badge.no { background:$no_bg; color:$no_fg; }
 
-.tbl-wrap { max-height:68vh; overflow:auto; border:1px solid $line; border-radius:12px; background:$card; }
+.tbl-wrap { max-height:68vh; overflow:auto; border:1px solid $line; border-radius:16px; background:$card; }
 table.tbl { border-collapse:collapse; width:100%; font-size:.85rem; color:$ink; }
-.tbl th { position:sticky; top:0; background:$head; text-align:left; padding:9px 10px; font-weight:700; white-space:nowrap; color:$ink; }
-.tbl td { padding:7px 10px; border-top:1px solid $line; vertical-align:top; color:$ink; }
+.tbl th { position:sticky; top:0; background:$head; text-align:left; padding:10px 12px; font-weight:700; white-space:nowrap; color:$ink; }
+.tbl td { padding:8px 12px; border-top:1px solid $line; vertical-align:top; color:$ink; }
 .tbl .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .tbl td.city { font-weight:800; }
 .tbl td.shop { font-weight:700; }
 .tbl tr.total td { font-weight:800; background:$head; border-top:2px solid $line; }
 .bxbar { height:8px; min-width:110px; border-radius:99px; background:$track; overflow:hidden; }
-.bxbar i { display:block; height:100%; background:$done; border-radius:99px; }
+.bxbar i { display:block; height:100%; background:$accent; border-radius:99px; }
 .sec { font-weight:800; font-size:1.05rem; margin:18px 0 8px; color:$ink; }
 
-.hit { background:$card; border:1px solid $line; border-radius:12px; padding:12px 14px; margin-bottom:8px; color:$ink; }
+.hit { background:$card; border:1px solid $line; border-radius:16px; padding:12px 14px; margin-bottom:8px; color:$ink; }
 .hit .n { font-weight:800; font-size:1.05rem; }
 .hit .s { color:$mute; font-size:.85rem; margin:2px 0 8px; }
 .note { background:$note_bg; border-left:5px solid $left; border-radius:10px; padding:10px 14px; margin:4px 0 10px; font-size:.9rem; color:$ink; }
-.cars-wrap { overflow-x:auto; border:1px solid $line; border-radius:12px; background:$card; }
+.cars-wrap { overflow-x:auto; border:1px solid $line; border-radius:16px; background:$card; }
 table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink; }
 .cars td { padding:6px 10px; vertical-align:top; color:$ink; border-top:1px solid $line; }
 .cars tr.car td { border-top:none; }
@@ -196,13 +214,13 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .chips.big .chip { font-size:.9rem; padding:5px 14px; background:$card; border:1px solid $line; }
 .maps { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
 .cars a.mapbtn { display:inline-block; padding:4px 12px; border-radius:99px; font-size:.8rem; font-weight:700;
-                 text-decoration:none; background:$ink; color:$paper !important; white-space:nowrap; }
-.cars a.mapbtn:hover { background:$done; }
+                 text-decoration:none; background:$accent; color:#fff !important; white-space:nowrap; }
+.cars a.mapbtn:hover { background:$accent_ink; }
 .load { flex:1; min-width:80px; max-width:220px; height:6px; border-radius:99px; background:$track; overflow:hidden; }
 .load i { display:block; height:100%; background:$done; border-radius:99px; }
 .load.hi i { background:$left; }
 .loadpct { font-size:.78rem; font-weight:700; color:$mute; }
-.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:14px; padding:14px 16px; margin-bottom:12px; }
+.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:16px; padding:14px 16px; margin-bottom:12px; }
 .ship .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
 .ship .sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
 .ship .sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
@@ -1220,6 +1238,14 @@ def xl_button(label: str, build, file_name: str, key: str):
 
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
+def logo_html() -> str:
+    """Логотип M Cosmetic: картинка по LOGO_URL или упрощённый значок с надписью."""
+    if LOGO_URL:
+        return f"<div class='brand'><img src='{esc(LOGO_URL)}' alt='M Cosmetic'></div>"
+    return ("<div class='brand'><div class='bi'>M</div>"
+            "<div class='bt'><span class='bn'>COSMETIC</span><span class='bs'>WMS REPORTS</span></div></div>")
+
+
 def tap(key: str, card_html: str, on_click, args=(), iframe=None):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
     iframe=(документ, высота) — карточка рисуется в отдельном блоке, где работают скрипты (таймер)."""
@@ -1281,9 +1307,9 @@ def routing_table(g: pd.DataFrame) -> str:
 # ── карточка «Отгрузка сегодня» с живым таймером (отдельный документ со своими стилями и скриптом) ──
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-html, body { margin:0; padding:0; background:transparent; font-family:'Manrope', sans-serif; color:$ink; }
-.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:14px;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
+.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:16px;
         padding:14px 16px; margin:0 0 12px; box-sizing:border-box; }
 .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
 .sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
@@ -1586,9 +1612,14 @@ except Exception as e:
     st.stop()
 
 now = datetime.now(TZ)
+
+# верхняя панель с логотипом
+st.markdown(f"<div class='brandbar'>{logo_html()}<span class='live'>{now:%d.%m.%Y} · {WEEKDAYS[now.weekday()]}</span></div>",
+            unsafe_allow_html=True)
+
 h1, h2, h3 = st.columns([6, 1.4, 1.4], vertical_alignment="bottom")
 with h1:
-    st.markdown(f"""<div class="top"><h1>📦 Сборка заказов</h1>
+    st.markdown(f"""<div class="top"><span class="crumb">Склад</span><h1>Сборка заказов</h1>
     <span class="upd">Обновлено {now:%H:%M} · данные кэшируются на {CACHE_SECONDS // 60} мин</span></div>""",
                 unsafe_allow_html=True)
 with h2:
@@ -2087,7 +2118,7 @@ if page == PAGES[4]:
     if mg_res:
         st.caption(f"Готово: {n(mg_res['rows'])} строк.")
         dl_button("⬇️ Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
-# ───────────────────────── 6. Аналитика ─────────────────────────
+
 # ───────────────────────── 6. Аналитика ─────────────────────────
 if page == PAGES[5]:
     import altair as alt
@@ -2112,7 +2143,7 @@ if page == PAGES[5]:
                 part["Статус"] = np.where(part["Собран"], "Собрано", "Не собрано")
                 tot = int(part["Штук"].sum())
                 done_ = int(part.loc[part["Собран"], "Штук"].sum())
-                colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#0F8B8D", "#E8A33D"])
+                colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#1E9E5C", "#E8A33D"])
 
                 if not weekly:
                     g = part.groupby(["Дата", "Статус"], as_index=False)["Штук"].sum()
@@ -2202,5 +2233,5 @@ if page == PAGES[5]:
                     st.caption("Неделя считается с понедельника по воскресенье. Первая и последняя недели периода "
                                "могут быть неполными: для честного сравнения выбирайте период от понедельника до воскресенья.")
                 else:
-                    st.caption("Столбец = один день. Бирюзовая часть — собранные штуки, оранжевая — не собранные "
+                    st.caption("Столбец = один день. Зелёная часть — собранные штуки, оранжевая — не собранные "
                                "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
