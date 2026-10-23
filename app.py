@@ -4,6 +4,8 @@
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests
 """
+import base64
+from pathlib import Path
 import html
 import json
 import re
@@ -31,6 +33,8 @@ HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию пряч�
 # Логотип: ссылка на PNG/SVG с настоящим логотипом M Cosmetic.
 # Если пусто — рисуется упрощённый логотип (значок + надпись).
 LOGO_URL = ""
+# Логотип M Cosmetic: положите файл рядом с app.py (PNG или SVG)
+LOGO_FILES = ["logo.png", "logo.svg", "logo.jpg"]
 
 # Магазины, которых НЕ должно быть в сводной «Маршрутизация»
 EXCLUDE_STORES = [
@@ -134,14 +138,10 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 /* шапка: логотип + заголовок */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:space-between; }
-.brand { display:flex; align-items:center; gap:10px; }
-.brand img { height:34px; display:block; }
-.brand .bi { width:30px; height:30px; border-radius:9px; background:$accent; color:#fff; display:flex;
-             align-items:center; justify-content:center; font-weight:800; font-size:1.05rem; letter-spacing:-0.02em; }
-.brand .bt { display:flex; flex-direction:column; line-height:1.05; }
-.brand .bn { font-weight:800; font-size:1.05rem; letter-spacing:.02em; color:$accent; }
-.brand .bs { font-weight:600; font-size:.62rem; letter-spacing:.16em; color:$mute; margin-top:3px; }
-.brandbar .live { font-size:.78rem; color:$mute; }
+.brand { display:flex; align-items:center; gap:10px; color:$accent; }
+.brand img { height:32px; display:block; }
+.brand .bi { display:flex; color:$accent; }
+.brand .bn { font-weight:800; font-size:1.15rem; letter-spacing:.04em; color:$accent; }
 .top { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
 .top .crumb { font-size:.8rem; color:$mute; }
 .top h1 { font-size:1.75rem; font-weight:800; letter-spacing:-0.02em; margin:0; color:$ink; }
@@ -1238,71 +1238,29 @@ def xl_button(label: str, build, file_name: str, key: str):
 
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
+@st.cache_data(show_spinner=False)
+def _logo_data_uri() -> str:
+    """Оригинальный логотип из файла рядом с app.py -> data-URI. Нет файла — пустая строка."""
+    bases = [Path(__file__).resolve().parent, Path.cwd()]
+    for base in bases:
+        for name in LOGO_FILES:
+            p = base / name
+            if p.exists():
+                mime = {"svg": "image/svg+xml", "jpg": "image/jpeg"}.get(p.suffix.lstrip(".").lower(), "image/png")
+                return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+    return ""
+
+
 def logo_html() -> str:
-    """Логотип M Cosmetic: картинка по LOGO_URL или упрощённый значок с надписью."""
-    if LOGO_URL:
-        return f"<div class='brand'><img src='{esc(LOGO_URL)}' alt='M Cosmetic'></div>"
-    return ("<div class='brand'><div class='bi'>M</div>"
-            "<div class='bt'><span class='bn'>COSMETIC</span><span class='bs'>WMS REPORTS</span></div></div>")
-
-
-def tap(key: str, card_html: str, on_click, args=(), iframe=None):
-    """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
-    iframe=(документ, высота) — карточка рисуется в отдельном блоке, где работают скрипты (таймер)."""
-    with st.container(key=f"tap_{key}"):
-        if iframe:
-            components.html(iframe[0], height=iframe[1])
-        else:
-            st.markdown(card_html, unsafe_allow_html=True)
-        st.button("открыть", key=f"btn_{key}", on_click=on_click, args=args)
-
-
-def go_orders(mode: str, d):
-    st.session_state.page = PAGES[1]
-    st.session_state.f_mode = mode
-    st.session_state.f_date = d
-
-
-def set_oth(name):
-    """«Прочие заказы»: открыть магазин (name) или вернуться к общему списку (None)."""
-    st.session_state.oth_store = name
-
-
-def toggle_theme():
-    st.session_state.dark = not st.session_state.dark
-
-
-def badge(collected: bool, new: bool = False) -> str:
-    if new:
-        return '<span class="badge no">не маршрутизирован</span>'
-    return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
-
-
-def orders_table(frame: pd.DataFrame, limit: int = 1500) -> str:
-    head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
-            "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
-    body = []
-    for r in frame.head(limit).to_dict("records"):
-        body.append(
-            f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
-            f"<td>{esc(r['Город'] or '—')}</td><td class='num'>{n(r['Штук'])}</td>"
-            f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
-            f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
-    return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
-
-
-def routing_table(g: pd.DataFrame) -> str:
-    head = ("<tr><th>Город</th><th>Название магазина</th><th>Адрес магазина</th>"
-            "<th class='num'>Сумма по полю кол-во штук в заказе</th></tr>")
-    body, prev = [], None
-    for r in g.itertuples(index=False):
-        city = (esc(r.Город) or "—") if r.Город != prev else ""
-        body.append(f"<tr><td class='city'>{city}</td><td class='shop'>{esc(r.Магазин)}</td>"
-                    f"<td>{esc(r.Адрес)}</td><td class='num'>{n(r.Штук)}</td></tr>")
-        prev = r.Город
-    body.append(f"<tr class='total'><td colspan='3'>Общий итог</td><td class='num'>{n(g['Штук'].sum())}</td></tr>")
-    return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
-
+    """Логотип M Cosmetic: оригинал из файла, а если файла нет — упрощённая копия (без надписи WMS REPORTS)."""
+    uri = _logo_data_uri()
+    if uri:
+        return f"<div class='brand'><img src='{uri}' alt='M Cosmetic'></div>"
+    icon = ("<svg width='30' height='30' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+            "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
+            "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
+            "stroke-linecap='round' stroke-linejoin='round'/></svg>")
+    return f"<div class='brand'><span class='bi'>{icon}</span><span class='bn'>M COSMETIC</span></div>"
 
 # ── карточка «Отгрузка сегодня» с живым таймером (отдельный документ со своими стилями и скриптом) ──
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
