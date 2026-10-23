@@ -3,14 +3,15 @@
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests
+Логотип: положите файл logo.png (или logo.svg / logo.jpg) рядом с app.py.
 """
 import base64
-from pathlib import Path
 import html
 import json
 import re
 from datetime import datetime, date, timedelta
 from io import BytesIO
+from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo
 
@@ -30,10 +31,7 @@ CACHE_SECONDS = 120          # как часто перечитывать таб
 TZ = ZoneInfo("Asia/Tashkent")
 HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию прячем дни с готовностью от этого процента
 
-# Логотип: ссылка на PNG/SVG с настоящим логотипом M Cosmetic.
-# Если пусто — рисуется упрощённый логотип (значок + надпись).
-LOGO_URL = ""
-# Логотип M Cosmetic: положите файл рядом с app.py (PNG или SVG)
+# Логотип M Cosmetic: файл рядом с app.py (PNG / SVG / JPG)
 LOGO_FILES = ["logo.png", "logo.svg", "logo.jpg"]
 
 # Магазины, которых НЕ должно быть в сводной «Маршрутизация»
@@ -79,7 +77,7 @@ ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая"
 PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
-# Палитра в стиле M Cosmetic WMS Reports: малиновый акцент, мягкие серые поверхности
+# Палитра в стиле M Cosmetic: малиновый акцент, мягкие серые поверхности
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
              mute="#6F6B76", done="#1E9E5C", left="#E8A33D", track="#EEE9EC", head="#F8F3F6",
              ok_bg="#E3F6EC", ok_fg="#1B7A48", no_bg="#FDEBD3", no_fg="#8A5206",
@@ -138,6 +136,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 /* шапка: логотип + заголовок */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:space-between; }
+.brandbar .live { font-size:.78rem; color:$mute; }
 .brand { display:flex; align-items:center; gap:10px; color:$accent; }
 .brand img { height:32px; display:block; }
 .brand .bi { display:flex; color:$accent; }
@@ -593,6 +592,7 @@ def to_xlsx(sheets: dict) -> bytes:
                 w = max([len(col)] + [len(x) for x in sample]) + 2
                 ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(max(w, 10), 60)
     return out.getvalue()
+
 
 def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date, raw: pd.DataFrame = None) -> dict:
     """Хронология движений, резервы и остатки по выбранным товарам между ежедневными снимками.
@@ -1251,6 +1251,18 @@ def _logo_data_uri() -> str:
     return ""
 
 
+def logo_html() -> str:
+    """Логотип M Cosmetic: оригинал из файла, а если файла нет — упрощённая копия (без надписи WMS REPORTS)."""
+    uri = _logo_data_uri()
+    if uri:
+        return f"<div class='brand'><img src='{uri}' alt='M Cosmetic'></div>"
+    icon = ("<svg width='30' height='30' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+            "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
+            "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
+            "stroke-linecap='round' stroke-linejoin='round'/></svg>")
+    return f"<div class='brand'><span class='bi'>{icon}</span><span class='bn'>M COSMETIC</span></div>"
+
+
 def tap(key: str, card_html: str, on_click, args=(), iframe=None):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
     iframe=(документ, высота) — карточка рисуется в отдельном блоке, где работают скрипты (таймер)."""
@@ -1307,6 +1319,8 @@ def routing_table(g: pd.DataFrame) -> str:
         prev = r.Город
     body.append(f"<tr class='total'><td colspan='3'>Общий итог</td><td class='num'>{n(g['Штук'].sum())}</td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
+
+
 # ── карточка «Отгрузка сегодня» с живым таймером (отдельный документ со своими стилями и скриптом) ──
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
