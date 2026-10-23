@@ -3,7 +3,7 @@
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests
-Логотип: положите файл logo.png (или logo.svg / logo.jpg) рядом с app.py.
+Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 """
 import base64
 import html
@@ -31,8 +31,12 @@ CACHE_SECONDS = 120          # как часто перечитывать таб
 TZ = ZoneInfo("Asia/Tashkent")
 HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию прячем дни с готовностью от этого процента
 
-# Логотип M Cosmetic: файл рядом с app.py (PNG / SVG / JPG)
-LOGO_FILES = ["logo.png", "logo.svg", "logo.jpg"]
+# Логотипы: файлы рядом с app.py (PNG / SVG / JPG)
+LOGO_FILES = ["logo.png", "logo.svg", "logo.jpg"]        # M Cosmetic
+LOGO2_FILES = ["logo2.png", "logo2.svg", "logo2.jpg"]    # партнёр
+LOGO_HEIGHT = 44      # высота окна с логотипом, px (хотите крупнее — 56 или 64)
+LOGO_HOLD = 3.5       # сколько секунд показывать каждый логотип
+LOGO_SLIDE = 0.7      # сколько секунд длится сдвиг вверх
 
 # Магазины, которых НЕ должно быть в сводной «Маршрутизация»
 EXCLUDE_STORES = [
@@ -133,12 +137,12 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 .stApp [data-testid="stExpander"] summary p { color:$ink; font-weight:700; }
 .stApp [data-testid="stAlert"] { background:$card; border:1px solid $line; border-radius:12px; }
 
-/* шапка: логотип + заголовок */
+/* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:space-between; }
 .brandbar .live { font-size:.78rem; color:$mute; }
 .brand { display:flex; align-items:center; gap:10px; color:$accent; }
-.brand img { height:32px; display:block; }
+.brand img { display:block; }
 .brand .bi { display:flex; color:$accent; }
 .brand .bn { font-weight:800; font-size:1.15rem; letter-spacing:.04em; color:$accent; }
 .top { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
@@ -1237,11 +1241,7 @@ def xl_button(label: str, build, file_name: str, key: str):
             st.download_button(**kw)
 
 
-# ───────────────────────── Мелкие виджеты ─────────────────────────
-@st.cache_data(show_spinner=False)
-LOGO_HEIGHT = 44   # высота логотипа в шапке, px (хотите крупнее — поставьте 56 или 64)
-
-
+# ───────────────────────── Логотипы ─────────────────────────
 def _trim_logo(raw: bytes) -> bytes:
     """Обрезает пустые поля вокруг логотипа (прозрачные или белые), чтобы знак занимал всю высоту."""
     try:
@@ -1266,11 +1266,11 @@ def _trim_logo(raw: bytes) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
-def _logo_data_uri() -> str:
-    """Оригинальный логотип из файла рядом с app.py -> data-URI. Нет файла — пустая строка."""
+def _logo_data_uri(names: tuple = tuple(LOGO_FILES)) -> str:
+    """Логотип из файла рядом с app.py -> data-URI. Нет файла — пустая строка."""
     bases = [Path(__file__).resolve().parent, Path.cwd()]
     for base in bases:
-        for name in LOGO_FILES:
+        for name in names:
             p = base / name
             if p.exists():
                 ext = p.suffix.lstrip(".").lower()
@@ -1282,17 +1282,48 @@ def _logo_data_uri() -> str:
 
 
 def logo_html() -> str:
-    """Логотип M Cosmetic: оригинал из файла, а если файла нет — упрощённая копия."""
-    uri = _logo_data_uri()
-    if uri:
-        return (f"<div class='brand'><img src='{uri}' alt='M Cosmetic' "
-                f"style='height:{LOGO_HEIGHT}px;width:auto;max-width:100%'></div>")
-    icon = ("<svg width='34' height='34' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
-            "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
-            "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
-            "stroke-linecap='round' stroke-linejoin='round'/></svg>")
-    return f"<div class='brand'><span class='bi'>{icon}</span><span class='bn'>M COSMETIC</span></div>"
+    """Шапка: логотипы M Cosmetic и партнёра по очереди плавно двигаются вверх по вертикальной ленте.
+    Если есть только один логотип — он показывается без движения."""
+    uris = [u for u in (_logo_data_uri(tuple(LOGO_FILES)), _logo_data_uri(tuple(LOGO2_FILES))) if u]
 
+    if not uris:    # файлов нет — нарисованная копия
+        icon = ("<svg width='34' height='34' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+                "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
+                "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
+                "stroke-linecap='round' stroke-linejoin='round'/></svg>")
+        return f"<div class='brand'><span class='bi'>{icon}</span><span class='bn'>M COSMETIC</span></div>"
+
+    h = LOGO_HEIGHT
+
+    def item(u):
+        return (f"<div class='lt-item' style='height:{h}px'>"
+                f"<img src='{u}' alt='logo' style='height:{h}px;width:auto;max-width:100%'></div>")
+
+    if len(uris) == 1:
+        return f"<div class='brand'><div class='lt-win' style='height:{h}px'>{item(uris[0])}</div></div>"
+
+    # несколько логотипов: лента из N штук + копия первого в конце, чтобы цикл был бесшовным
+    k = len(uris)
+    step = LOGO_HOLD + LOGO_SLIDE
+    total = k * step
+    frames = []
+    for i in range(k):
+        t0 = i * step / total * 100
+        t1 = (i * step + LOGO_HOLD) / total * 100
+        frames.append(f"{t0:.3f}%,{t1:.3f}%{{transform:translateY(-{i * h}px)}}")
+    frames.append(f"100%{{transform:translateY(-{k * h}px)}}")
+    css = ("<style>"
+           "@keyframes ltslide{" + "".join(frames) + "}"
+           ".lt-win{overflow:hidden}"
+           ".lt-track{animation:ltslide " + f"{total:.2f}" + "s cubic-bezier(.65,0,.35,1) infinite}"
+           ".lt-item{display:flex;align-items:center}"
+           "</style>")
+    items = "".join(item(u) for u in uris + [uris[0]])
+    return (f"{css}<div class='brand'><div class='lt-win' style='height:{h}px'>"
+            f"<div class='lt-track'>{items}</div></div></div>")
+
+
+# ───────────────────────── Мелкие виджеты ─────────────────────────
 def tap(key: str, card_html: str, on_click, args=(), iframe=None):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
     iframe=(документ, высота) — карточка рисуется в отдельном блоке, где работают скрипты (таймер)."""
@@ -1660,7 +1691,7 @@ except Exception as e:
 
 now = datetime.now(TZ)
 
-# верхняя панель с логотипом
+# верхняя панель с логотипами
 st.markdown(f"<div class='brandbar'>{logo_html()}<span class='live'>{now:%d.%m.%Y} · {WEEKDAYS[now.weekday()]}</span></div>",
             unsafe_allow_html=True)
 
