@@ -1239,6 +1239,33 @@ def xl_button(label: str, build, file_name: str, key: str):
 
 # ───────────────────────── Мелкие виджеты ─────────────────────────
 @st.cache_data(show_spinner=False)
+LOGO_HEIGHT = 44   # высота логотипа в шапке, px (хотите крупнее — поставьте 56 или 64)
+
+
+def _trim_logo(raw: bytes) -> bytes:
+    """Обрезает пустые поля вокруг логотипа (прозрачные или белые), чтобы знак занимал всю высоту."""
+    try:
+        from PIL import Image, ImageChops
+        im = Image.open(BytesIO(raw)).convert("RGBA")
+        alpha = im.split()[3]
+        bbox = alpha.getbbox() if alpha.getextrema()[0] < 255 else None   # есть прозрачность
+        if bbox is None:                                                  # сплошной фон — ищем отличие от белого
+            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+            diff = ImageChops.difference(im, bg).convert("L").point(lambda v: 255 if v > 12 else 0)
+            bbox = diff.getbbox()
+        if not bbox:
+            return raw
+        pad = 2
+        box = (max(bbox[0] - pad, 0), max(bbox[1] - pad, 0),
+               min(bbox[2] + pad, im.width), min(bbox[3] + pad, im.height))
+        out = BytesIO()
+        im.crop(box).save(out, "PNG")
+        return out.getvalue()
+    except Exception:
+        return raw
+
+
+@st.cache_data(show_spinner=False)
 def _logo_data_uri() -> str:
     """Оригинальный логотип из файла рядом с app.py -> data-URI. Нет файла — пустая строка."""
     bases = [Path(__file__).resolve().parent, Path.cwd()]
@@ -1246,22 +1273,25 @@ def _logo_data_uri() -> str:
         for name in LOGO_FILES:
             p = base / name
             if p.exists():
-                mime = {"svg": "image/svg+xml", "jpg": "image/jpeg"}.get(p.suffix.lstrip(".").lower(), "image/png")
-                return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+                ext = p.suffix.lstrip(".").lower()
+                data = p.read_bytes()
+                if ext == "svg":
+                    return "data:image/svg+xml;base64," + base64.b64encode(data).decode()
+                return "data:image/png;base64," + base64.b64encode(_trim_logo(data)).decode()
     return ""
 
 
 def logo_html() -> str:
-    """Логотип M Cosmetic: оригинал из файла, а если файла нет — упрощённая копия (без надписи WMS REPORTS)."""
+    """Логотип M Cosmetic: оригинал из файла, а если файла нет — упрощённая копия."""
     uri = _logo_data_uri()
     if uri:
-        return f"<div class='brand'><img src='{uri}' alt='M Cosmetic'></div>"
-    icon = ("<svg width='30' height='30' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+        return (f"<div class='brand'><img src='{uri}' alt='M Cosmetic' "
+                f"style='height:{LOGO_HEIGHT}px;width:auto;max-width:100%'></div>")
+    icon = ("<svg width='34' height='34' viewBox='0 0 30 30' fill='none' xmlns='http://www.w3.org/2000/svg'>"
             "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
             "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
             "stroke-linecap='round' stroke-linejoin='round'/></svg>")
     return f"<div class='brand'><span class='bi'>{icon}</span><span class='bn'>M COSMETIC</span></div>"
-
 
 def tap(key: str, card_html: str, on_click, args=(), iframe=None):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
