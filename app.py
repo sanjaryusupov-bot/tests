@@ -1740,27 +1740,47 @@ BEAT_EVERY = 15      # как часто вкладка подаёт сигна�
 
 @st.cache_resource
 def _presence() -> dict:
-    return {}        # общий для всех сессий: {id сессии: время последнего сигнала}
+    return {}        # общий для всех сессий: {id сессии: (время сигнала, имя)}
 
 
-def online_now() -> int:
+def online_now(name: str):
     if "sid" not in st.session_state:
         st.session_state.sid = uuid.uuid4().hex
     reg, t = _presence(), time.time()
-    reg[st.session_state.sid] = t
-    for k in [k for k, v in reg.items() if t - v > ONLINE_WINDOW]:
+    reg[st.session_state.sid] = (t, name)
+    for k in [k for k, v in reg.items() if t - v[0] > ONLINE_WINDOW]:
         reg.pop(k, None)
-    return len(reg)
+    names = [v[1] or "Гость" for v in reg.values()]
+    return len(reg), sorted(names, key=str.lower)
+
+
+def _save_name():
+    nm = st.session_state.get("my_name", "").strip()
+    if nm:
+        st.query_params["name"] = nm
+    else:
+        st.query_params.pop("name", None)
+
+
+if "my_name" not in st.session_state:
+    st.session_state.my_name = st.query_params.get("name", "")
 
 
 @st.fragment(run_every=BEAT_EVERY)
 def brandbar():
-    cnt, nw = online_now(), datetime.now(TZ)
+    cnt, names = online_now(st.session_state.get("my_name", "").strip())
+    nw = datetime.now(TZ)
+    tip = esc(", ".join(names))
     st.markdown(
         f"<div class='brandbar'>{logo_html()}<span class='live'>"
-        f"<i class='dot'></i><span title='Сейчас смотрят дашборд'>{cnt} онлайн</span>"
+        f"<i class='dot'></i><span title='{tip}'>{cnt} онлайн</span>"
         f"<span>·</span><span>{nw:%d.%m.%Y} · {WEEKDAYS[nw.weekday()]}</span></span></div>",
         unsafe_allow_html=True)
+    with st.popover("👥 Кто онлайн"):
+        st.text_input("Ваше имя", key="my_name", on_change=_save_name,
+                      placeholder="например, Алишер")
+        for nm in names:
+            st.markdown(f"🟢 {esc(nm)}")
 
 
 brandbar()
