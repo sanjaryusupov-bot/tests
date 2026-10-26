@@ -67,6 +67,10 @@ BOXES_TAB = "Ответы на форму (1)"
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
+# Категория и приоритет заказов (для Узуммаркет): вкладка «Лист1»
+CAT_SHEET_ID = "1qaIGoF4PYPV2GZyvCN7D_kRQlchan6ZlAz2sl77TIhQ"
+CAT_GID = "0"
+
 # Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table)
 MB_STOCK_T = 48     # «Stock Invoice Sku Cell» — история снимков остатков
 MB_MAGNIT_T = 58    # «Magnit Stock»
@@ -402,6 +406,29 @@ def load_boxes() -> pd.DataFrame:
     d = d[d["Время"].notna() & (d["Магазин"] != "")].sort_values("Время").reset_index(drop=True)
     d["Месяц"] = d["Время"].dt.strftime("%Y-%m")
     return d
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю категории заказов…")
+def load_cat_prio() -> dict:
+    """Лист1: Номер заказа 1С / Категория / Приоритет -> {номер заказа: (категория, приоритет)}."""
+    sheet = _client().open_by_key(CAT_SHEET_ID)
+    ws = next((w for w in sheet.worksheets() if str(w.id) == CAT_GID), None) or sheet.worksheet("Лист1")
+    rows = ws.get_all_values()
+    hi = next((i for i, r in enumerate(rows[:15]) if any("номер заказа" in c.lower() for c in r)), 0)
+    head = [" ".join(h.split()).lower() for h in rows[hi]]
+
+    def col(key, default):
+        return next((i for i, h in enumerate(head) if key in h), default)
+
+    i_o, i_c, i_p = col("номер заказа", 0), col("категори", 1), col("приоритет", 2)
+    out = {}
+    for r in rows[hi + 1:]:
+        if len(r) <= i_o or not r[i_o].strip():
+            continue
+        cat = r[i_c].strip() if len(r) > i_c else ""
+        pr = r[i_p].strip() if len(r) > i_p else ""
+        out[r[i_o].strip().upper()] = (cat, pr)
+    return out
 
 
 # ───────────────────────── Metabase: остатки ─────────────────────────
@@ -1356,14 +1383,20 @@ def badge(collected: bool, new: bool = False) -> str:
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
-def orders_table(frame: pd.DataFrame, limit: int = 1500) -> str:
+def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False) -> str:
     head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
-            "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
+            + ("<th>Категория</th><th>Приоритет</th>" if cp else "")
+            + "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
     body = []
     for r in frame.head(limit).to_dict("records"):
+        extra = ""
+        if cp:
+            pr = r.get("Приоритет") or ""
+            pr_html = f"<span class='badge no'>{esc(pr)}</span>" if pr else "—"
+            extra = f"<td>{esc(r.get('Категория') or '—')}</td><td>{pr_html}</td>"
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
-            f"<td>{esc(r['Город'] or '—')}</td><td class='num'>{n(r['Штук'])}</td>"
+            f"<td>{esc(r['Город'] or '—')}</td>{extra}<td class='num'>{n(r['Штук'])}</td>"
             f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
@@ -1879,6 +1912,18 @@ if page == PAGES[1]:
             st.caption("Нажмите на карточку, чтобы открыть список заказов магазина.")
         else:
             part = oth[oth["_k"] == norm_store(sel)]
+            is_uz = norm_store(sel) == norm_store("Узуммаркет")
+            if is_uz:
+                try:
+                    cpmap = load_cat_prio()
+                except Exception as e:
+                    cpmap = {}
+                    st.warning("Не удалось прочитать категории и приоритеты. Откройте таблицу для почты сервисного "
+                               "аккаунта (роль «Читатель»).")
+                    st.caption(str(e))
+                key_ = part["Заказ"].str.strip().str.upper()
+                part = part.assign(Категория=key_.map(lambda k: cpmap.get(k, ("", ""))[0]),
+                                   Приоритет=key_.map(lambda k: cpmap.get(k, ("", ""))[1]))
             nc, dn = part[~part["Собран"]], part[part["Собран"]]
             st.button("← Все прочие заказы", on_click=set_oth, args=(None,), key="oth_back")
             st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
@@ -1901,12 +1946,12 @@ if page == PAGES[1]:
                 if nc.empty:
                     st.success("Не собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(nc)), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(nc), cp=is_uz), unsafe_allow_html=True)
                 st.markdown("<div class='sec'>Собранные заказы</div>", unsafe_allow_html=True)
                 if dn.empty:
                     st.info("Собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(dn)), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(dn), cp=is_uz), unsafe_allow_html=True)
     elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
