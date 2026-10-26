@@ -5,6 +5,8 @@
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 """
+import time
+import uuid
 import base64
 import html
 import json
@@ -144,7 +146,14 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 /* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:space-between; }
-.brandbar .live { font-size:.78rem; color:$mute; }
+.brandbar .live { font-size:.78rem; color:$mute; display:flex; align-items:center; gap:6px; white-space:nowrap; }
+.brandbar .live .dot { width:8px; height:8px; border-radius:50%; background:#1E9E5C; flex:none;
+                       animation:livepulse 1.4s ease-in-out infinite; }
+@keyframes livepulse {
+  0%   { opacity:1;   box-shadow:0 0 0 0 rgba(30,158,92,.55); }
+  50%  { opacity:.35; box-shadow:0 0 0 6px rgba(30,158,92,0); }
+  100% { opacity:1;   box-shadow:0 0 0 0 rgba(30,158,92,0); }
+}
 .brand { display:flex; align-items:center; gap:10px; color:$accent; }
 .brand img { display:block; }
 .brand .bi { display:flex; color:$accent; }
@@ -1725,8 +1734,36 @@ except Exception as e:
 now = datetime.now(TZ)
 
 # верхняя панель с логотипами
-st.markdown(f"<div class='brandbar'>{logo_html()}<span class='live'>{now:%d.%m.%Y} · {WEEKDAYS[now.weekday()]}</span></div>",
-            unsafe_allow_html=True)
+ONLINE_WINDOW = 40   # сколько секунд после последнего сигнала человек считается «онлайн»
+BEAT_EVERY = 15      # как часто вкладка подаёт сигнал, сек
+
+
+@st.cache_resource
+def _presence() -> dict:
+    return {}        # общий для всех сессий: {id сессии: время последнего сигнала}
+
+
+def online_now() -> int:
+    if "sid" not in st.session_state:
+        st.session_state.sid = uuid.uuid4().hex
+    reg, t = _presence(), time.time()
+    reg[st.session_state.sid] = t
+    for k in [k for k, v in reg.items() if t - v > ONLINE_WINDOW]:
+        reg.pop(k, None)
+    return len(reg)
+
+
+@st.fragment(run_every=BEAT_EVERY)
+def brandbar():
+    cnt, nw = online_now(), datetime.now(TZ)
+    st.markdown(
+        f"<div class='brandbar'>{logo_html()}<span class='live'>"
+        f"<i class='dot'></i><span title='Сейчас смотрят дашборд'>{cnt} онлайн</span>"
+        f"<span>·</span><span>{nw:%d.%m.%Y} · {WEEKDAYS[nw.weekday()]}</span></span></div>",
+        unsafe_allow_html=True)
+
+
+brandbar()
 
 h1, h2, h3 = st.columns([6, 1.4, 1.4], vertical_alignment="bottom")
 with h1:
