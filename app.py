@@ -42,6 +42,7 @@ LOGO2_FILES = ["logo2.png", "logo2.svg", "logo2.jpg"]    # партнёр
 LOGO_HEIGHT = 44      # высота окна с логотипом, px (хотите крупнее — 56 или 64)
 LOGO_HOLD = 3.5       # сколько секунд показывать каждый логотип
 LOGO_SLIDE = 0.7      # сколько секунд длится сдвиг вверх
+LOGO_TOP_HEIGHT = 30  # высота логотипа в верхней панели (когда боковое меню свёрнуто)
 
 # Магазины, которых НЕ должно быть в сводной «Маршрутизация»
 EXCLUDE_STORES = [
@@ -187,22 +188,12 @@ def spark_svg(vals, color, uid, w=118, h=42):
             f"<path d='{d}' fill='none' stroke='{color}' stroke-width='2' stroke-linecap='round'/></svg>")
 
 
-def trend_pct(vals, k=7):
-    """Изменение суммы за последние k значений к предыдущим k (в процентах)."""
-    vals = [float(x) for x in vals]
-    if len(vals) < 2:
-        return None
-    k = min(k, len(vals) // 2)
-    a, b = sum(vals[-k:]), sum(vals[-2 * k:-k])
-    return (a - b) / b * 100 if b else None
-
-
 CSS = Template("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
 .stApp { background:$paper; color:$ink; color-scheme:$scheme; }
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
+#MainMenu, footer, [data-testid="stDecoration"] { display:none; }
 .block-container { padding: 1.2rem 1rem 3rem; max-width: 1100px; }
 
 .stApp p, .stApp label, .stApp li, .stApp [data-testid="stWidgetLabel"] p,
@@ -346,9 +337,27 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 /* ═════════ «M Cosmetic Dark v2» ═════════ */
 .stApp { background: radial-gradient(1100px 560px at 75% -8%, rgba(139,61,255,.16), transparent 60%),
                      radial-gradient(800px 480px at 8% 0%, rgba(224,51,143,.11), transparent 55%), $paper; }
-header[data-testid="stHeader"] { display:block !important; background:transparent; height:0; }
-[data-testid="stSidebarCollapsedControl"] { display:flex !important; }
+header[data-testid="stHeader"] { display:block !important; background:transparent !important; height:0; min-height:0; }
 .block-container { max-width:1180px; padding-top:1rem; }
+
+/* ── верхняя системная панель: прячем только меню и Deploy, а кнопку «развернуть панель» оставляем ── */
+[data-testid="stToolbar"] { display:flex !important; background:transparent !important; }
+[data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
+.stAppDeployButton, [data-testid="stStatusWidget"] { display:none !important; }
+
+/* ── кнопка «развернуть боковую панель»: всегда видна, закреплена слева сверху ── */
+[data-testid="stSidebarCollapsedControl"], [data-testid="stExpandSidebarButton"] {
+  display:flex !important; visibility:visible !important; opacity:1 !important; pointer-events:auto !important; }
+[data-testid="stSidebarCollapsedControl"] { position:fixed !important; top:10px; left:12px; z-index:1000002; }
+[data-testid="stSidebarCollapsedControl"] button, [data-testid="stExpandSidebarButton"] {
+  width:38px; height:38px; border-radius:12px; background:$card !important; color:$ink !important;
+  border:1px solid $line !important; box-shadow:0 6px 18px $glow; }
+[data-testid="stSidebarCollapsedControl"] button:hover, [data-testid="stExpandSidebarButton"]:hover { border-color:$accent !important; }
+[data-testid="stSidebarCollapsedControl"] svg, [data-testid="stExpandSidebarButton"] svg { color:$ink !important; fill:$ink !important; }
+/* кнопка «свернуть» внутри панели тоже всегда видна */
+[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarHeader"] button { opacity:1 !important; visibility:visible !important; }
+/* панель свёрнута: оставляем сверху место под кнопку */
+.stApp:has(section[data-testid="stSidebar"][aria-expanded="false"]) .block-container { padding-top:3.4rem; }
 
 /* ── боковая панель ── */
 section[data-testid="stSidebar"] { width:250px !important; min-width:250px !important; background:$side;
@@ -372,9 +381,15 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .profile b { display:block; color:$ink; font-size:.86rem; }
 .profile small { color:$mute; font-size:.72rem; }
 
-/* ── верхняя панель: поиск, онлайн, дата, колокольчик, тема ── */
-.st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px; }
+/* ── верхняя панель: лого (когда меню свёрнуто), поиск, онлайн, дата, колокольчик, тема ── */
+.st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px;
+                 position:relative; z-index:50; }
 .st-key-topbar [data-testid="stHorizontalBlock"] { align-items:center; gap:.75rem; }
+.tb-logo { display:flex; align-items:center; }
+.tb-logo img { display:block; height:${logo_top}px; width:auto; max-width:100%; }
+/* лого в верхней панели видно только когда боковое меню свёрнуто */
+.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) .st-key-topbar [data-testid="stColumn"]:has(.tb-logo),
+.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) .st-key-topbar [data-testid="column"]:has(.tb-logo) { display:none; }
 .st-key-gsearch { position:relative; }
 .st-key-gsearch input { padding-left:40px !important; padding-right:92px !important; height:40px;
   background-image:url("$u_search_s") !important; background-repeat:no-repeat !important;
@@ -387,10 +402,22 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tb-right .dot { width:8px; height:8px; border-radius:50%; background:#34C27A; animation:livepulse 1.4s ease-in-out infinite; }
 .tb-right .sep { width:1px; height:20px; background:$line; }
 .tb-right .tb-date { display:flex; align-items:center; gap:8px; }
-.tb-right .bell { position:relative; display:flex; }
-.tb-right .bell i { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
-                    background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
-.st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
+.tb-right .bell { position:relative; display:flex; padding:6px 4px; cursor:pointer; }
+.tb-right .bell > i { position:absolute; top:2px; right:0; width:8px; height:8px; border-radius:50%;
+                      background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
+/* всплывающая подсказка колокольчика: изменения в заказах */
+.tb-right .notif { display:none; position:absolute; top:100%; right:-8px; width:310px; z-index:99999;
+                   white-space:normal; text-align:left; background:$card; color:$ink; border:1px solid $line;
+                   border-radius:14px; padding:10px 12px; box-shadow:0 16px 40px rgba(0,0,0,.35); }
+.tb-right .bell:hover .notif { display:block; }
+.notif .nt { font-weight:800; font-size:.86rem; margin-bottom:6px; color:$ink; }
+.notif .ni { display:flex; gap:8px; padding:6px 0; border-top:1px solid $line; font-size:.78rem; line-height:1.3; color:$ink; }
+.notif .ni span { flex:none; color:$mute; font-variant-numeric:tabular-nums; font-size:.72rem; padding-top:1px; }
+.notif .ni.empty { color:$mute; }
+.st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; gap:0;
+                           background:transparent !important; border:none !important; box-shadow:none !important; outline:none !important; }
+.st-key-theme_btn button:hover, .st-key-theme_btn button:focus, .st-key-theme_btn button:active,
+.st-key-theme_btn button:focus-visible { background:$head !important; border:none !important; box-shadow:none !important; outline:none !important; }
 .st-key-theme_btn button p { display:none; }
 
 /* ── заголовок и главные кнопки ── */
@@ -409,7 +436,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
   background:linear-gradient(135deg,$g1,$g2); color:#fff; box-shadow:0 4px 16px $glow; }
 .stApp [data-testid="stButtonGroup"] button[aria-checked="true"] p { color:#fff; }
 
-/* ── карточки KPI: иконка-плитка, подпись, процент, мини-график ── */
+/* ── карточки KPI: иконка-плитка, подпись, мини-график ── */
 .kpi { display:grid; grid-template-columns:auto 1fr auto; column-gap:16px; align-items:center; min-height:104px;
        padding:16px 18px; border-radius:18px; overflow:hidden;
        border:1px solid rgba(224,51,143,.45); border-left:1px solid rgba(224,51,143,.45);
@@ -422,8 +449,6 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .kpi .l { font-size:.86rem; font-weight:600; color:$mute; margin-top:3px; }
 .kpi .s { font-size:.76rem; color:$mute; margin-top:2px; }
 .kpi .trend { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
-.kpi .delta { font-size:.74rem; font-weight:800; }
-.kpi .delta.up { color:#34C27A; } .kpi .delta.dn { color:#F2A23D; }
 .kpi.left { border-color:rgba(242,162,61,.45); border-left:1px solid rgba(242,162,61,.45);
             background:linear-gradient(135deg, rgba(242,162,61,.26), $card 72%); box-shadow:0 10px 34px rgba(242,162,61,.14); }
 .kpi.left .ico { background:linear-gradient(135deg,#F6A93B,#E8702A); box-shadow:0 6px 18px rgba(242,162,61,.4); }
@@ -475,7 +500,8 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 _vals = dict(P)
 _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "#FFFFFF"),
              u_download_s=icon_uri("download", P["mute"]),
-             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
+             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""),
+             logo_top=LOGO_TOP_HEIGHT)
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
 # иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить»
@@ -1589,6 +1615,15 @@ def logo_html() -> str:
             f"<div class='lt-track'>{items}</div></div></div>")
 
 
+def logo_top_html() -> str:
+    """Небольшой статичный логотип для верхней панели: виден, только когда боковое меню свёрнуто."""
+    u = _logo_data_uri(tuple(LOGO_FILES))
+    if u:
+        return f"<div class='tb-logo'><img src='{u}' alt='M Cosmetic'></div>"
+    return (f"<div class='tb-logo'><div class='brand'><span class='bi'>{ic('box', P['accent'], 26)}</span>"
+            f"<span class='bn' style='font-size:.95rem'>M COSMETIC</span></div></div>")
+
+
 # ───────────────────────── Мелкие виджеты ─────────────────────────
 def tap(key: str, card_html: str, on_click, args=(), iframe=None):
     """Карточка, на которую можно нажать (поверх неё невидимая кнопка).
@@ -1757,17 +1792,14 @@ def simple_table(head: list, rows: list, num_cols=()) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'><tr>{th}</tr>{''.join(body)}</table></div>"
 
 
-def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None) -> str:
-    """Карточка: иконка-плитка, число, подпись; справа — процент и мини-график (если переданы)."""
+def kpi_box(value, label, sub="", cls="ok", spark=None, icon=None) -> str:
+    """Карточка: иконка-плитка, число, подпись; справа — мини-график (если передан)."""
     icon = icon or KPI_ICON.get(cls, "box")
     sub_html = f"<div class='s'>{sub}</div>" if sub else ""
     trend = ""
-    if spark or delta is not None:
-        dh = ""
-        if delta is not None:
-            dh = f"<span class='delta {'up' if delta >= 0 else 'dn'}'>{'↑' if delta >= 0 else '↓'} {delta:+.0f}%</span>"
-        sp = spark_svg(spark, SPARK_COL.get(cls, "#E0338F"), zlib.crc32(str(label).encode()) % 10 ** 6) if spark else ""
-        trend = f"<div class='trend'>{dh}{sp}</div>"
+    if spark:
+        sp = spark_svg(spark, SPARK_COL.get(cls, "#E0338F"), zlib.crc32(str(label).encode()) % 10 ** 6)
+        trend = f"<div class='trend'>{sp}</div>"
     return (f"<div class='kpi {cls}'><div class='ico'>{ic(icon, '#FFFFFF', 24)}</div>"
             f"<div class='mid'><div class='v'>{value}</div><div class='l'>{esc(label)}</div>{sub_html}</div>{trend}</div>")
 
@@ -1976,6 +2008,49 @@ def plan_ui(dk: str, stores: dict):
         st.caption("Изменения сохраняются автоматически. Готовый файл — в разделе «Рейсы».")
 
 
+# ───────────────────────── Журнал изменений (колокольчик) ─────────────────────────
+@st.cache_resource
+def _watch() -> dict:
+    """Общий для всех сессий: прошлый снимок данных и журнал изменений (живёт, пока работает приложение)."""
+    return {"snap": None, "log": []}
+
+
+def track_changes(df: pd.DataFrame, new_orders: pd.DataFrame, ship):
+    """Сравнивает текущие данные с прошлым снимком и дописывает в журнал, что изменилось."""
+    w = _watch()
+    snap = {
+        "orders": dict(zip(df["Заказ"], df["Собран"])),
+        "pcs": dict(zip(df["Заказ"], df["Штук"])),
+        "new": set(new_orders["Заказ"]) if not new_orders.empty else set(),
+        "shipped": (set(ship.loc[ship["Отгружен"], "Заказ"]) if ship is not None and not ship.empty else set()),
+    }
+    prev, w["snap"] = w["snap"], snap
+    if prev is None:
+        return
+    ev = []
+    added = [o for o in snap["orders"] if o not in prev["orders"]]
+    removed = [o for o in prev["orders"] if o not in snap["orders"]]
+    got = [o for o, c in snap["orders"].items() if c and o in prev["orders"] and not prev["orders"][o]]
+    new_add = snap["new"] - prev["new"]
+    routed = (prev["new"] - snap["new"]) & set(snap["orders"])
+    shipped = snap["shipped"] - prev["shipped"]
+    if added:
+        ev.append(f"Новых заказов: +{len(added)} ({n(sum(snap['pcs'][o] for o in added))} шт)")
+    if got:
+        ev.append(f"Собрано заказов: {len(got)} ({n(sum(snap['pcs'][o] for o in got))} шт)")
+    if new_add:
+        ev.append(f"Новых не маршрутизированных: +{len(new_add)}")
+    if routed:
+        ev.append(f"Маршрутизировано заказов: {len(routed)}")
+    if shipped:
+        ev.append(f"Отгружено заказов: +{len(shipped)}")
+    if removed:
+        ev.append(f"Убрано из таблицы заказов: {len(removed)}")
+    if ev:
+        t = datetime.now(TZ)
+        w["log"] = ([(t, x) for x in ev] + w["log"])[:30]
+
+
 # ───────────────────────── Загрузка и шапка ─────────────────────────
 try:
     df = load()
@@ -1986,6 +2061,27 @@ except Exception as e:
     st.stop()
 
 now = datetime.now(TZ)
+
+ship, ship_err = None, ""
+try:
+    ship = build_ship(load_ship_tabs())
+except Exception as e:                      # дашборд работает и без таблицы отгрузок
+    ship_err = str(e)
+
+# новые (не маршрутизированные) заказы; те, что уже есть в основной таблице, не считаем повторно
+new_orders, new_err = pd.DataFrame(columns=["Заказ", "Статус", "Дата", "Штук", "Магазин"]), ""
+try:
+    new_orders = load_new_orders()
+    new_orders = new_orders[~new_orders["Заказ"].isin(df["Заказ"])].reset_index(drop=True)
+except Exception as e:                      # дашборд работает и без вкладки «Новые заказы»
+    new_err = str(e)
+new_cnt = len(new_orders)
+new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
+
+try:
+    track_changes(df, new_orders, ship)
+except Exception:
+    pass
 
 # верхняя панель: сколько человек онлайн + дата
 ONLINE_WINDOW = 40   # сколько секунд после последнего сигнала человек считается «онлайн»
@@ -2010,11 +2106,18 @@ def online_now() -> int:
 @st.fragment(run_every=BEAT_EVERY)
 def topright():
     cnt, nw = online_now(), datetime.now(TZ)
+    log = _watch()["log"][:8]
+    if log:
+        items = "".join(f"<div class='ni'><span>{t:%d.%m %H:%M}</span><div>{esc(x)}</div></div>" for t, x in log)
+    else:
+        items = "<div class='ni empty'>С момента запуска изменений в заказах не было</div>"
+    dot = "<i></i>" if log else ""
     st.markdown(
         f"<div class='tb-right'><span class='live'><i class='dot'></i>"
         f"<span title='Сейчас смотрят дашборд'>{cnt} онлайн</span></span><span class='sep'></span>"
         f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
-        f"<span class='bell'>{ic('bell', P['mute'], 18)}<i></i></span></div>",
+        f"<span class='bell'>{ic('bell', P['mute'], 18)}{dot}"
+        f"<div class='notif'><div class='nt'>Изменения в заказах</div>{items}</div></span></div>",
         unsafe_allow_html=True)
 
 
@@ -2045,9 +2148,11 @@ with st.sidebar:
                 f"<div class='profile'><div class='av'>{esc(USER_NAME[:2].upper())}</div>"
                 f"<div><b>{esc(USER_NAME)}</b><small>Склад</small></div></div>", unsafe_allow_html=True)
 
-# ── верхняя панель ──
+# ── верхняя панель (лого слева видно только при свёрнутом боковом меню) ──
 with st.container(key="topbar"):
-    tb1, tb2, tb3 = st.columns([5, 3.4, .55], vertical_alignment="center")
+    tb0, tb1, tb2, tb3 = st.columns([1.3, 4.6, 3.4, .55], vertical_alignment="center")
+    with tb0:
+        st.markdown(logo_top_html(), unsafe_allow_html=True)
     with tb1:
         st.text_input("Поиск", key="gsearch", placeholder="Поиск по заказам, товарам, SKU…",
                       label_visibility="collapsed", on_change=on_gsearch)
@@ -2080,22 +2185,6 @@ if df.empty:
 df["Новый"] = False
 summary = day_summary(df)
 dates = list(summary.index)
-
-ship, ship_err = None, ""
-try:
-    ship = build_ship(load_ship_tabs())
-except Exception as e:                      # дашборд работает и без таблицы отгрузок
-    ship_err = str(e)
-
-# новые (не маршрутизированные) заказы; те, что уже есть в основной таблице, не считаем повторно
-new_orders, new_err = pd.DataFrame(columns=["Заказ", "Статус", "Дата", "Штук", "Магазин"]), ""
-try:
-    new_orders = load_new_orders()
-    new_orders = new_orders[~new_orders["Заказ"].isin(df["Заказ"])].reset_index(drop=True)
-except Exception as e:                      # дашборд работает и без вкладки «Новые заказы»
-    new_err = str(e)
-new_cnt = len(new_orders)
-new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
 
 # общий список для страницы «Заказы»: обычные + новые (не собраны, статус «не маршрутизирован»)
 new_rows = (new_orders.rename(columns={"Статус": "Статус WMS"})
@@ -2151,13 +2240,13 @@ if page == PAGES[0]:
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", kpi_box(n(total), "всего заказов", "", "all", spark=s_all, delta=trend_pct(s_all)),
+        tap("all", kpi_box(n(total), "всего заказов", "", "all", spark=s_all),
             go_orders, ("Все", ALL))
     with k2:
-        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left, delta=trend_pct(s_left)),
+        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left),
             go_orders, ("Не собрано", ALL))
     with k3:
-        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs, delta=trend_pct(s_pcs)),
+        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs),
             go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
