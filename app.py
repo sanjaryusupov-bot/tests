@@ -1,6 +1,6 @@
 """
 Дашборд сборки заказов: Google Таблица -> Streamlit -> Telegram WebApp.
-Дизайн: «M Cosmetic Dark» (боковое меню, неоновый градиент, карточки с иконками).
+Дизайн: «M Cosmetic Dark v2» (меню с иконками, поиск, KPI с мини-графиками, неоновый градиент).
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
@@ -8,6 +8,8 @@ requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, a
 """
 import time
 import uuid
+import zlib
+from urllib.parse import quote
 import base64
 import html
 import json
@@ -89,6 +91,7 @@ PAGES = ["Сводка по дням", "Заказы", "Поиск заказа"
 NAV_ICONS = {"Сводка по дням": "🏠", "Заказы": "📋", "Поиск заказа": "🔍",
              "Пустые короба": "📦", "Движения по остаткам": "🔄", "Аналитика": "📊"}
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+USER_NAME = "Санжар"      # имя в профиле внизу бокового меню
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -113,6 +116,86 @@ st.set_page_config(page_title="M Cosmetic · Сборка заказов", page_
 if "dark" not in st.session_state:
     st.session_state.dark = True          # тёмная тема по умолчанию (переключается кнопкой)
 P = DARK if st.session_state.dark else LIGHT
+
+# ───────────────────────── Иконки (линейные, как в макете) ─────────────────────────
+_ICONS = {
+    "home": "<path d='M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z'/>",
+    "box": "<path d='m7.5 4.27 9 5.15'/><path d='M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z'/><path d='m3.3 7 8.7 5 8.7-5'/><path d='M12 22V12'/>",
+    "list": "<rect x='8' y='2' width='8' height='4' rx='1'/><path d='M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'/><path d='M12 11h4M12 16h4M8 11h.01M8 16h.01'/>",
+    "search": "<circle cx='11' cy='11' r='8'/><path d='m21 21-4.3-4.3'/>",
+    "swap": "<path d='M8 3 4 7l4 4'/><path d='M4 7h16'/><path d='m16 21 4-4-4-4'/><path d='M20 17H4'/>",
+    "chart": "<path d='M3 3v16a2 2 0 0 0 2 2h16'/><path d='M18 17V9M13 17V5M8 17v-3'/>",
+    "sun": "<circle cx='12' cy='12' r='4'/><path d='M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41'/>",
+    "moon": "<path d='M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z'/>",
+    "bell": "<path d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/><path d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/>",
+    "calendar": "<rect x='3' y='4' width='18' height='18' rx='2'/><path d='M16 2v4M8 2v4M3 10h18'/>",
+    "chev": "<path d='m9 18 6-6-6-6'/>",
+    "download": "<path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><path d='m7 10 5 5 5-5'/><path d='M12 15V3'/>",
+    "check": "<circle cx='12' cy='12' r='10'/><path d='m9 12 2 2 4-4'/>",
+    "refresh": "<path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8'/><path d='M21 3v5h-5'/><path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16'/><path d='M8 16H3v5'/>",
+    "clock": "<circle cx='12' cy='12' r='10'/><path d='M12 6v6l4 2'/>",
+}
+NAV_ICON_NAMES = ["home", "list", "search", "box", "swap", "chart"]
+
+
+def _svg(name, color="currentColor", size=20, sw=2):
+    return (f"<svg xmlns='http://www.w3.org/2000/svg' width='{size}' height='{size}' viewBox='0 0 24 24' fill='none' "
+            f"stroke='{color}' stroke-width='{sw}' stroke-linecap='round' stroke-linejoin='round'>{_ICONS[name]}</svg>")
+
+
+def ic(name, color="currentColor", size=20):
+    """Иконка прямо в HTML."""
+    return _svg(name, color, size)
+
+
+def icon_uri(name, color="#000000"):
+    """Иконка как data-URI (для CSS: фон или маска)."""
+    return "data:image/svg+xml;utf8," + quote(_svg(name, color, 24), safe="")
+
+
+def _icon_rule(selector, name, size=18):
+    u = icon_uri(name)
+    return (f'{selector}::before{{content:"";width:{size}px;height:{size}px;flex:none;background:currentColor;'
+            f'-webkit-mask:url("{u}") center/contain no-repeat;mask:url("{u}") center/contain no-repeat;}}')
+
+
+_EXCEL_SVG = ("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'>"
+              "<rect width='20' height='20' rx='4' fill='#1D6F42'/>"
+              "<path d='M6 6l8 8M14 6l-8 8' stroke='white' stroke-width='2' stroke-linecap='round'/></svg>")
+SPARK_COL = {"all": "#E0338F", "left": "#F2A23D", "blue": "#3B9CFF", "ok": "#34C27A"}
+KPI_ICON = {"all": "box", "left": "check", "blue": "box", "ok": "check"}
+
+
+def spark_svg(vals, color, uid, w=118, h=42):
+    v = [float(x) for x in vals]
+    if len(v) < 2:
+        return ""
+    lo, hi = min(v), max(v)
+    rng = (hi - lo) or 1.0
+    xs = [i * (w - 4) / (len(v) - 1) + 2 for i in range(len(v))]
+    ys = [h - 4 - (x - lo) / rng * (h - 10) for x in v]
+    d = f"M{xs[0]:.1f},{ys[0]:.1f}"
+    for i in range(1, len(v)):
+        mx = (xs[i - 1] + xs[i]) / 2
+        d += f" C{mx:.1f},{ys[i - 1]:.1f} {mx:.1f},{ys[i]:.1f} {xs[i]:.1f},{ys[i]:.1f}"
+    area = d + f" L{xs[-1]:.1f},{h} L{xs[0]:.1f},{h} Z"
+    return (f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}'><defs>"
+            f"<linearGradient id='sg{uid}' x1='0' y1='0' x2='0' y2='1'>"
+            f"<stop offset='0' stop-color='{color}' stop-opacity='.45'/>"
+            f"<stop offset='1' stop-color='{color}' stop-opacity='0'/></linearGradient></defs>"
+            f"<path d='{area}' fill='url(#sg{uid})'/>"
+            f"<path d='{d}' fill='none' stroke='{color}' stroke-width='2' stroke-linecap='round'/></svg>")
+
+
+def trend_pct(vals, k=7):
+    """Изменение суммы за последние k значений к предыдущим k (в процентах)."""
+    vals = [float(x) for x in vals]
+    if len(vals) < 2:
+        return None
+    k = min(k, len(vals) // 2)
+    a, b = sum(vals[-k:]), sum(vals[-2 * k:-k])
+    return (a - b) / b * 100 if b else None
+
 
 CSS = Template("""
 <style>
@@ -260,86 +343,151 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .cars td.shop { font-weight:800; white-space:nowrap; }
 .cars td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 
-/* ═════════ «M Cosmetic Dark»: фон, боковое меню, карточки ═════════ */
-.stApp { background: radial-gradient(1200px 600px at 70% -10%, rgba(139,61,255,.14), transparent 60%),
-                     radial-gradient(900px 500px at 10% 0%, rgba(224,51,143,.10), transparent 55%), $paper; }
+/* ═════════ «M Cosmetic Dark v2» ═════════ */
+.stApp { background: radial-gradient(1100px 560px at 75% -8%, rgba(139,61,255,.16), transparent 60%),
+                     radial-gradient(800px 480px at 8% 0%, rgba(224,51,143,.11), transparent 55%), $paper; }
 header[data-testid="stHeader"] { display:block !important; background:transparent; height:0; }
 [data-testid="stSidebarCollapsedControl"] { display:flex !important; }
 .block-container { max-width:1180px; padding-top:1rem; }
 
-/* боковая панель */
-[data-testid="stSidebar"] { background:$side; border-right:1px solid $line; }
+/* ── боковая панель ── */
+section[data-testid="stSidebar"] { width:250px !important; min-width:250px !important; background:$side;
+                                   border-right:1px solid $line; }
 [data-testid="stSidebar"] > div:first-child { padding-top:.6rem; }
 [data-testid="stSidebar"] .stButton > button {
-  justify-content:flex-start; text-align:left; background:transparent; border:1px solid transparent;
-  color:$mute; border-radius:12px; padding:.55rem .8rem; font-weight:600; }
+  justify-content:flex-start; gap:12px; text-align:left; background:transparent; border:1px solid transparent;
+  color:$mute; border-radius:12px; padding:.66rem .9rem; font-weight:600; }
 [data-testid="stSidebar"] .stButton > button:hover { background:$head; color:$ink; border-color:$line; }
 [data-testid="stSidebar"] .stButton > button[kind="primary"] {
-  background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none; box-shadow:0 6px 22px $glow; }
+  background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none; box-shadow:0 8px 24px $glow; }
 [data-testid="stSidebar"] .stButton > button[kind="primary"] p { color:#fff; }
-.sidecard { margin-top:26px; padding:12px 14px; border-radius:14px; border:1px solid $line;
-            background:linear-gradient(135deg, rgba(30,158,92,.16), rgba(30,158,92,.03)); font-size:.78rem; color:$mute; }
-.sidecard b { display:flex; align-items:center; gap:6px; color:$ink; font-size:.84rem; margin-bottom:2px; }
-.sidecard i { width:7px; height:7px; border-radius:50%; background:#1E9E5C; display:inline-block; }
+.sidecard { margin-top:34px; padding:12px 14px; border-radius:14px; border:1px solid rgba(52,194,122,.35);
+            background:linear-gradient(135deg, rgba(30,158,92,.22), rgba(30,158,92,.04)); font-size:.75rem; color:$mute; }
+.sidecard b { display:flex; align-items:center; gap:7px; color:$ink; font-size:.84rem; margin-bottom:3px; }
+.sidecard i { width:7px; height:7px; border-radius:50%; background:#34C27A; box-shadow:0 0 8px #34C27A; display:inline-block; }
+.profile { display:flex; align-items:center; gap:10px; margin-top:14px; padding:10px 12px; border-radius:14px;
+           border:1px solid $line; background:$head; }
+.profile .av { width:36px; height:36px; border-radius:50%; flex:none; background:linear-gradient(135deg,$g1,$g2); color:#fff;
+               display:flex; align-items:center; justify-content:center; font-weight:800; font-size:.8rem; }
+.profile b { display:block; color:$ink; font-size:.86rem; }
+.profile small { color:$mute; font-size:.72rem; }
 
-/* верхняя панель и заголовок */
-.brandbar { border-radius:14px; padding:8px 16px; }
-.top h1 { display:flex; align-items:center; gap:12px; }
-.top h1::before { content:"📦"; font-size:1.3rem; width:42px; height:42px; display:inline-flex; align-items:center;
-                  justify-content:center; border-radius:12px; background:linear-gradient(135deg,$g1,$g2);
-                  box-shadow:0 6px 20px $glow; }
-.stApp .stButton > button[kind="primary"] { background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none; }
+/* ── верхняя панель: поиск, онлайн, дата, колокольчик, тема ── */
+.st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px; }
+.st-key-topbar [data-testid="stHorizontalBlock"] { align-items:center; gap:.75rem; }
+.st-key-gsearch { position:relative; }
+.st-key-gsearch input { padding-left:40px !important; padding-right:92px !important; height:40px;
+  background-image:url("$u_search_s") !important; background-repeat:no-repeat !important;
+  background-position:13px center !important; background-size:16px !important; }
+.st-key-gsearch::after { content:"Ctrl + K"; position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  font-size:.7rem; font-weight:600; color:$mute; border:1px solid $line; border-radius:7px; padding:2px 7px;
+  pointer-events:none; background:$head; }
+.tb-right { display:flex; align-items:center; justify-content:flex-end; gap:14px; font-size:.8rem; color:$mute; white-space:nowrap; }
+.tb-right .live { display:flex; align-items:center; gap:7px; }
+.tb-right .dot { width:8px; height:8px; border-radius:50%; background:#34C27A; animation:livepulse 1.4s ease-in-out infinite; }
+.tb-right .sep { width:1px; height:20px; background:$line; }
+.tb-right .tb-date { display:flex; align-items:center; gap:8px; }
+.tb-right .bell { position:relative; display:flex; }
+.tb-right .bell i { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
+                    background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
+.st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
+.st-key-theme_btn button p { display:none; }
 
-/* вкладки-раздел */
+/* ── заголовок и главные кнопки ── */
+.top .crumb { display:flex; align-items:center; gap:6px; }
+.top h1 { display:flex; align-items:center; gap:14px; font-size:1.9rem; }
+.top h1::before { content:""; width:46px; height:46px; border-radius:13px; flex:none;
+  background:url("$u_box_w") center/24px no-repeat, linear-gradient(135deg,$g1,$g2); box-shadow:0 8px 24px $glow; }
+.stApp .stButton > button[kind="primary"] { background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none;
+                                            box-shadow:0 8px 22px $glow; }
+.st-key-btn_refresh button, .st-key-btn_theme2 button { height:44px; border-radius:12px; gap:8px; }
+
+/* ── вкладки-разделы ── */
 .stApp [data-testid="stButtonGroup"] { background:$card; border:1px solid $line; border-radius:14px; padding:4px; gap:2px; }
-.stApp [data-testid="stButtonGroup"] button { border:none; background:transparent; color:$mute; border-radius:10px; }
+.stApp [data-testid="stButtonGroup"] button { border:none; background:transparent; color:$mute; border-radius:10px; gap:7px; }
 .stApp [data-testid="stButtonGroup"] button[aria-checked="true"] {
   background:linear-gradient(135deg,$g1,$g2); color:#fff; box-shadow:0 4px 16px $glow; }
 .stApp [data-testid="stButtonGroup"] button[aria-checked="true"] p { color:#fff; }
 
-/* карточки KPI: иконка, цветной градиент, свечение */
-.kpi { display:grid; grid-template-columns:auto 1fr; column-gap:16px; align-items:center; min-height:104px;
-       border:1px solid $line; border-left:1px solid $line; border-radius:18px;
-       background:linear-gradient(135deg,$kpi_a,$card 75%); box-shadow:0 10px 30px $glow; }
-.kpi::before { content:"◆"; grid-row:1 / 4; width:50px; height:50px; border-radius:14px; display:flex;
-               align-items:center; justify-content:center; font-size:1.4rem; color:#fff;
-               background:linear-gradient(135deg,$g1,$g2); }
-.kpi .v { font-size:1.9rem; grid-column:2; }
-.kpi .l, .kpi .s { grid-column:2; }
-.kpi.left { background:linear-gradient(135deg,$kpi_b,$card 75%); box-shadow:0 10px 30px rgba(242,162,61,.14); }
-.kpi.left::before { background:linear-gradient(135deg,#F6A93B,#E8702A); }
-.kpi.ok { background:linear-gradient(135deg,$ok_bg,$card 75%); box-shadow:0 10px 30px rgba(52,194,122,.14); }
-.kpi.ok::before { background:linear-gradient(135deg,#34C27A,#1E9E5C); }
-.st-key-tap_all .kpi::before { content:"📦"; }
-.st-key-tap_left .kpi::before { content:"✓"; font-weight:800; }
-.st-key-tap_pcs .kpi { background:linear-gradient(135deg,$kpi_c,$card 75%); box-shadow:0 10px 30px rgba(59,130,246,.16); }
-.st-key-tap_pcs .kpi::before { content:"📦"; background:linear-gradient(135deg,#3B9CFF,#2563EB); }
-[class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$g1; transform:translateY(-1px); }
-.kpi, .day { transition:border-color .15s, transform .15s; }
+/* ── карточки KPI: иконка-плитка, подпись, процент, мини-график ── */
+.kpi { display:grid; grid-template-columns:auto 1fr auto; column-gap:16px; align-items:center; min-height:104px;
+       padding:16px 18px; border-radius:18px; overflow:hidden;
+       border:1px solid rgba(224,51,143,.45); border-left:1px solid rgba(224,51,143,.45);
+       background:linear-gradient(135deg, rgba(224,51,143,.30), $card 72%);
+       box-shadow:0 10px 34px rgba(224,51,143,.18), inset 0 1px 0 rgba(255,255,255,.05); }
+.kpi .ico { width:50px; height:50px; border-radius:14px; display:flex; align-items:center; justify-content:center;
+            background:linear-gradient(135deg,$g1,$g2); box-shadow:0 6px 18px rgba(224,51,143,.4); }
+.kpi .mid { min-width:0; }
+.kpi .v { font-size:1.85rem; font-weight:800; letter-spacing:-.02em; line-height:1.1; }
+.kpi .l { font-size:.86rem; font-weight:600; color:$mute; margin-top:3px; }
+.kpi .s { font-size:.76rem; color:$mute; margin-top:2px; }
+.kpi .trend { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
+.kpi .delta { font-size:.74rem; font-weight:800; }
+.kpi .delta.up { color:#34C27A; } .kpi .delta.dn { color:#F2A23D; }
+.kpi.left { border-color:rgba(242,162,61,.45); border-left:1px solid rgba(242,162,61,.45);
+            background:linear-gradient(135deg, rgba(242,162,61,.26), $card 72%); box-shadow:0 10px 34px rgba(242,162,61,.14); }
+.kpi.left .ico { background:linear-gradient(135deg,#F6A93B,#E8702A); box-shadow:0 6px 18px rgba(242,162,61,.4); }
+.kpi.blue { border-color:rgba(59,130,246,.5); border-left:1px solid rgba(59,130,246,.5);
+            background:linear-gradient(135deg, rgba(59,130,246,.26), $card 72%); box-shadow:0 10px 34px rgba(59,130,246,.16); }
+.kpi.blue .ico { background:linear-gradient(135deg,#3B9CFF,#2563EB); box-shadow:0 6px 18px rgba(59,130,246,.4); }
+.kpi.ok { border-color:rgba(52,194,122,.45); border-left:1px solid rgba(52,194,122,.45);
+          background:linear-gradient(135deg, rgba(52,194,122,.22), $card 72%); box-shadow:0 10px 34px rgba(52,194,122,.13); }
+.kpi.ok .ico { background:linear-gradient(135deg,#34C27A,#1E9E5C); box-shadow:0 6px 18px rgba(52,194,122,.4); }
+[class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { transform:translateY(-1px); filter:brightness(1.08); }
+.kpi, .day { transition:transform .15s, filter .15s, border-color .15s; }
 
-/* карточка отгрузки (без таймера) */
-.ship { border-radius:20px; border:1px solid $line; border-left:1px solid $line;
-        background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 14px 40px $glow; }
+/* ── карточка отгрузки ── */
+.ship { border-radius:20px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
+        background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.12), 0 14px 40px $glow; }
+.ship .sh-t { display:flex; align-items:center; gap:8px; }
+.pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; display:inline-block; }
 .bar { height:16px; background:$track; }
-.bar > i { background:linear-gradient(90deg,$g1,$g2); box-shadow:0 0 14px $glow; }
+.bar > i { background:linear-gradient(90deg,$g1,$g2,#3B82F6); box-shadow:0 0 14px $glow; }
 
-/* строки по дням: цветная полоска слева, плашка с цифрой справа */
-.day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:14px; padding:10px 14px;
-       grid-template-columns:92px 1fr 100px; }
+/* ── строки по дням: цветная полоска, плашка с числом, стрелка ── */
+.day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:14px; padding:12px 14px;
+       grid-template-columns:92px 1fr auto 28px; gap:14px; }
+.day.urg { border-left-color:#E5384F; }
+.day.amb { border-left-color:$left; }
 .day.full { border-left-color:$done; }
-.day .pct { background:$head; border:1px solid $line; border-radius:12px; padding:6px 10px; font-size:1.15rem; }
+.day .pct { background:$head; border:1px solid $line; border-radius:12px; padding:6px 14px; font-size:1.1rem;
+            min-width:58px; text-align:center; }
+.day .chev { display:flex; align-items:center; justify-content:center; color:$mute; }
+@media (max-width: 640px) {
+  .day { grid-template-columns:1fr auto 24px; }
+  .day .mid { grid-column:1 / -1; order:4; }
+}
 .badge.no { background:$no_bg; color:$no_fg; border:1px solid rgba(242,162,61,.35); }
 .badge.ok { border:1px solid rgba(52,194,122,.35); }
 
-/* таблицы и кнопки скачивания */
+/* ── таблицы и кнопки скачивания ── */
 .tbl-wrap, .cars-wrap { border-radius:18px; box-shadow:0 10px 30px rgba(0,0,0,.18); }
 .tbl th { background:$head; }
 .stApp [data-testid="stExpander"], .hit, .note { border-radius:16px; }
-.stApp .stDownloadButton > button { background:$row; border-radius:14px; padding:.6rem 1rem; }
+.stApp .stDownloadButton > button { position:relative; background:$row; border-radius:14px; padding:.7rem 3rem; }
+.stApp .stDownloadButton > button::before { content:""; width:20px; height:20px; flex:none; margin-right:10px;
+  background:url("$u_excel") center/contain no-repeat; }
+.stApp .stDownloadButton > button::after { content:""; position:absolute; right:16px; top:50%; margin-top:-8px;
+  width:16px; height:16px; background:url("$u_download_s") center/contain no-repeat; }
 .stApp .stDownloadButton > button:hover { border-color:$g1; color:$ink; box-shadow:0 0 0 1px $g1; }
 </style>
 """)
-st.markdown(CSS.safe_substitute(P), unsafe_allow_html=True)
+_vals = dict(P)
+_vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "#FFFFFF"),
+             u_download_s=icon_uri("download", P["mute"]),
+             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
+st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
+
+# иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить»
+_ir = []
+for _i, _nm in enumerate(NAV_ICON_NAMES):
+    _ir.append(_icon_rule(f".st-key-nav_{_i} button", _nm, 18))
+    _ir.append(_icon_rule(f'.st-key-page [data-testid="stButtonGroup"] button:nth-of-type({_i + 1})', _nm, 15))
+_theme_ic = "sun" if st.session_state.dark else "moon"
+_ir.append(_icon_rule(".st-key-theme_btn button", _theme_ic, 18))
+_ir.append(_icon_rule(".st-key-btn_theme2 button", _theme_ic, 17))
+_ir.append(_icon_rule(".st-key-btn_refresh button", "refresh", 17))
+st.markdown("<style>" + "".join(_ir) + "</style>", unsafe_allow_html=True)
 
 
 # ───────────────────────── Данные ─────────────────────────
@@ -1519,7 +1667,8 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
         box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 14px 40px $glow;
         padding:16px 18px; margin:0 0 12px; box-sizing:border-box; }
 .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
-.sh-t { font-weight:800; font-size:1.1rem; color:$ink; }
+.sh-t { font-weight:800; font-size:1.1rem; color:$ink; display:flex; align-items:center; gap:8px; }
+.pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; }
 .sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
 .sh-p { font-weight:800; font-size:1.8rem; letter-spacing:-0.02em; color:$ink; }
 .sync { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center;
@@ -1535,7 +1684,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
   background-size:32px 32px, 100% 100%; animation:move 1s linear infinite; transition:background .6s; }
 .bar.g > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
                                    rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
-                   linear-gradient(90deg, $g1, $g2); box-shadow:0 0 18px $glow; }
+                   linear-gradient(90deg, $g1, $g2, #3B82F6); box-shadow:0 0 18px $glow; }
 .bar.y > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
                                    rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
                    linear-gradient(90deg, #F2B705, #F2B705); }
@@ -1551,7 +1700,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 .sh-m b { color:$ink; }
 </style></head><body>
 <div class="ship">
-  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <small>$date</small>$sync</div><div class="sh-p">$pct%</div></div>
+  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <span class="pdot"></span><small>$date</small>$clock$sync</div><div class="sh-p">$pct%</div></div>
   <div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div>
   <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
 </div>
@@ -1586,7 +1735,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 
 def ship_doc(d: date, pct: int, sm: dict, sync: str = "") -> str:
     vals = dict(P)
-    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync,
+    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, clock=ic("clock", P["mute"], 15),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
                 all_done="true" if sm["done"] >= sm["total"] else "false")
@@ -1608,9 +1757,19 @@ def simple_table(head: list, rows: list, num_cols=()) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'><tr>{th}</tr>{''.join(body)}</table></div>"
 
 
-def kpi_box(value, label, sub="", cls="ok") -> str:
-    return (f"<div class='kpi {cls}'><div class='v'>{value}</div><div class='l'>{esc(label)}</div>"
-            f"<div class='s'>{sub}</div></div>")
+def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None) -> str:
+    """Карточка: иконка-плитка, число, подпись; справа — процент и мини-график (если переданы)."""
+    icon = icon or KPI_ICON.get(cls, "box")
+    sub_html = f"<div class='s'>{sub}</div>" if sub else ""
+    trend = ""
+    if spark or delta is not None:
+        dh = ""
+        if delta is not None:
+            dh = f"<span class='delta {'up' if delta >= 0 else 'dn'}'>{'↑' if delta >= 0 else '↓'} {delta:+.0f}%</span>"
+        sp = spark_svg(spark, SPARK_COL.get(cls, "#E0338F"), zlib.crc32(str(label).encode()) % 10 ** 6) if spark else ""
+        trend = f"<div class='trend'>{dh}{sp}</div>"
+    return (f"<div class='kpi {cls}'><div class='ico'>{ic(icon, '#FFFFFF', 24)}</div>"
+            f"<div class='mid'><div class='v'>{value}</div><div class='l'>{esc(label)}</div>{sub_html}</div>{trend}</div>")
 
 
 # ───────────────────────── Ручные рейсы: хранение ─────────────────────────
@@ -1849,37 +2008,67 @@ def online_now() -> int:
 
 
 @st.fragment(run_every=BEAT_EVERY)
-def brandbar():
+def topright():
     cnt, nw = online_now(), datetime.now(TZ)
     st.markdown(
-        f"<div class='brandbar'><span class='live'>"
-        f"<i class='dot'></i><span title='Сейчас смотрят дашборд'>{cnt} онлайн</span>"
-        f"<span>·</span><span>{nw:%d.%m.%Y} · {WEEKDAYS[nw.weekday()]}</span></span></div>",
+        f"<div class='tb-right'><span class='live'><i class='dot'></i>"
+        f"<span title='Сейчас смотрят дашборд'>{cnt} онлайн</span></span><span class='sep'></span>"
+        f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
+        f"<span class='bell'>{ic('bell', P['mute'], 18)}<i></i></span></div>",
         unsafe_allow_html=True)
 
 
-# ── боковое меню (логотип, разделы, статус) ──
+def on_gsearch():
+    """Поиск сверху: номер заказа -> «Поиск заказа», иначе товар/SKU -> «Движения по остаткам»."""
+    q_ = (st.session_state.get("gsearch") or "").strip()
+    if not q_:
+        return
+    st.session_state.gsearch = ""
+    if re.match(r"^\s*(\w{1,3}-\d+|\d{3,9})\s*$", q_):
+        st.session_state.page = PAGES[2]
+        st.session_state.q_order = q_
+    else:
+        st.session_state.page = PAGES[4]
+        st.session_state.mv_q = q_
+
+
+# ── боковое меню: логотип, разделы с иконками, статус, профиль ──
 with st.sidebar:
     st.markdown(logo_html(), unsafe_allow_html=True)
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    for p_ in PAGES:
-        st.button(f"{NAV_ICONS[p_]}  {p_}", key=f"nav_{p_}", width="stretch",
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    for i_, p_ in enumerate(PAGES):
+        st.button(p_, key=f"nav_{i_}", width="stretch",
                   type="primary" if st.session_state.get("page", PAGES[0]) == p_ else "secondary",
                   on_click=set_page, args=(p_,))
     st.markdown("<div class='sidecard'><b><i></i>Стабильная работа</b>"
-                "Система работает в штатном режиме</div>", unsafe_allow_html=True)
+                "Система работает в штатном режиме</div>"
+                f"<div class='profile'><div class='av'>{esc(USER_NAME[:2].upper())}</div>"
+                f"<div><b>{esc(USER_NAME)}</b><small>Склад</small></div></div>", unsafe_allow_html=True)
 
-brandbar()
+# ── верхняя панель ──
+with st.container(key="topbar"):
+    tb1, tb2, tb3 = st.columns([5, 3.4, .55], vertical_alignment="center")
+    with tb1:
+        st.text_input("Поиск", key="gsearch", placeholder="Поиск по заказам, товарам, SKU…",
+                      label_visibility="collapsed", on_change=on_gsearch)
+    with tb2:
+        topright()
+    with tb3:
+        st.button("Тема", key="theme_btn", on_click=toggle_theme, help="Переключить день / ночь")
+components.html("""<script>try{var d=window.parent.document;if(!d.__ck){d.__ck=1;
+d.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
+e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});}}catch(e){}</script>""",
+                height=0)
 
-h1, h2, h3 = st.columns([6, 1.4, 1.4], vertical_alignment="bottom")
+h1, h2, h3 = st.columns([6, 1.4, 1.5], vertical_alignment="bottom")
 with h1:
-    st.markdown(f"""<div class="top"><span class="crumb">Склад</span><h1>Сборка заказов</h1>
-    <span class="upd">Обновлено {now:%H:%M} · данные кэшируются на {CACHE_SECONDS // 60} мин</span></div>""",
+    st.markdown(f"""<div class="top"><span class="crumb">{ic('home', P['mute'], 14)} Склад</span><h1>Сборка заказов</h1>
+    <span class="upd">Обновлено {now:%H:%M} · Данные кэшируются на {CACHE_SECONDS // 60} мин</span></div>""",
                 unsafe_allow_html=True)
 with h2:
-    st.button("☀️ День" if st.session_state.dark else "🌙 Ночь", on_click=toggle_theme, width="stretch")
+    st.button("День" if st.session_state.dark else "Ночь", key="btn_theme2", on_click=toggle_theme, width="stretch")
 with h3:
-    if st.button("🔄 Обновить", width="stretch", type="primary"):
+    if st.button("Обновить", key="btn_refresh", width="stretch", type="primary"):
         st.cache_data.clear()
         st.session_state.pop("plan", None)      # рейсы тоже перечитаем из хранилища
         st.rerun()
@@ -1941,7 +2130,7 @@ if page == PAGES[0]:
         is_today = (sd == now.date()) and sm["total"] > 0
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
-          <small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
+          <span class="pdot"></span><small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{ic('clock', P['mute'], 15)}{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
           <div class="bar"><i style="width:{pct_ship}%"></i></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
@@ -1956,16 +2145,20 @@ if page == PAGES[0]:
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
+    ser = summary.tail(14)
+    s_all = ser["Заказов"].tolist()
+    s_left = ser["Осталось"].tolist()
+    s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", f"""<div class="kpi all" title="Открыть список всех заказов"><div class="v">{n(total)}</div>
-        <div class="l">всего заказов</div></div>""", go_orders, ("Все", ALL))
+        tap("all", kpi_box(n(total), "всего заказов", "", "all", spark=s_all, delta=trend_pct(s_all)),
+            go_orders, ("Все", ALL))
     with k2:
-        tap("left", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(left + new_cnt)}</div>
-        <div class="l">не собрано заказов</div></div>""", go_orders, ("Не собрано", ALL))
+        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left, delta=trend_pct(s_left)),
+            go_orders, ("Не собрано", ALL))
     with k3:
-        tap("pcs", f"""<div class="kpi left" title="Открыть список несобранных заказов"><div class="v">{n(pcs_left)}</div>
-        <div class="l">бэклог, шт</div></div>""", go_orders, ("Не собрано", ALL))
+        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs, delta=trend_pct(s_pcs)),
+            go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
     # ── новые заказы по датам доставки: нажатие открывает список «Не собрано» на эту дату ──
@@ -1983,11 +2176,11 @@ if page == PAGES[0]:
             else:
                 d_html = f"{fmt_date(d_)}<small>{WEEKDAYS[d_.weekday()]}, {d_:%Y}</small>"
                 key, target = f"new_{d_:%Y%m%d}", d_
-            tap(key, f"""<div class="day">
+            tap(key, f"""<div class="day {'urg' if d_ is not None and (d_ - now.date()).days <= 3 else 'amb'}">
               <div class="d">{d_html}</div>
               <div class="mid"><span class="badge no">не маршрутизировано</span>
               <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div></div>
-              <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div></div>""",
+              <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 18)}</div></div>""",
                 go_orders, ("Не собрано", target))
 
     xl_button("⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
@@ -2010,7 +2203,7 @@ if page == PAGES[0]:
           <div class="mid"><div class="bar"><i style="width:{r['Процент']}%"></i></div>
           <div class="meta">собрано <b>{r['Собрано']}</b> зак. ({n(r['Штук собрано'])} шт) · осталось <b>{r['Осталось']}</b> зак.
           ({n(left_pcs)} шт) · всего {r['Заказов']} зак., {n(r['Штук'])} шт</div></div>
-          <div class="pct">{r['Процент']}%<small>собрано</small></div></div>""",
+          <div class="pct">{r['Процент']}%<small>собрано</small></div><div class="chev">{ic('chev', P['mute'], 18)}</div></div>""",
             go_orders, ("Собрано" if r["Осталось"] == 0 else "Не собрано", d))
 
 # ───────────────────────── 2. Заказы ─────────────────────────
@@ -2046,11 +2239,10 @@ if page == PAGES[1]:
                 part = oth[oth["_k"] == norm_store(name)]
                 nc, dn = part[~part["Собран"]], part[part["Собран"]]
                 with cols[i % 3]:
-                    tap(f"oth_{i}", f"""<div class="kpi {'left' if len(nc) else 'ok'}" title="Открыть детали">
-                        <div class="v">{n(len(nc))}</div>
-                        <div class="l">{esc(name)}</div>
-                        <div class="s">не собрано заказов · {n(nc['Штук'].sum())} шт</div>
-                        <div class="s">собрано: {n(len(dn))} зак. · {n(dn['Штук'].sum())} шт</div></div>""",
+                    tap(f"oth_{i}", kpi_box(n(len(nc)), name,
+                        f"не собрано заказов · {n(nc['Штук'].sum())} шт<br>"
+                        f"собрано: {n(len(dn))} зак. · {n(dn['Штук'].sum())} шт",
+                        "left" if len(nc) else "ok", icon="box"),
                         set_oth, (name,))
             st.caption("Нажмите на карточку, чтобы открыть список заказов магазина.")
         else:
@@ -2170,7 +2362,7 @@ if page == PAGES[1]:
 
 # ───────────────────────── 3. Поиск ─────────────────────────
 if page == PAGES[2]:
-    q = st.text_input("Номер заказа", placeholder="например, 1M-0024629 или 0024629").strip()
+    q = st.text_input("Номер заказа", key="q_order", placeholder="например, 1M-0024629 или 0024629").strip()
     if q:
         hits = df[df["Заказ"].str.contains(q, case=False, regex=False)]
         if hits.empty:
