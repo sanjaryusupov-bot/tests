@@ -92,7 +92,7 @@ PAGES = ["Сводка по дням", "Заказы", "Поиск заказа"
 NAV_ICONS = {"Сводка по дням": "🏠", "Заказы": "📋", "Поиск заказа": "🔍",
              "Пустые короба": "📦", "Движения по остаткам": "🔄", "Аналитика": "📊"}
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-USER_NAME = "Санжар"      # имя в профиле внизу бокового меню
+USER_NAME = "Контакты"      # имя в профиле внизу бокового меню
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -2143,10 +2143,10 @@ with st.sidebar:
         st.button(p_, key=f"nav_{i_}", width="stretch",
                   type="primary" if st.session_state.get("page", PAGES[0]) == p_ else "secondary",
                   on_click=set_page, args=(p_,))
-    st.markdown("<div class='sidecard'><b><i></i>Стабильная работа</b>"
-                "Система работает в штатном режиме</div>"
+    st.markdown("<div class='sidecard'><b><i></i>Данные актуальные</b>"
+                " </div>"
                 f"<div class='profile'><div class='av'>{esc(USER_NAME[:2].upper())}</div>"
-                f"<div><b>{esc(USER_NAME)}</b><small>Склад</small></div></div>", unsafe_allow_html=True)
+                f"<div><b>{esc(USER_NAME)}</b><small>+998900230423</small></div></div>", unsafe_allow_html=True)
 
 # ── верхняя панель (лого слева видно только при свёрнутом боковом меню) ──
 with st.container(key="topbar"):
