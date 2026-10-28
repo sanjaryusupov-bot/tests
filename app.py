@@ -1,8 +1,9 @@
 """
 Дашборд сборки заказов: Google Таблица -> Streamlit -> Telegram WebApp.
+Дизайн: «M Cosmetic Dark» (боковое меню, неоновый градиент, карточки с иконками).
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
-requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests
+requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 """
 import time
@@ -85,29 +86,32 @@ MODES = ["Все", "Не собрано", "Собрано", "Прочие зак
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
 
 PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
+NAV_ICONS = {"Сводка по дням": "🏠", "Заказы": "📋", "Поиск заказа": "🔍",
+             "Пустые короба": "📦", "Движения по остаткам": "🔄", "Аналитика": "📊"}
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
-# Палитра в стиле M Cosmetic: малиновый акцент, мягкие серые поверхности
+# Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
              mute="#6F6B76", done="#1E9E5C", left="#E8A33D", track="#EEE9EC", head="#F8F3F6",
              ok_bg="#E3F6EC", ok_fg="#1B7A48", no_bg="#FDEBD3", no_fg="#8A5206",
              car_bg="#FDE7F3", car_fg="#8E1B5E", band="#C2308B", hot_bg="#FFF1DA", note_bg="#FFF4D6",
-             accent="#C2308B", accent_soft="#FDE7F3", accent_ink="#A8206F")
-DARK = dict(scheme="dark", ink="#ECE8EE", paper="#14111A", card="#1D1923", line="#2F2937",
-            mute="#9A93A5", done="#34C27A", left="#F2B65A", track="#2B2433", head="#262030",
-            ok_bg="#16382A", ok_fg="#8FE3B4", no_bg="#3D2E12", no_fg="#F5C77E",
-            car_bg="#3A1F31", car_fg="#F5A9D6", band="#A8206F", hot_bg="#3A2E16", note_bg="#3A2E16",
-            accent="#E256A8", accent_soft="#3A1F31", accent_ink="#F5A9D6")
+             accent="#C2308B", accent_soft="#FDE7F3", accent_ink="#A8206F",
+             side="#FFFFFF", g1="#C2308B", g2="#8B3DFF", glow="rgba(194,48,139,.12)",
+             kpi_a="#FDE7F3", kpi_b="#FFF1DA", kpi_c="#E3EEFF", row="#FFFFFF")
+DARK = dict(scheme="dark", ink="#EEF0FA", paper="#070A1A", card="#0D1126", line="#1E2548",
+            mute="#8C93B5", done="#34C27A", left="#F2A23D", track="#1A1F3D", head="#121733",
+            ok_bg="#10341F", ok_fg="#7FE3AE", no_bg="#3B2A0F", no_fg="#F5C77E",
+            car_bg="#2A1535", car_fg="#F5A9D6", band="#8B3DFF", hot_bg="#33260F", note_bg="#33260F",
+            accent="#E256A8", accent_soft="#3A1F4A", accent_ink="#F5A9D6",
+            side="#090C1E", g1="#E0338F", g2="#8B3DFF", glow="rgba(224,51,143,.35)",
+            kpi_a="#3A1255", kpi_b="#3A260F", kpi_c="#0F2A55", row="#10142B")
 
 st.set_page_config(page_title="M Cosmetic · Сборка заказов", page_icon="📦", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="expanded")
 
 # ───────────────────────── Тема (день / ночь) ─────────────────────────
 if "dark" not in st.session_state:
-    try:
-        st.session_state.dark = (st.context.theme.type == "dark")   # как в браузере / Telegram
-    except Exception:
-        st.session_state.dark = False
+    st.session_state.dark = True          # тёмная тема по умолчанию (переключается кнопкой)
 P = DARK if st.session_state.dark else LIGHT
 
 CSS = Template("""
@@ -115,7 +119,7 @@ CSS = Template("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
 .stApp { background:$paper; color:$ink; color-scheme:$scheme; }
-#MainMenu, footer, header[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
 .block-container { padding: 1.2rem 1rem 3rem; max-width: 1100px; }
 
 .stApp p, .stApp label, .stApp li, .stApp [data-testid="stWidgetLabel"] p,
@@ -145,7 +149,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 
 /* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
-            display:flex; align-items:center; justify-content:space-between; }
+            display:flex; align-items:center; justify-content:flex-end; }
 .brandbar .live { font-size:.78rem; color:$mute; display:flex; align-items:center; gap:6px; white-space:nowrap; }
 .brandbar .live .dot { width:8px; height:8px; border-radius:50%; background:#1E9E5C; flex:none;
                        animation:livepulse 1.4s ease-in-out infinite; }
@@ -255,6 +259,84 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 .cars tr.hot td { background:$hot_bg; font-weight:700; }
 .cars td.shop { font-weight:800; white-space:nowrap; }
 .cars td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+/* ═════════ «M Cosmetic Dark»: фон, боковое меню, карточки ═════════ */
+.stApp { background: radial-gradient(1200px 600px at 70% -10%, rgba(139,61,255,.14), transparent 60%),
+                     radial-gradient(900px 500px at 10% 0%, rgba(224,51,143,.10), transparent 55%), $paper; }
+header[data-testid="stHeader"] { display:block !important; background:transparent; height:0; }
+[data-testid="stSidebarCollapsedControl"] { display:flex !important; }
+.block-container { max-width:1180px; padding-top:1rem; }
+
+/* боковая панель */
+[data-testid="stSidebar"] { background:$side; border-right:1px solid $line; }
+[data-testid="stSidebar"] > div:first-child { padding-top:.6rem; }
+[data-testid="stSidebar"] .stButton > button {
+  justify-content:flex-start; text-align:left; background:transparent; border:1px solid transparent;
+  color:$mute; border-radius:12px; padding:.55rem .8rem; font-weight:600; }
+[data-testid="stSidebar"] .stButton > button:hover { background:$head; color:$ink; border-color:$line; }
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+  background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none; box-shadow:0 6px 22px $glow; }
+[data-testid="stSidebar"] .stButton > button[kind="primary"] p { color:#fff; }
+.sidecard { margin-top:26px; padding:12px 14px; border-radius:14px; border:1px solid $line;
+            background:linear-gradient(135deg, rgba(30,158,92,.16), rgba(30,158,92,.03)); font-size:.78rem; color:$mute; }
+.sidecard b { display:flex; align-items:center; gap:6px; color:$ink; font-size:.84rem; margin-bottom:2px; }
+.sidecard i { width:7px; height:7px; border-radius:50%; background:#1E9E5C; display:inline-block; }
+
+/* верхняя панель и заголовок */
+.brandbar { border-radius:14px; padding:8px 16px; }
+.top h1 { display:flex; align-items:center; gap:12px; }
+.top h1::before { content:"📦"; font-size:1.3rem; width:42px; height:42px; display:inline-flex; align-items:center;
+                  justify-content:center; border-radius:12px; background:linear-gradient(135deg,$g1,$g2);
+                  box-shadow:0 6px 20px $glow; }
+.stApp .stButton > button[kind="primary"] { background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none; }
+
+/* вкладки-раздел */
+.stApp [data-testid="stButtonGroup"] { background:$card; border:1px solid $line; border-radius:14px; padding:4px; gap:2px; }
+.stApp [data-testid="stButtonGroup"] button { border:none; background:transparent; color:$mute; border-radius:10px; }
+.stApp [data-testid="stButtonGroup"] button[aria-checked="true"] {
+  background:linear-gradient(135deg,$g1,$g2); color:#fff; box-shadow:0 4px 16px $glow; }
+.stApp [data-testid="stButtonGroup"] button[aria-checked="true"] p { color:#fff; }
+
+/* карточки KPI: иконка, цветной градиент, свечение */
+.kpi { display:grid; grid-template-columns:auto 1fr; column-gap:16px; align-items:center; min-height:104px;
+       border:1px solid $line; border-left:1px solid $line; border-radius:18px;
+       background:linear-gradient(135deg,$kpi_a,$card 75%); box-shadow:0 10px 30px $glow; }
+.kpi::before { content:"◆"; grid-row:1 / 4; width:50px; height:50px; border-radius:14px; display:flex;
+               align-items:center; justify-content:center; font-size:1.4rem; color:#fff;
+               background:linear-gradient(135deg,$g1,$g2); }
+.kpi .v { font-size:1.9rem; grid-column:2; }
+.kpi .l, .kpi .s { grid-column:2; }
+.kpi.left { background:linear-gradient(135deg,$kpi_b,$card 75%); box-shadow:0 10px 30px rgba(242,162,61,.14); }
+.kpi.left::before { background:linear-gradient(135deg,#F6A93B,#E8702A); }
+.kpi.ok { background:linear-gradient(135deg,$ok_bg,$card 75%); box-shadow:0 10px 30px rgba(52,194,122,.14); }
+.kpi.ok::before { background:linear-gradient(135deg,#34C27A,#1E9E5C); }
+.st-key-tap_all .kpi::before { content:"📦"; }
+.st-key-tap_left .kpi::before { content:"✓"; font-weight:800; }
+.st-key-tap_pcs .kpi { background:linear-gradient(135deg,$kpi_c,$card 75%); box-shadow:0 10px 30px rgba(59,130,246,.16); }
+.st-key-tap_pcs .kpi::before { content:"📦"; background:linear-gradient(135deg,#3B9CFF,#2563EB); }
+[class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$g1; transform:translateY(-1px); }
+.kpi, .day { transition:border-color .15s, transform .15s; }
+
+/* карточка отгрузки (без таймера) */
+.ship { border-radius:20px; border:1px solid $line; border-left:1px solid $line;
+        background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 14px 40px $glow; }
+.bar { height:16px; background:$track; }
+.bar > i { background:linear-gradient(90deg,$g1,$g2); box-shadow:0 0 14px $glow; }
+
+/* строки по дням: цветная полоска слева, плашка с цифрой справа */
+.day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:14px; padding:10px 14px;
+       grid-template-columns:92px 1fr 100px; }
+.day.full { border-left-color:$done; }
+.day .pct { background:$head; border:1px solid $line; border-radius:12px; padding:6px 10px; font-size:1.15rem; }
+.badge.no { background:$no_bg; color:$no_fg; border:1px solid rgba(242,162,61,.35); }
+.badge.ok { border:1px solid rgba(52,194,122,.35); }
+
+/* таблицы и кнопки скачивания */
+.tbl-wrap, .cars-wrap { border-radius:18px; box-shadow:0 10px 30px rgba(0,0,0,.18); }
+.tbl th { background:$head; }
+.stApp [data-testid="stExpander"], .hit, .note { border-radius:16px; }
+.stApp .stDownloadButton > button { background:$row; border-radius:14px; padding:.6rem 1rem; }
+.stApp .stDownloadButton > button:hover { border-color:$g1; color:$ink; box-shadow:0 0 0 1px $g1; }
 </style>
 """)
 st.markdown(CSS.safe_substitute(P), unsafe_allow_html=True)
@@ -1318,7 +1400,7 @@ def _logo_data_uri(names: tuple = tuple(LOGO_FILES)) -> str:
 
 
 def logo_html() -> str:
-    """Шапка: логотипы M Cosmetic и партнёра по очереди плавно двигаются вверх по вертикальной ленте.
+    """Логотипы M Cosmetic и партнёра по очереди плавно двигаются вверх по вертикальной ленте.
     Если есть только один логотип — он показывается без движения."""
     uris = [u for u in (_logo_data_uri(tuple(LOGO_FILES)), _logo_data_uri(tuple(LOGO2_FILES))) if u]
 
@@ -1382,6 +1464,10 @@ def set_oth(name):
     st.session_state.oth_store = name
 
 
+def set_page(p):
+    st.session_state.page = p
+
+
 def toggle_theme():
     st.session_state.dark = not st.session_state.dark
 
@@ -1429,12 +1515,13 @@ SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:$card; border:1px solid $line; border-left:5px solid $done; border-radius:16px;
-        padding:14px 16px; margin:0 0 12px; box-sizing:border-box; }
+.ship { background:linear-gradient(135deg, $head, $card); border:1px solid $line; border-radius:20px;
+        box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 14px 40px $glow;
+        padding:16px 18px; margin:0 0 12px; box-sizing:border-box; }
 .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
-.sh-t { font-weight:800; font-size:1.05rem; color:$ink; }
+.sh-t { font-weight:800; font-size:1.1rem; color:$ink; }
 .sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
-.sh-p { font-weight:800; font-size:1.7rem; letter-spacing:-0.02em; color:$ink; }
+.sh-p { font-weight:800; font-size:1.8rem; letter-spacing:-0.02em; color:$ink; }
 .sync { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center;
         margin-left:8px; vertical-align:middle; font-size:.75rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
@@ -1442,12 +1529,20 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 @keyframes syncspin { to { transform:rotate(360deg); } }
 .bar { height:32px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:10px 0; }
 .bar > i { display:block; height:100%; border-radius:99px; background-color:#1E9E5C;
-  background-image:linear-gradient(135deg, rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.28) 50%, rgba(255,255,255,.28) 75%, transparent 75%);
-  background-size:32px 32px; animation:move 1s linear infinite; transition:background-color .6s; }
-.bar.y > i { background-color:#F2B705; }
-.bar.r > i { background-color:#D32F2F; }
-@keyframes move { from { background-position:0 0; } to { background-position:32px 0; } }
+  background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
+                   linear-gradient(90deg, #1E9E5C, #1E9E5C);
+  background-size:32px 32px, 100% 100%; animation:move 1s linear infinite; transition:background .6s; }
+.bar.g > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
+                   linear-gradient(90deg, $g1, $g2); box-shadow:0 0 18px $glow; }
+.bar.y > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
+                   linear-gradient(90deg, #F2B705, #F2B705); }
+.bar.r > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
+                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
+                   linear-gradient(90deg, #D32F2F, #D32F2F); }
+@keyframes move { from { background-position:0 0, 0 0; } to { background-position:32px 0, 0 0; } }
 .bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
   gap:10px; color:#fff; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
   text-shadow:0 1px 3px rgba(0,0,0,.6); }
@@ -1733,7 +1828,7 @@ except Exception as e:
 
 now = datetime.now(TZ)
 
-# верхняя панель с логотипами
+# верхняя панель: сколько человек онлайн + дата
 ONLINE_WINDOW = 40   # сколько секунд после последнего сигнала человек считается «онлайн»
 BEAT_EVERY = 15      # как часто вкладка подаёт сигнал, сек
 
@@ -1757,11 +1852,22 @@ def online_now() -> int:
 def brandbar():
     cnt, nw = online_now(), datetime.now(TZ)
     st.markdown(
-        f"<div class='brandbar'>{logo_html()}<span class='live'>"
+        f"<div class='brandbar'><span class='live'>"
         f"<i class='dot'></i><span title='Сейчас смотрят дашборд'>{cnt} онлайн</span>"
         f"<span>·</span><span>{nw:%d.%m.%Y} · {WEEKDAYS[nw.weekday()]}</span></span></div>",
         unsafe_allow_html=True)
 
+
+# ── боковое меню (логотип, разделы, статус) ──
+with st.sidebar:
+    st.markdown(logo_html(), unsafe_allow_html=True)
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    for p_ in PAGES:
+        st.button(f"{NAV_ICONS[p_]}  {p_}", key=f"nav_{p_}", width="stretch",
+                  type="primary" if st.session_state.get("page", PAGES[0]) == p_ else "secondary",
+                  on_click=set_page, args=(p_,))
+    st.markdown("<div class='sidecard'><b><i></i>Стабильная работа</b>"
+                "Система работает в штатном режиме</div>", unsafe_allow_html=True)
 
 brandbar()
 
@@ -1773,7 +1879,7 @@ with h1:
 with h2:
     st.button("☀️ День" if st.session_state.dark else "🌙 Ночь", on_click=toggle_theme, width="stretch")
 with h3:
-    if st.button("🔄 Обновить", width="stretch"):
+    if st.button("🔄 Обновить", width="stretch", type="primary"):
         st.cache_data.clear()
         st.session_state.pop("plan", None)      # рейсы тоже перечитаем из хранилища
         st.rerun()
