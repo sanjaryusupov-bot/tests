@@ -225,10 +225,14 @@ def status_breakdown(frame) -> list:
 
 
 CSS = Template("""
+@keyframes boltspin { to { --bolt:360deg; } }
+
 [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] {
   position:fixed !important; left:12px; top:10px; z-index:1000 !important; display:flex !important; }
 [data-testid="stExpandSidebarButton"] button, [data-testid="stSidebarCollapsedControl"] button {
   background:$head !important; border:1px solid $line !important; border-radius:10px !important; }
+</style>
+""")
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
