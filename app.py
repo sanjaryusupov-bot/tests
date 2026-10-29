@@ -256,24 +256,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 .stApp [data-testid="stExpander"] { background:$card; border:1px solid $line; border-radius:16px; }
 .stApp [data-testid="stExpander"] summary p { color:$ink; font-weight:700; }
 .stApp [data-testid="stAlert"] { background:$card; border:1px solid $line; border-radius:12px; }
-/* ── убрать системные надписи загрузки и «серую» подсветку ── */
-[data-testid="stSpinner"], .stSpinner, [data-testid="stStatusWidget"] { display:none !important; }
-[data-stale="true"] { opacity:1 !important; }
 
-/* ── молния в поиске при обновлении данных ── */
-/* ── молния по рамке поиска: мягкий бегущий свет, без мерцания ── */
-@property --bolt { syntax:"<angle>"; inherits:false; initial-value:0deg; }
-.st-key-gsearch::before { content:""; position:absolute; inset:0; border-radius:12px; padding:2px;
-  pointer-events:none; z-index:6; opacity:0; transition:opacity .5s ease;
-  background:conic-gradient(from var(--bolt), transparent 0deg, transparent 240deg,
-             rgba(59,156,255,.25) 285deg, rgba(92,200,255,.55) 335deg, rgba(190,230,255,.8) 355deg, transparent 360deg);
-  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite:xor; mask-composite:exclude;
-  filter:drop-shadow(0 0 3px rgba(59,156,255,.45)); }
-.stApp[data-teststate="running"] .st-key-gsearch::before,
-.stApp[data-test-script-state="running"] .st-key-gsearch::before {
-  opacity:1; animation:boltspin 2.8s linear infinite; }
-@keyframes boltspin { to { --bolt:360deg; } }
 /* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:flex-end; }
@@ -470,6 +453,23 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .ev small { color:$mute; font-size:.7rem; }
 .bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
+
+/* «N онлайн»: при наведении — кто сидит и сколько времени */
+.tb-right .onl { position:relative; cursor:default; }
+.tb-right .onl::after { content:""; position:absolute; left:-10px; right:-10px; top:100%; height:16px; }
+.onl-pop { display:none; position:absolute; left:-10px; top:calc(100% + 12px); width:270px; max-width:88vw;
+           z-index:9999; padding:12px 14px; border-radius:14px; background:$card; border:1px solid $line;
+           box-shadow:0 18px 50px rgba(0,0,0,.45); white-space:normal; text-align:left; color:$ink; }
+.onl:hover .onl-pop, .onl-pop:hover { display:block; }
+.onl-pop .bp-h { font-weight:800; font-size:.9rem; color:$ink; margin-bottom:6px; }
+.onl-pop .ou { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:6px 0;
+               border-top:1px solid $line; font-size:.78rem; color:$ink; }
+.onl-pop .ou span { display:inline-flex; align-items:center; gap:7px; }
+.onl-pop .ou span i { width:7px; height:7px; border-radius:50%; background:#34C27A; display:inline-block; flex:none; }
+.onl-pop .ou b { font-variant-numeric:tabular-nums; color:$ink; }
+.onl-pop .ou em { font-style:normal; color:$accent; font-size:.7rem; font-weight:700; }
+.onl-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
+
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
 
@@ -560,12 +560,44 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tbl-wrap, .cars-wrap { border-radius:18px; box-shadow:0 10px 30px rgba(0,0,0,.18); }
 .tbl th { background:$head; }
 .stApp [data-testid="stExpander"], .hit, .note { border-radius:16px; }
-.stApp .stDownloadButton > button { position:relative; background:$row; border-radius:14px; padding:.7rem 3rem; }
-.stApp .stDownloadButton > button::before { content:""; width:20px; height:20px; flex:none; margin-right:10px;
+
+/* компактная кнопка «Excel» */
+.stApp .stDownloadButton > button { position:relative; background:$row; border-radius:10px;
+  padding:.3rem 2.3rem .3rem .8rem; min-height:34px; font-size:.8rem; gap:0; }
+.stApp .stDownloadButton > button p { font-size:.8rem; }
+.stApp .stDownloadButton > button::before { content:""; width:16px; height:16px; flex:none; margin-right:8px;
   background:url("$u_excel") center/contain no-repeat; }
-.stApp .stDownloadButton > button::after { content:""; position:absolute; right:16px; top:50%; margin-top:-8px;
-  width:16px; height:16px; background:url("$u_download_s") center/contain no-repeat; }
+.stApp .stDownloadButton > button::after { content:""; position:absolute; right:10px; top:50%; margin-top:-7px;
+  width:14px; height:14px; background:url("$u_download_s") center/contain no-repeat; }
 .stApp .stDownloadButton > button:hover { border-color:$g1; color:$ink; box-shadow:0 0 0 1px $g1; }
+
+/* ── убрать системные надписи загрузки и «серую» подсветку ── */
+[data-testid="stSpinner"], .stSpinner, [data-testid="stStatusWidget"] { display:none !important; }
+[data-stale="true"] { opacity:1 !important; }
+
+/* ── кнопка сворачивания меню «<<»: всегда видна ── */
+[data-testid="stSidebarHeader"] { overflow:visible !important; position:relative; z-index:20; }
+[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"],
+[data-testid="stExpandSidebarButton"] { display:flex !important; visibility:visible !important; opacity:1 !important; z-index:100; }
+[data-testid="stSidebarCollapseButton"] button, [data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"] button { display:flex !important; visibility:visible !important; opacity:1 !important;
+  background:$head !important; border:1px solid $line !important; border-radius:10px !important; }
+[data-testid="stSidebarCollapseButton"] *, [data-testid="stSidebarCollapsedControl"] *,
+[data-testid="stExpandSidebarButton"] * { color:$ink !important; opacity:1 !important; }
+
+/* ── молния по рамке поиска при обновлении: мягкий бегущий свет цвета малиново-фиолетового ── */
+@property --bolt { syntax:"<angle>"; inherits:false; initial-value:0deg; }
+.st-key-gsearch::before { content:""; position:absolute; inset:0; border-radius:12px; padding:2px;
+  pointer-events:none; z-index:6; opacity:0; transition:opacity .5s ease;
+  background:conic-gradient(from var(--bolt), transparent 0deg, transparent 240deg,
+             rgba(176,60,214,.28) 285deg, rgba(200,90,235,.6) 335deg, rgba(236,180,252,.85) 355deg, transparent 360deg);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude;
+  filter:drop-shadow(0 0 3px rgba(176,60,214,.5)); }
+.stApp[data-teststate="running"] .st-key-gsearch::before,
+.stApp[data-test-script-state="running"] .st-key-gsearch::before {
+  opacity:1; animation:boltspin 2.8s linear infinite; }
+@keyframes boltspin { to { --bolt:360deg; } }
 </style>
 """)
 _vals = dict(P)
@@ -604,7 +636,7 @@ def _client_rw():
     return gspread.authorize(creds)
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load() -> pd.DataFrame:
     sheet = _client().open_by_key(SHEET_ID)
     ws = next(w for w in sheet.worksheets() if str(w.id) == GID)
@@ -643,7 +675,7 @@ def load() -> pd.DataFrame:
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_new_orders() -> pd.DataFrame:
     """Вкладка «Новые заказы» (не маршрутизированные):
     Номер_заказа / Статус_заказа / Дата_доставки / Товаров_зарезервировано / Точка_доставки / Магазин."""
@@ -696,7 +728,7 @@ def load_status_orders() -> set:
     return out
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_ship_tabs() -> dict:
     """Две вкладки таблицы отгрузок: «Маршруты New» (текущий день) и «Архив» (прошлые дни)."""
     sheet = _client().open_by_key(ARCHIVE_SHEET_ID)
@@ -712,7 +744,7 @@ def load_ship_tabs() -> dict:
     return {"archive": read(arch), "new": read(cur) if cur else None}
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_boxes() -> pd.DataFrame:
     """Ответы формы: Отметка времени / Магазин / Кол-во полученных коробок."""
     sheet = _client().open_by_key(BOXES_SHEET_ID)
@@ -743,7 +775,7 @@ def load_boxes() -> pd.DataFrame:
     return d
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_cat_prio() -> dict:
     """Лист1: Номер заказа 1С / Категория / Приоритет -> {номер заказа: (категория, приоритет)}."""
     sheet = _client().open_by_key(CAT_SHEET_ID)
@@ -870,7 +902,7 @@ def _norm_stock(raw: pd.DataFrame) -> pd.DataFrame:
     return d[d["date"].notna() & (d["sku"] != "")]
 
 
-@st.cache_data(ttl=3600, show_spinner="False")
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_catalog() -> pd.DataFrame:
     """Каталог товаров (sku, name) за последние MB_CAT_DAYS дней — лёгкий запрос, группировка на стороне Metabase."""
     tid = _stock_tid()
@@ -888,7 +920,7 @@ def load_stock_catalog() -> pd.DataFrame:
     return d[d["sku"] != ""].drop_duplicates("sku").reset_index(drop=True)
 
 
-@st.cache_data(ttl=1800, show_spinner="False")
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_stock_rows(skus: tuple, d_from: date, d_to: date):
     """Снимки остатков только по выбранным товарам и периоду — фильтрует Metabase.
     Возвращает (нормализованная таблица, исходные строки Metabase со всеми колонками)."""
@@ -908,7 +940,7 @@ def load_stock_rows(skus: tuple, d_from: date, d_to: date):
     return d.reset_index(drop=True), raw.loc[d.index].reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner="False")
+@st.cache_data(ttl=600, show_spinner=False)
 def load_magnit() -> pd.DataFrame:
     return mb_table("magnit_table", MB_MAGNIT_T)
 
@@ -1118,7 +1150,7 @@ def norm_store(x: str) -> str:
 EXCLUDED_KEYS = {norm_store(x) for x in EXCLUDE_STORES}
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_coords() -> dict:
     """Вкладка «Кординаты»: name / latitude / longitude -> {нормализованное имя: (lat, lon)}.
     Явно неверные координаты (вне Узбекистана, например долгота = широта) пропускаются."""
@@ -1499,14 +1531,30 @@ def trips_excel(machines: list, day_label: str, limit: int = 0, example: bool = 
 
 # ───────────────────────── Excel ─────────────────────────
 def backlog_excel(frame: pd.DataFrame, extra: pd.DataFrame = None) -> bytes:
-    """Все несобранные заказы по датам: ДАТА и КОЛ-ВО (шт).
-    extra — новые (не маршрутизированные) заказы, их штуки добавляются в бэклог по датам."""
-    from openpyxl.styles import Font
+    """Файл из двух вкладок.
+    «Бэклог» — все несобранные заказы по датам: ДАТА и КОЛ-ВО (шт); новые (не маршрутизированные) заказы добавляются.
+    «Сводная» — все даты по неделям (пн–вс): заказов, всего шт, собрано шт, осталось шт, % собрано + итоги по неделям."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    # ── вкладка «Бэклог» ──
     parts = [frame.loc[~frame["Собран"], ["Дата", "Штук"]]]
     if extra is not None and not extra.empty:
         parts.append(extra.loc[extra["Дата"].notna(), ["Дата", "Штук"]])
     b = (pd.concat(parts, ignore_index=True).groupby("Дата")["Штук"].sum().reset_index()
          .rename(columns={"Дата": "ДАТА", "Штук": "КОЛ-ВО"}).sort_values("ДАТА"))
+
+    # ── данные для «Сводной»: все заказы + новые (они не собраны) ──
+    src = frame[["Дата", "Штук", "Собран"]].copy()
+    if extra is not None and not extra.empty:
+        ex = extra.loc[extra["Дата"].notna(), ["Дата", "Штук"]].assign(Собран=False)
+        src = pd.concat([src, ex], ignore_index=True)
+    src = src[src["Дата"].notna()].copy()
+    src["Заказов"] = 1
+    src["Собрано_шт"] = src["Штук"].where(src["Собран"].astype(bool), 0)
+    g = (src.groupby("Дата").agg(Заказов=("Заказов", "sum"), Штук=("Штук", "sum"), Собрано=("Собрано_шт", "sum"))
+         .reset_index().sort_values("Дата"))
+    g["Нед"] = g["Дата"].map(lambda d: d - timedelta(days=d.weekday()))
+
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as xw:
         b.to_excel(xw, sheet_name="Бэклог", index=False)
@@ -1522,6 +1570,56 @@ def backlog_excel(frame: pd.DataFrame, extra: pd.DataFrame = None) -> bytes:
             ws.cell(row=r, column=2).number_format = "#,##0"
         ws.column_dimensions["A"].width = 16
         ws.column_dimensions["B"].width = 14
+
+        # ── вкладка «Сводная» ──
+        w2 = xw.book.create_sheet("Сводная")
+        w2.append(["Неделя", "Дата", "День", "Заказов", "Всего, шт", "Собрано, шт", "Осталось, шт", "% собрано"])
+        hfill = PatternFill("solid", fgColor="DCE8F2")
+        wfill = PatternFill("solid", fgColor="EBDDF5")
+        for c in w2[1]:
+            c.font, c.fill = Font(bold=True), hfill
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        w2.row_dimensions[1].height = 30
+
+        def put_formulas(i):
+            w2.cell(row=i, column=7, value=f"=E{i}-F{i}")
+            w2.cell(row=i, column=8, value=f"=IF(E{i}=0,0,F{i}/E{i})")
+
+        sub_rows = []
+        for wk, part in g.groupby("Нед"):
+            wlabel = f"{wk:%d.%m}–{wk + timedelta(days=6):%d.%m}"
+            first = w2.max_row + 1
+            for r in part.itertuples(index=False):
+                w2.append([wlabel, r.Дата, WEEKDAYS[r.Дата.weekday()], int(r.Заказов), int(r.Штук), int(r.Собрано)])
+                i = w2.max_row
+                put_formulas(i)
+                w2.cell(row=i, column=2).number_format = "DD.MM.YYYY"
+            lastr = w2.max_row
+            w2.append([f"Итого {wlabel}", None, None,
+                       f"=SUM(D{first}:D{lastr})", f"=SUM(E{first}:E{lastr})", f"=SUM(F{first}:F{lastr})"])
+            i = w2.max_row
+            put_formulas(i)
+            sub_rows.append(i)
+            for c in w2[i]:
+                c.font, c.fill = Font(bold=True), wfill
+
+        if sub_rows:
+            w2.append(["ОБЩИЙ ИТОГ", None, None,
+                       "=" + "+".join(f"D{x}" for x in sub_rows),
+                       "=" + "+".join(f"E{x}" for x in sub_rows),
+                       "=" + "+".join(f"F{x}" for x in sub_rows)])
+            i = w2.max_row
+            put_formulas(i)
+            for c in w2[i]:
+                c.font, c.fill = Font(bold=True), hfill
+
+        for r in range(2, w2.max_row + 1):
+            for col in (4, 5, 6, 7):
+                w2.cell(row=r, column=col).number_format = "#,##0"
+            w2.cell(row=r, column=8).number_format = "0%"
+        for col, w in zip("ABCDEFGH", (22, 14, 8, 11, 13, 14, 14, 12)):
+            w2.column_dimensions[col].width = w
+        w2.freeze_panes = "A2"
     return out.getvalue()
 
 
@@ -1568,39 +1666,26 @@ def _st_ver() -> tuple:
 
 
 def dl_button(label: str, data: bytes, file_name: str, key: str):
-    """Кнопка скачивания уже готового файла (без перезапуска страницы при нажатии)."""
+    """Компактная кнопка скачивания уже готового файла (без перезапуска страницы при нажатии)."""
     kw = dict(label=label, data=data, file_name=file_name, mime=XLSX_MIME, key=key)
     if _st_ver() >= (1, 43):
         kw["on_click"] = "ignore"
     try:
-        st.download_button(width="stretch", **kw)
+        st.download_button(**kw)
     except TypeError:
-        try:
-            st.download_button(use_container_width=True, **kw)
-        except TypeError:
-            kw.pop("on_click", None)
-            st.download_button(**kw)
+        kw.pop("on_click", None)
+        st.download_button(**kw)
 
 
 def xl_button(label: str, build, file_name: str, key: str):
-    """Кнопка скачивания Excel. Файл собирается безопасно (ошибка не роняет страницу),
+    """Компактная кнопка скачивания Excel. Файл собирается безопасно (ошибка не роняет страницу),
     имя файла только латиницей, без перезапуска страницы при нажатии."""
     try:
         data = build()
     except Exception as e:
         st.error(f"Не удалось собрать Excel-файл: {e}. Проверьте, что в requirements.txt есть openpyxl.")
         return
-    kw = dict(label=label, data=data, file_name=file_name, mime=XLSX_MIME, key=key)
-    if _st_ver() >= (1, 43):
-        kw["on_click"] = "ignore"
-    try:
-        st.download_button(width="stretch", **kw)
-    except TypeError:
-        try:
-            st.download_button(use_container_width=True, **kw)
-        except TypeError:
-            kw.pop("on_click", None)
-            st.download_button(**kw)
+    dl_button(label, data, file_name, key)
 
 
 # ───────────────────────── Логотипы ─────────────────────────
@@ -2102,18 +2187,33 @@ BEAT_EVERY = 15      # как часто вкладка подаёт сигна�
 
 
 @st.cache_resource
-def _presence() -> dict:
-    return {}        # общий для всех сессий: {id сессии: время последнего сигнала}
+def _presence2() -> dict:
+    return {}        # общий для всех сессий: {id сессии: {"first": когда зашёл, "last": последний сигнал}}
 
 
-def online_now() -> int:
+def online_now() -> list:
+    """Отмечает текущего человека и возвращает список [(время входа, id сессии)] по порядку входа."""
     if "sid" not in st.session_state:
         st.session_state.sid = uuid.uuid4().hex
-    reg, t = _presence(), time.time()
-    reg[st.session_state.sid] = t
-    for k in [k for k, v in reg.items() if t - v > ONLINE_WINDOW]:
+    reg, t = _presence2(), time.time()
+    rec = reg.get(st.session_state.sid)
+    if rec is None:
+        reg[st.session_state.sid] = {"first": t, "last": t}
+    else:
+        rec["last"] = t
+    for k in [k for k, v in reg.items() if t - v["last"] > ONLINE_WINDOW]:
         reg.pop(k, None)
-    return len(reg)
+    return sorted((v["first"], k) for k, v in reg.items())
+
+
+def dur_txt(sec: float) -> str:
+    s = max(int(sec), 0)
+    if s < 60:
+        return f"{s} сек"
+    m = s // 60
+    if m < 60:
+        return f"{m} мин"
+    return f"{m // 60} ч {m % 60} мин"
 
 
 # ── история изменений (для колокольчика): что добавилось, собрано, отгружено ──
@@ -2270,10 +2370,17 @@ def bell_html() -> str:
 @st.fragment(run_every=BEAT_EVERY)
 def topright():
     _auto_track()
-    cnt, nw = online_now(), datetime.now(TZ)
+    users, nw, t = online_now(), datetime.now(TZ), time.time()
+    me = st.session_state.get("sid")
+    urows = "".join(
+        f"<div class='ou'><span><i></i>Пользователь {i}{' <em>(вы)</em>' if sid == me else ''}</span>"
+        f"<b>{dur_txt(t - first)}</b></div>" for i, (first, sid) in enumerate(users, 1))
+    onl_pop = (f"<div class='onl-pop'><div class='bp-h'>Сейчас в дашборде</div>{urows}"
+               f"<div class='bp-f'>Время — сколько человек сидит без перерыва. "
+               f"Обновляется раз в {BEAT_EVERY} сек.</div></div>")
     st.markdown(
-        f"<div class='tb-right'><span class='live'><i class='dot'></i>"
-        f"<span title='Сейчас смотрят дашборд'>{cnt} онлайн</span></span><span class='sep'></span>"
+        f"<div class='tb-right'><span class='live onl'><i class='dot'></i>"
+        f"<span>{len(users)} онлайн</span>{onl_pop}</span><span class='sep'></span>"
         f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
         f"{bell_html()}</div>",
         unsafe_allow_html=True)
@@ -2451,7 +2558,7 @@ if page == PAGES[0]:
               <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 18)}</div></div>""",
                 go_orders, ("Не собрано", target))
 
-    xl_button("⬇️ Выгрузить бэклог в Excel (дата и кол-во)",
+    xl_button("Выгрузить бэклог в Excel",
               lambda: backlog_excel(df, new_orders), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
 
     show_all = st.toggle(f"Показать все дни (по умолчанию только дни с готовностью ниже {HIDE_FROM_DAYS_PCT}%)",
@@ -2572,7 +2679,7 @@ if page == PAGES[1]:
                        f"точек: {len(pivot)}. Не включены магазины: {', '.join(EXCLUDE_STORES)}"
                        + (f" (исключено {n(len(dropped))} заказов, {n(dropped['Штук'].sum())} шт)." if len(dropped) else "."))
             label = "all" if st.session_state.f_date == ALL else f"{st.session_state.f_date:%Y-%m-%d}"
-            xl_button("⬇️ Скачать сводную в Excel", lambda: routing_excel(pivot),
+            xl_button("Скачать сводную в Excel", lambda: routing_excel(pivot),
                       f"marshrutizatsiya_{label}.xlsx", "dl_routing")
             st.markdown(routing_table(pivot), unsafe_allow_html=True)
     elif mode == "Рейсы":
@@ -2608,7 +2715,7 @@ if page == PAGES[1]:
                     if left:
                         st.warning("Не распределено по машинам: " + ", ".join(
                             f"{s} ({n(stores[s]['qty'])} шт)" for s in left))
-                    xl_button("⬇️ Скачать рейсы в Excel",
+                    xl_button("Скачать рейсы в Excel",
                               lambda: trips_excel(machines, f"{st.session_state.f_date:%d.%m.%Y}", limit, example=False),
                               f"reisy_{st.session_state.f_date:%Y-%m-%d}.xlsx", "dl_trips")
                     st.markdown(trips_table(machines, coords), unsafe_allow_html=True)
@@ -2818,7 +2925,7 @@ if page == PAGES[4]:
         res = st.session_state.get("mv_res")
         if res and res["sig"] == (tuple(chosen), d1, d2):
             rep = res["rep"]
-            dl_button("⬇️ Скачать Excel: движения по остаткам", res["data"], res["name"], "dl_mv")
+            dl_button("Скачать Excel: движения по остаткам", res["data"], res["name"], "dl_mv")
             sm_ = rep["summary"]
             rows = [[esc(r["Sku Wms ID"]), esc(r["Товар"]), n(r["Остаток на начало"]), n(r["Остаток на конец"]),
                      n(r["Доступно на конец"]), n(r["Резерв на конец"]),
@@ -2843,7 +2950,7 @@ if page == PAGES[4]:
     mg_res = st.session_state.get("mg_res")
     if mg_res:
         st.caption(f"Готово: {n(mg_res['rows'])} строк.")
-        dl_button("⬇️ Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
+        dl_button("Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
 
 # ───────────────────────── 6. Аналитика ─────────────────────────
 if page == PAGES[5]:
