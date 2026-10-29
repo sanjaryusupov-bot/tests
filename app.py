@@ -225,11 +225,17 @@ def status_breakdown(frame) -> list:
 
 
 CSS = Template("""
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] {
+  position:fixed !important; left:12px; top:10px; z-index:1000 !important; display:flex !important; }
+[data-testid="stExpandSidebarButton"] button, [data-testid="stSidebarCollapsedControl"] button {
+  background:$head !important; border:1px solid $line !important; border-radius:10px !important; }
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
 .stApp { background:$paper; color:$ink; color-scheme:$scheme; }
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
+#MainMenu, footer, [data-testid="stDecoration"], [data-testid="stToolbarActions"],
+[data-testid="stMainMenu"], [data-testid="stAppDeployButton"], .stAppDeployButton { display:none !important; }
+[data-testid="stToolbar"] { display:flex !important; visibility:visible !important; background:transparent !important; }
 .block-container { padding: 1.2rem 1rem 3rem; max-width: 1100px; }
 
 .stApp p, .stApp label, .stApp li, .stApp [data-testid="stWidgetLabel"] p,
@@ -373,7 +379,7 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 /* ═════════ «M Cosmetic Dark v2» ═════════ */
 .stApp { background: radial-gradient(1100px 560px at 75% -8%, rgba(139,61,255,.16), transparent 60%),
                      radial-gradient(800px 480px at 8% 0%, rgba(224,51,143,.11), transparent 55%), $paper; }
-header[data-testid="stHeader"] { display:block !important; background:transparent; height:0; }
+header[data-testid="stHeader"] { display:block !important; background:transparent !important; height:0; overflow:visible !important; z-index:200; }
 [data-testid="stSidebarCollapsedControl"] { display:flex !important; }
 .block-container { max-width:1180px; padding-top:1rem; }
 
