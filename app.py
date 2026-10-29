@@ -261,21 +261,19 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 [data-stale="true"] { opacity:1 !important; }
 
 /* ── молния в поиске при обновлении данных ── */
-.st-key-gsearch::before { content:""; position:absolute; left:10px; right:10px; bottom:-2px; height:3px;
-  border-radius:3px; opacity:0; pointer-events:none; z-index:6;
-  background:linear-gradient(90deg, transparent 0%, #1E6BFF 18%, #5CC8FF 34%, #FFFFFF 50%, #5CC8FF 66%, #1E6BFF 82%, transparent 100%);
-  background-size:220% 100%; transition:opacity .25s; }
+/* ── молния по рамке поиска: мягкий бегущий свет, без мерцания ── */
+@property --bolt { syntax:"<angle>"; inherits:false; initial-value:0deg; }
+.st-key-gsearch::before { content:""; position:absolute; inset:0; border-radius:12px; padding:2px;
+  pointer-events:none; z-index:6; opacity:0; transition:opacity .5s ease;
+  background:conic-gradient(from var(--bolt), transparent 0deg, transparent 240deg,
+             rgba(59,156,255,.25) 285deg, rgba(92,200,255,.55) 335deg, rgba(190,230,255,.8) 355deg, transparent 360deg);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude;
+  filter:drop-shadow(0 0 3px rgba(59,156,255,.45)); }
 .stApp[data-teststate="running"] .st-key-gsearch::before,
 .stApp[data-test-script-state="running"] .st-key-gsearch::before {
-  opacity:1;
-  animation:boltrun .8s linear infinite, boltflick .18s steps(2) infinite;
-  box-shadow:0 0 6px #5CC8FF, 0 0 14px #1E6BFF, 0 0 28px rgba(30,107,255,.8); }
-.stApp[data-teststate="running"] .st-key-gsearch input,
-.stApp[data-test-script-state="running"] .st-key-gsearch input {
-  border-color:#3B9CFF !important; box-shadow:0 0 16px rgba(59,156,255,.55), inset 0 0 8px rgba(59,156,255,.25) !important; }
-@keyframes boltrun { from { background-position:200% 0; } to { background-position:-20% 0; } }
-@keyframes boltflick { 0% { filter:brightness(1); transform:scaleY(1); }
-                       50% { filter:brightness(1.7); transform:scaleY(1.7); } 100% { filter:brightness(1.1); transform:scaleY(1); } }
+  opacity:1; animation:boltspin 2.8s linear infinite; }
+@keyframes boltspin { to { --bolt:360deg; } }
 /* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:flex-end; }
