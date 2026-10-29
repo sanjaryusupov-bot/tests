@@ -6,6 +6,7 @@
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 """
+import threading
 import time
 import uuid
 import zlib
@@ -99,6 +100,8 @@ CONTACT_TG = "@sanyspv"
 ADDRESS_URL = "https://yandex.uz/maps/-/CXb1NI87"
 ADDRESS_TEXT = "просп. Ханабадтепа, 2/1"
 LOGO_TOP_HEIGHT = 32  # высота логотипа в верхней панели, px
+HISTORY_FILE = "change_history.json"   # история изменений для колокольчика (запасной файл на сервере)
+HISTORY_KEEP = 300                      # сколько последних событий хранить
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -415,7 +418,8 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .lt-one img { animation:ltfloat 3s ease-in-out infinite; }
 
 /* ── верхняя панель: поиск, онлайн, дата, колокольчик, тема ── */
-.st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px; }
+.st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px;
+                 position:relative; z-index:60; }
 .st-key-topbar [data-testid="stHorizontalBlock"] { align-items:center; gap:.75rem; }
 .st-key-gsearch { position:relative; }
 .st-key-gsearch input { padding-left:40px !important; padding-right:92px !important; height:40px;
@@ -429,9 +433,26 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tb-right .dot { width:8px; height:8px; border-radius:50%; background:#34C27A; animation:livepulse 1.4s ease-in-out infinite; }
 .tb-right .sep { width:1px; height:20px; background:$line; }
 .tb-right .tb-date { display:flex; align-items:center; gap:8px; }
-.tb-right .bell { position:relative; display:flex; }
-.tb-right .bell i { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
-                    background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
+.tb-right .bell { position:relative; display:flex; cursor:pointer; }
+.tb-right .bell::after { content:""; position:absolute; left:-24px; right:-12px; top:100%; height:16px; }
+.tb-right .bell .bdot { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
+                        background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
+.bell-pop { display:none; position:absolute; right:-12px; top:calc(100% + 12px); width:370px; max-width:88vw;
+            z-index:9999; padding:14px 16px; border-radius:16px; background:$card; border:1px solid $line;
+            box-shadow:0 18px 50px rgba(0,0,0,.45); white-space:normal; text-align:left; color:$ink; cursor:default; }
+.bell:hover .bell-pop, .bell-pop:hover { display:block; }
+.bell-pop .bp-h { font-weight:800; font-size:.95rem; color:$ink; margin-bottom:8px; }
+.bell-pop .bp-box { padding:8px 10px; border-radius:10px; background:$head; border:1px solid $line;
+                    font-size:.74rem; color:$mute; line-height:1.55; margin-bottom:8px; }
+.bell-pop .bp-box b { color:$ink; }
+.bell-pop .bp-list { max-height:300px; overflow-y:auto; }
+.bell-pop .ev { display:grid; grid-template-columns:78px 8px 1fr; gap:8px; align-items:baseline; padding:5px 0;
+                border-top:1px solid $line; font-size:.76rem; color:$ink; }
+.bell-pop .ev .t { color:$mute; font-size:.7rem; font-variant-numeric:tabular-nums; }
+.bell-pop .ev i { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.bell-pop .ev small { color:$mute; font-size:.7rem; }
+.bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
+.bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
 
@@ -470,6 +491,10 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .kpi .sts .stp i { width:6px; height:6px; border-radius:50%; display:inline-block; }
 .kpi .sts .stp b { color:$ink; font-weight:700; }
 .st-key-tap_left .kpi, .st-key-tap_pcs .kpi { min-height:150px; }
+.kpi.nov .l { font-size:.95rem; font-weight:800; color:$ink; margin:0; }
+.kpi.nov .sts { display:grid; grid-template-columns:1fr 1fr; gap:5px 18px; margin-top:12px; }
+.kpi.nov .sts .stp { justify-content:space-between; font-size:.7rem; }
+.kpi.nov .sts .stp span.nm { display:inline-flex; align-items:center; gap:5px; }
 .kpi .trend { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
 .kpi .delta { font-size:.74rem; font-weight:800; }
 .kpi .delta.up { color:#34C27A; } .kpi .delta.dn { color:#F2A23D; }
@@ -1826,11 +1851,17 @@ def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None, s
         trend = f"<div class='trend'>{dh}{sp}</div>"
     sts = ""
     if status:
-        items = "".join(f"<span class='stp'><i style='background:{c}'></i>{esc(nm)} <b>{n(v)}</b></span>"
-                        for nm, v, c in status)
-        sts = f"<div class='sts'><span class='stt'>шт по статусам</span>{items}</div>"
-    return (f"<div class='kpi {cls}'><div class='ico'>{ic(icon, '#FFFFFF', 24)}</div>"
-            f"<div class='mid'><div class='v'>{value}</div><div class='l'>{esc(label)}</div>{sub_html}</div>{trend}{sts}</div>")
+        if value is None:
+            items = "".join(f"<span class='stp'><span class='nm'><i style='background:{c}'></i>{esc(nm)}</span>"
+                            f"<b>{n(v)}</b></span>" for nm, v, c in status)
+            sts = f"<div class='sts'>{items}</div>"
+        else:
+            items = "".join(f"<span class='stp'><i style='background:{c}'></i>{esc(nm)} <b>{n(v)}</b></span>"
+                            for nm, v, c in status)
+            sts = f"<div class='sts'><span class='stt'>шт по статусам</span>{items}</div>"
+    v_html = "" if value is None else f"<div class='v'>{value}</div>"
+    return (f"<div class='kpi {cls}{' nov' if value is None else ''}'><div class='ico'>{ic(icon, '#FFFFFF', 24)}</div>"
+            f"<div class='mid'>{v_html}<div class='l'>{esc(label)}</div>{sub_html}</div>{trend}{sts}</div>")
 
 
 # ───────────────────────── Ручные рейсы: хранение ─────────────────────────
@@ -2068,14 +2099,166 @@ def online_now() -> int:
     return len(reg)
 
 
+# ── история изменений (для колокольчика): что добавилось, собрано, отгружено ──
+EV_META = {"added": ("добавлено заказов", "#E0338F"), "routed": ("маршрутизировано", "#8B3DFF"),
+           "collected": ("собрано", "#34C27A"), "shipped": ("отгружено", "#3B9CFF"),
+           "removed": ("убрано из таблицы", "#8C93B5")}
+
+
+@st.cache_resource
+def _hist() -> dict:
+    """Общая для всех сессий память: последний снимок заказов и список событий."""
+    h = {"snap": None, "events": [], "since": None, "cur": {}, "lock": threading.Lock()}
+    try:
+        with open(HISTORY_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        h["events"], h["since"] = d.get("events", []), d.get("since")
+        s = d.get("snap")
+        if s:
+            h["snap"] = dict(pcs={k: int(v) for k, v in s["pcs"].items()}, orders=set(s["orders"]),
+                             new=set(s["new"]), collected=set(s["collected"]), shipped=set(s["shipped"]))
+    except Exception:
+        pass
+    return h
+
+
+def _hist_save(h: dict):
+    try:
+        s = h["snap"]
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"since": h["since"], "events": h["events"][-HISTORY_KEEP:],
+                       "snap": {"pcs": s["pcs"], "orders": sorted(s["orders"]), "new": sorted(s["new"]),
+                                "collected": sorted(s["collected"]), "shipped": sorted(s["shipped"])}},
+                      f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def record_history(df: pd.DataFrame, ship, new_orders):
+    """Сравнивает текущие данные с прошлым снимком и дописывает события.
+    ship / new_orders = None — источник сейчас недоступен: берём их из прошлого снимка, чтобы не плодить ложные события."""
+    h, now_ = _hist(), datetime.now(TZ)
+    pcs = {}
+    if ship is not None and not ship.empty:
+        pcs.update({k: int(v) for k, v in zip(ship["Заказ"], ship["Штук"])})
+    if new_orders is not None:
+        pcs.update({k: int(v) for k, v in zip(new_orders["Заказ"], new_orders["Штук"])})
+    pcs.update({k: int(v) for k, v in zip(df["Заказ"], df["Штук"])})
+    shipped_today, shipped_today_pcs = 0, 0
+    if ship is not None and not ship.empty:
+        try:
+            m = ship["Отгружен"] & ship["Факт"].notna() & (ship["Факт"].dt.date == now_.date())
+            shipped_today, shipped_today_pcs = int(m.sum()), int(ship.loc[m, "Штук"].sum())
+        except Exception:
+            pass
+    with h["lock"]:
+        prev = h["snap"]
+        cur = dict(pcs=pcs, orders=set(df["Заказ"]),
+                   new=set(new_orders["Заказ"]) if new_orders is not None else (prev["new"] if prev else set()),
+                   collected=set(df.loc[df["Собран"], "Заказ"]),
+                   shipped=(set(ship.loc[ship["Отгружен"], "Заказ"]) if ship is not None and not ship.empty
+                            else (prev["shipped"] if prev else set())))
+        new_cnt = len(new_orders) if new_orders is not None else len(cur["new"])
+        h["cur"] = dict(total=len(df), left=int((~df["Собран"]).sum()) + new_cnt,
+                        pcs_left=int(df.loc[~df["Собран"], "Штук"].sum()) + (
+                            int(new_orders["Штук"].sum()) if new_orders is not None else 0),
+                        new_cnt=new_cnt, shipped_today=shipped_today, shipped_today_pcs=shipped_today_pcs)
+        if prev is None:                                    # первый запуск: просто запоминаем исходное состояние
+            h["since"], h["snap"] = now_.isoformat(), cur
+            _hist_save(h)
+            return
+        known_prev, known_cur = prev["orders"] | prev["new"], cur["orders"] | cur["new"]
+        added = known_cur - known_prev
+        removed = known_prev - known_cur
+        routed = (cur["orders"] & prev["new"]) - prev["orders"]
+        collected = (cur["collected"] - prev["collected"]) - added
+        shipped = (cur["shipped"] - prev["shipped"]) - added
+        found = False
+        for kind, ids in (("added", added), ("routed", routed), ("collected", collected),
+                          ("shipped", shipped), ("removed", removed)):
+            if ids:
+                found = True
+                h["events"].append(dict(t=now_.isoformat(), k=kind, n=len(ids),
+                                        pcs=sum(cur["pcs"].get(i, prev["pcs"].get(i, 0)) for i in ids)))
+        h["events"] = h["events"][-HISTORY_KEEP:]
+        changed = found or cur["orders"] != prev["orders"] or cur["new"] != prev["new"] \
+            or cur["collected"] != prev["collected"] or cur["shipped"] != prev["shipped"]
+        h["snap"] = cur
+        if changed:
+            _hist_save(h)
+
+
+def _auto_track():
+    """Подтягивает данные (из кэша) и фиксирует изменения — работает, пока дашборд открыт хотя бы у кого-то."""
+    try:
+        d = load()
+        try:
+            sh = build_ship(load_ship_tabs())
+        except Exception:
+            sh = None
+        try:
+            no = load_new_orders()
+            no = no[~no["Заказ"].isin(d["Заказ"])]
+        except Exception:
+            no = None
+        record_history(d, sh, no)
+    except Exception:
+        pass
+
+
+def bell_html() -> str:
+    """Колокольчик: при наведении — история изменений и сводка за сегодня."""
+    h = _hist()
+    with h["lock"]:
+        events, cur, since = list(h["events"]), dict(h["cur"]), h["since"]
+    nw = datetime.now(TZ)
+
+    def tt(e):
+        return datetime.fromisoformat(e["t"]).astimezone(TZ)
+
+    today = [e for e in events if tt(e).date() == nw.date()]
+    sums = {k: [0, 0] for k in EV_META}
+    for e in today:
+        sums[e["k"]][0] += e["n"]
+        sums[e["k"]][1] += e["pcs"]
+    dot = "<i class='bdot'></i>" if any((nw - tt(e)).total_seconds() < 86400 for e in events) else ""
+
+    now_box = ""
+    if cur:
+        now_box = (f"Сейчас: не собрано <b>{n(cur['left'])}</b> зак. · бэклог <b>{n(cur['pcs_left'])}</b> шт"
+                   f" · не маршрутизировано <b>{n(cur['new_cnt'])}</b>")
+    td = (f"За сегодня: добавлено <b>{n(sums['added'][0])}</b> · собрано <b>{n(sums['collected'][0])}</b> "
+          f"({n(sums['collected'][1])} шт) · маршрутизировано <b>{n(sums['routed'][0])}</b>")
+    if cur:
+        td += f"<br>Отгружено сегодня: <b>{n(cur['shipped_today'])}</b> зак. · <b>{n(cur['shipped_today_pcs'])}</b> шт"
+    rows = []
+    for e in reversed(events[-40:]):
+        t = tt(e)
+        label, col = EV_META.get(e["k"], (e["k"], "#8C93B5"))
+        stamp = f"{t:%H:%M}" if t.date() == nw.date() else f"{t:%d.%m %H:%M}"
+        rows.append(f"<div class='ev'><span class='t'>{stamp}</span><i style='background:{col}'></i>"
+                    f"<span><b>{n(e['n'])}</b> {label} <small>· {n(e['pcs'])} шт</small></span></div>")
+    if not rows:
+        rows.append("<div class='empty'>Изменений пока не было. Они появятся здесь, как только в таблице "
+                    "что-то добавится, соберётся или отгрузится.</div>")
+    since_txt = f"{datetime.fromisoformat(since).astimezone(TZ):%d.%m %H:%M}" if since else "—"
+    pop = (f"<div class='bell-pop'><div class='bp-h'>История изменений</div>"
+           f"<div class='bp-box'>{now_box}<br>{td}</div>"
+           f"<div class='bp-list'>{''.join(rows)}</div>"
+           f"<div class='bp-f'>Изменения фиксируются при обновлении данных (раз в {CACHE_SECONDS // 60} мин, пока "
+           f"дашборд открыт). Отслеживание с {since_txt}.</div></div>")
+    return f"<div class='bell'>{ic('bell', P['mute'], 18)}{dot}{pop}</div>"
+
+
 @st.fragment(run_every=BEAT_EVERY)
 def topright():
+    _auto_track()
     cnt, nw = online_now(), datetime.now(TZ)
     st.markdown(
         f"<div class='tb-right'><span class='live'><i class='dot'></i>"
         f"<span title='Сейчас смотрят дашборд'>{cnt} онлайн</span></span><span class='sep'></span>"
         f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
-        f"<span class='bell'>{ic('bell', P['mute'], 18)}<i></i></span></div>",
+        f"{bell_html()}</div>",
         unsafe_allow_html=True)
 
 
@@ -2219,13 +2402,13 @@ if page == PAGES[0]:
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", kpi_box(n(total), "всего заказов", "", "all", status=status_breakdown(df_all)),
+        tap("all", kpi_box(None, "Штук по статусам", "", "all", status=status_breakdown(df_all)),
             go_orders, ("Все", ALL))
     with k2:
-        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left, delta=trend_pct(s_left)),
+        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left),
             go_orders, ("Не собрано", ALL))
     with k3:
-        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs, delta=trend_pct(s_pcs)),
+        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs),
             go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть список заказов.")
 
