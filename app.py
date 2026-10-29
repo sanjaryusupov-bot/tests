@@ -256,7 +256,26 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 .stApp [data-testid="stExpander"] { background:$card; border:1px solid $line; border-radius:16px; }
 .stApp [data-testid="stExpander"] summary p { color:$ink; font-weight:700; }
 .stApp [data-testid="stAlert"] { background:$card; border:1px solid $line; border-radius:12px; }
+/* ── убрать системные надписи загрузки и «серую» подсветку ── */
+[data-testid="stSpinner"], .stSpinner, [data-testid="stStatusWidget"] { display:none !important; }
+[data-stale="true"] { opacity:1 !important; }
 
+/* ── молния в поиске при обновлении данных ── */
+.st-key-gsearch::before { content:""; position:absolute; left:10px; right:10px; bottom:-2px; height:3px;
+  border-radius:3px; opacity:0; pointer-events:none; z-index:6;
+  background:linear-gradient(90deg, transparent 0%, #1E6BFF 18%, #5CC8FF 34%, #FFFFFF 50%, #5CC8FF 66%, #1E6BFF 82%, transparent 100%);
+  background-size:220% 100%; transition:opacity .25s; }
+.stApp[data-teststate="running"] .st-key-gsearch::before,
+.stApp[data-test-script-state="running"] .st-key-gsearch::before {
+  opacity:1;
+  animation:boltrun .8s linear infinite, boltflick .18s steps(2) infinite;
+  box-shadow:0 0 6px #5CC8FF, 0 0 14px #1E6BFF, 0 0 28px rgba(30,107,255,.8); }
+.stApp[data-teststate="running"] .st-key-gsearch input,
+.stApp[data-test-script-state="running"] .st-key-gsearch input {
+  border-color:#3B9CFF !important; box-shadow:0 0 16px rgba(59,156,255,.55), inset 0 0 8px rgba(59,156,255,.25) !important; }
+@keyframes boltrun { from { background-position:200% 0; } to { background-position:-20% 0; } }
+@keyframes boltflick { 0% { filter:brightness(1); transform:scaleY(1); }
+                       50% { filter:brightness(1.7); transform:scaleY(1.7); } 100% { filter:brightness(1.1); transform:scaleY(1); } }
 /* шапка: логотипы + дата */
 .brandbar { background:$card; border:1px solid $line; border-radius:16px; padding:10px 16px; margin-bottom:14px;
             display:flex; align-items:center; justify-content:flex-end; }
@@ -587,7 +606,7 @@ def _client_rw():
     return gspread.authorize(creds)
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Загружаю таблицу…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load() -> pd.DataFrame:
     sheet = _client().open_by_key(SHEET_ID)
     ws = next(w for w in sheet.worksheets() if str(w.id) == GID)
@@ -626,7 +645,7 @@ def load() -> pd.DataFrame:
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю новые заказы…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load_new_orders() -> pd.DataFrame:
     """Вкладка «Новые заказы» (не маршрутизированные):
     Номер_заказа / Статус_заказа / Дата_доставки / Товаров_зарезервировано / Точка_доставки / Магазин."""
@@ -679,7 +698,7 @@ def load_status_orders() -> set:
     return out
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю отгрузки…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load_ship_tabs() -> dict:
     """Две вкладки таблицы отгрузок: «Маршруты New» (текущий день) и «Архив» (прошлые дни)."""
     sheet = _client().open_by_key(ARCHIVE_SHEET_ID)
@@ -695,7 +714,7 @@ def load_ship_tabs() -> dict:
     return {"archive": read(arch), "new": read(cur) if cur else None}
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю пустые короба…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load_boxes() -> pd.DataFrame:
     """Ответы формы: Отметка времени / Магазин / Кол-во полученных коробок."""
     sheet = _client().open_by_key(BOXES_SHEET_ID)
@@ -726,7 +745,7 @@ def load_boxes() -> pd.DataFrame:
     return d
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю категории заказов…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load_cat_prio() -> dict:
     """Лист1: Номер заказа 1С / Категория / Приоритет -> {номер заказа: (категория, приоритет)}."""
     sheet = _client().open_by_key(CAT_SHEET_ID)
@@ -853,7 +872,7 @@ def _norm_stock(raw: pd.DataFrame) -> pd.DataFrame:
     return d[d["date"].notna() & (d["sku"] != "")]
 
 
-@st.cache_data(ttl=3600, show_spinner="Читаю список товаров из Metabase…")
+@st.cache_data(ttl=3600, show_spinner="False")
 def load_stock_catalog() -> pd.DataFrame:
     """Каталог товаров (sku, name) за последние MB_CAT_DAYS дней — лёгкий запрос, группировка на стороне Metabase."""
     tid = _stock_tid()
@@ -871,7 +890,7 @@ def load_stock_catalog() -> pd.DataFrame:
     return d[d["sku"] != ""].drop_duplicates("sku").reset_index(drop=True)
 
 
-@st.cache_data(ttl=1800, show_spinner="Читаю движения из Metabase…")
+@st.cache_data(ttl=1800, show_spinner="False")
 def load_stock_rows(skus: tuple, d_from: date, d_to: date):
     """Снимки остатков только по выбранным товарам и периоду — фильтрует Metabase.
     Возвращает (нормализованная таблица, исходные строки Metabase со всеми колонками)."""
@@ -891,7 +910,7 @@ def load_stock_rows(skus: tuple, d_from: date, d_to: date):
     return d.reset_index(drop=True), raw.loc[d.index].reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner="Читаю Magnit Stock из Metabase…")
+@st.cache_data(ttl=600, show_spinner="False")
 def load_magnit() -> pd.DataFrame:
     return mb_table("magnit_table", MB_MAGNIT_T)
 
@@ -1101,7 +1120,7 @@ def norm_store(x: str) -> str:
 EXCLUDED_KEYS = {norm_store(x) for x in EXCLUDE_STORES}
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Читаю координаты…")
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="False")
 def load_coords() -> dict:
     """Вкладка «Кординаты»: name / latitude / longitude -> {нормализованное имя: (lat, lon)}.
     Явно неверные координаты (вне Узбекистана, например долгота = широта) пропускаются."""
