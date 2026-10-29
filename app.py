@@ -2,7 +2,8 @@
 Дашборд сборки заказов: Google Таблица -> Streamlit -> Telegram WebApp.
 Дизайн: «M Cosmetic Dark v2» (меню с иконками, поиск, KPI с мини-графиками, неоновый градиент).
 Один файл. Запуск локально:  streamlit run app.py
-Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase].
+Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase]
+(в [metabase] можно добавить hub_table = 61, stock_table, magnit_table).
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 """
@@ -77,11 +78,14 @@ MONTHS = ["январь", "февраль", "март", "апрель", "май"
 CAT_SHEET_ID = "1qaIGoF4PYPV2GZyvCN7D_kRQlchan6ZlAz2sl77TIhQ"
 CAT_GID = "0"
 
-# Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table)
+# Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table, hub_table)
 MB_STOCK_T = 48     # «Stock Invoice Sku Cell» — история снимков остатков
 MB_MAGNIT_T = 58    # «Magnit Stock»
+MB_HUB_T = 61       # «Хаб отгрузка ББ» — приёмка коробок (биг-бэгов) на хабе
 MB_STOCK_DAYS = 90  # за сколько последних дней можно выбирать период
 MB_CAT_DAYS = 14    # за сколько последних дней собирать каталог товаров
+HUB_DAYS = 30       # за сколько последних дней читать «Хаб отгрузка ББ»
+HUB_CARD_DATES = 4  # сколько дат показывать мелким шрифтом на карточке хаба
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -229,7 +233,8 @@ CSS = Template("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-serif; }
 .stApp { background:$paper; color:$ink; color-scheme:$scheme; }
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none; }
+#MainMenu, footer, [data-testid="stDecoration"], [data-testid="stToolbarActions"],
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"] { display:none !important; }
 .block-container { padding: 1.2rem 1rem 3rem; max-width: 1100px; }
 
 .stApp p, .stApp label, .stApp li, .stApp [data-testid="stWidgetLabel"] p,
@@ -373,8 +378,6 @@ table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink;
 /* ═════════ «M Cosmetic Dark v2» ═════════ */
 .stApp { background: radial-gradient(1100px 560px at 75% -8%, rgba(139,61,255,.16), transparent 60%),
                      radial-gradient(800px 480px at 8% 0%, rgba(224,51,143,.11), transparent 55%), $paper; }
-header[data-testid="stHeader"] { display:block !important; background:transparent; height:0; }
-[data-testid="stSidebarCollapsedControl"] { display:flex !important; }
 .block-container { max-width:1180px; padding-top:1rem; }
 
 /* ── боковая панель ── */
@@ -405,10 +408,6 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .addr { display:flex; align-items:flex-start; gap:8px; margin-top:8px; padding:10px 12px; border-radius:14px;
         border:1px solid $line; background:$head; line-height:1.3; }
 .addr svg, .contact a svg { flex:none; }
-
-/* кнопка сворачивания меню «<<» чуть ниже */
-[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"],
-[data-testid="stExpandSidebarButton"] { transform:translateY(18px); }
 
 /* мини-логотип в верхней панели */
 .st-key-topbar .brand { justify-content:flex-start; }
@@ -507,7 +506,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .kpi .sts .stp { display:inline-flex; align-items:center; gap:5px; font-size:.66rem; color:$mute; white-space:nowrap; }
 .kpi .sts .stp i { width:6px; height:6px; border-radius:50%; display:inline-block; }
 .kpi .sts .stp b { color:$ink; font-weight:700; }
-.st-key-tap_left .kpi, .st-key-tap_pcs .kpi { min-height:150px; }
+.st-key-tap_hub .kpi, .st-key-tap_pcs .kpi { min-height:150px; }
 .kpi.nov .l { font-size:.95rem; font-weight:800; color:$ink; margin:0; }
 .kpi.nov .sts { display:grid; grid-template-columns:1fr 1fr; gap:5px 18px; margin-top:12px; }
 .kpi.nov .sts .stp { justify-content:space-between; font-size:.7rem; }
@@ -526,6 +525,17 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .kpi.ok .ico { background:linear-gradient(135deg,#34C27A,#1E9E5C); box-shadow:0 6px 18px rgba(52,194,122,.4); }
 [class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { transform:translateY(-1px); filter:brightness(1.08); }
 .kpi, .day { transition:transform .15s, filter .15s, border-color .15s; }
+
+/* ── карточка «Хаб отгрузка ББ»: мелкая таблица Дата / Принято / Не принято ── */
+.hubt { grid-column:1 / -1; display:flex; flex-direction:column; gap:3px; margin-top:10px; padding-top:8px;
+        border-top:1px dashed $line; }
+.hubt .hr { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:8px; align-items:center; font-size:.7rem; color:$ink; }
+.hubt .hr.hh { font-size:.58rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:$mute; }
+.hubt .hr.hh span:nth-child(n+2), .hubt .hr b { text-align:right; }
+.hubt .hr b { font-variant-numeric:tabular-nums; font-weight:800; }
+.hubt .hr b.g { color:#34C27A; }
+.hubt .hr b.r { color:#F2A23D; }
+.hubt .none { font-size:.72rem; color:$mute; }
 
 /* ── карточка отгрузки ── */
 .ship { border-radius:20px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
@@ -575,15 +585,28 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 [data-testid="stSpinner"], .stSpinner, [data-testid="stStatusWidget"] { display:none !important; }
 [data-stale="true"] { opacity:1 !important; }
 
-/* ── кнопка сворачивания меню «<<»: всегда видна ── */
-[data-testid="stSidebarHeader"] { overflow:visible !important; position:relative; z-index:20; }
-[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"],
-[data-testid="stExpandSidebarButton"] { display:flex !important; visibility:visible !important; opacity:1 !important; z-index:100; }
-[data-testid="stSidebarCollapseButton"] button, [data-testid="stSidebarCollapsedControl"] button,
-[data-testid="stExpandSidebarButton"] button { display:flex !important; visibility:visible !important; opacity:1 !important;
+/* ── кнопка сворачивания / раскрытия меню «<<» / «>>»: всегда видна ──
+   Раньше скрывался весь блок stToolbar, а кнопка раскрытия меню лежит внутри него — поэтому она исчезала.
+   Теперь прячем только лишнее (меню, Deploy), а кнопку раскрытия закрепляем в углу окна. */
+header[data-testid="stHeader"] { display:block !important; background:transparent !important; height:auto !important;
+  min-height:0 !important; overflow:visible !important; pointer-events:none !important; }
+header[data-testid="stHeader"] * { pointer-events:none; }
+[data-testid="stToolbar"] { background:transparent !important; }
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] {
+  display:flex !important; visibility:visible !important; opacity:1 !important; pointer-events:auto !important;
+  position:fixed !important; top:14px !important; left:12px !important; z-index:1000002 !important; }
+[data-testid="stExpandSidebarButton"] *, [data-testid="stSidebarCollapsedControl"] * {
+  pointer-events:auto !important; visibility:visible !important; opacity:1 !important; color:$ink !important; }
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] button {
   background:$head !important; border:1px solid $line !important; border-radius:10px !important; }
-[data-testid="stSidebarCollapseButton"] *, [data-testid="stSidebarCollapsedControl"] *,
-[data-testid="stExpandSidebarButton"] * { color:$ink !important; opacity:1 !important; }
+[data-testid="stSidebarHeader"] { overflow:visible !important; position:relative; z-index:20; }
+[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapseButton"] button {
+  display:flex !important; visibility:visible !important; opacity:1 !important; }
+[data-testid="stSidebarCollapseButton"] button { background:$head !important; border:1px solid $line !important;
+  border-radius:10px !important; }
+[data-testid="stSidebarCollapseButton"] * { color:$ink !important; opacity:1 !important; }
+/* когда меню свёрнуто, сдвигаем верхнюю панель, чтобы кнопка не перекрывала логотип */
+.stApp:has(section[data-testid="stSidebar"][aria-expanded="false"]) .st-key-topbar { margin-left:46px; }
 
 /* ── молния по рамке поиска при обновлении: мягкий бегущий свет цвета малиново-фиолетового ── */
 @property --bolt { syntax:"<angle>"; inherits:false; initial-value:0deg; }
@@ -943,6 +966,105 @@ def load_stock_rows(skus: tuple, d_from: date, d_to: date):
 @st.cache_data(ttl=600, show_spinner=False)
 def load_magnit() -> pd.DataFrame:
     return mb_table("magnit_table", MB_MAGNIT_T)
+
+
+# ───────────────────────── Metabase: «Хаб отгрузка ББ» ─────────────────────────
+def _hk(x) -> str:
+    """Ключ названия колонки: без регистра, пробелов и знаков, «ё» = «е»."""
+    return re.sub(r"[^0-9a-zа-я]", "", str(x).lower().replace("ё", "е"))
+
+
+def _route_name(s: str) -> str:
+    """«Ташкент Бродвей 1M-0026817, 1M-0026994» -> «Ташкент Бродвей» (название маршрута без номеров заказов)."""
+    s = str(s).strip()
+    m = re.search(r"\s+\w{1,3}-\d{4,}", s)
+    name = s[:m.start()].strip() if m else s
+    return name or s
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_hub() -> pd.DataFrame:
+    """«Хаб отгрузка ББ» (Metabase, таблица 61): одна строка = одна коробка (биг-бэг).
+    Колонки результата: route_full (Маршрут как в таблице), route (название), bar (Штрихкод ББ),
+    date (Дата отправки), ok (True — принят)."""
+    cfg, _, _ = _mb_cfg()
+    tid = int(cfg.get("hub_table", MB_HUB_T) or MB_HUB_T)
+    db, f = mb_meta(tid)
+
+    raw = None
+    key = next((k for k in f if k.startswith("датаотправ")), None)   # читаем только последние HUB_DAYS дней
+    if key and "Date" in f[key][1]:
+        since = (datetime.now(TZ).date() - timedelta(days=HUB_DAYS)).isoformat()
+        try:
+            raw = mb_run(db, {"source-table": tid,
+                              "filter": [">=", ["field", f[key][0], None], since]})
+        except Exception:
+            raw = None
+    if raw is None:
+        raw = mb_run(db, {"source-table": tid})
+    if raw.empty:
+        raise ValueError("Таблица «Хаб отгрузка ББ» вернула 0 строк.")
+
+    cols = {_hk(c): c for c in raw.columns}
+
+    def find(*keys, no=()):
+        for k, c in cols.items():
+            if all(x in k for x in keys) and not any(x in k for x in no):
+                return c
+        return None
+
+    c_route = cols.get("маршрут") or find("маршрут", no=("обновл",)) or find("route")
+    c_acc = find("статус", "приемк") or find("accept")
+    c_bar = find("штрихкод") or find("barcode")
+    c_date = find("датаотправ") or find("senddate")
+    if not all([c_route, c_acc, c_bar, c_date]):
+        raise ValueError("В «Хаб отгрузка ББ» не найдены колонки: Маршрут, Статус приёмки, Штрихкод ББ, Дата отправки. "
+                         "Есть: " + ", ".join(map(str, raw.columns)))
+
+    status = raw[c_acc].fillna("").astype(str).str.strip().str.lower()
+    d = pd.DataFrame({
+        "route_full": raw[c_route].fillna("").astype(str).str.strip(),
+        "bar": raw[c_bar].fillna("").astype(str).str.strip(),
+        "date": _to_date(raw[c_date].fillna("")),
+        "ok": status.str.startswith("принят"),
+    })
+    d["route"] = d["route_full"].map(_route_name)
+    d = d[d["date"].notna() & (d["route_full"] != "")]
+    has = d["bar"] != ""
+    d = pd.concat([d[has].drop_duplicates(["bar", "date"], keep="last"), d[~has]], ignore_index=True)
+    return d.sort_values(["date", "route", "bar"]).reset_index(drop=True)
+
+
+def hub_by_date(h: pd.DataFrame) -> pd.DataFrame:
+    """По датам отправки: ok — принято коробок, no — не принято, total — всего."""
+    g = h.groupby("date").agg(ok=("ok", "sum"), total=("ok", "size"))
+    g["no"] = g["total"] - g["ok"]
+    return g.sort_index()
+
+
+def hub_card_dates(g: pd.DataFrame, today: date) -> list:
+    """Какие даты показать на карточке: со вчера и дальше (если таких нет — последние даты)."""
+    ds = [d for d in g.index if d >= today - timedelta(days=1)]
+    if not ds:
+        ds = list(g.index)[-3:]
+    return ds[:HUB_CARD_DATES]
+
+
+def hub_card(g, today: date, err: str = "") -> str:
+    """Карточка «Хаб отгрузка ББ»: мелкая таблица Дата / Принято коробок / Не принято коробок."""
+    if err or g is None or g.empty:
+        body = "<div class='none'>Нет данных из Metabase</div>"
+    else:
+        rows = "".join(
+            f"<div class='hr'><span>{fmt_date(d)}, {WEEKDAYS[d.weekday()]}</span>"
+            f"<b class='g'>{n(g.loc[d, 'ok'])}</b><b class='r'>{n(g.loc[d, 'no'])}</b></div>"
+            for d in hub_card_dates(g, today))
+        body = ("<div class='hr hh'><span>Дата</span><span>Принято коробок</span><span>Не принято коробок</span></div>"
+                + rows)
+    return (f"<div class='kpi left nov'><div class='ico'>{ic('box', '#FFFFFF', 24)}</div>"
+            f"<div class='mid'><div class='l'>Хаб отгрузка ББ</div>"
+            f"<div class='s'>приёмка коробок · нажмите, чтобы открыть маршруты</div></div>"
+            f"<div class='hubt'>{body}</div></div>")
 
 
 def _xl_safe(df: pd.DataFrame) -> pd.DataFrame:
@@ -1796,6 +1918,16 @@ def set_oth(name):
 
 def set_page(p):
     st.session_state.page = p
+    st.session_state.hub_open = False
+
+
+def open_hub():
+    """Карточка «Хаб отгрузка ББ»: открыть подробности по маршрутам."""
+    st.session_state.hub_open = True
+
+
+def close_hub():
+    st.session_state.hub_open = False
 
 
 def toggle_theme():
@@ -2392,6 +2524,7 @@ def on_gsearch():
     if not q_:
         return
     st.session_state.gsearch = ""
+    st.session_state.hub_open = False
     if re.match(r"^\s*(\w{1,3}-\d+|\d{3,9})\s*$", q_):
         st.session_state.page = PAGES[2]
         st.session_state.q_order = q_
@@ -2486,14 +2619,101 @@ if "f_date" not in st.session_state:
 st.session_state.setdefault("f_mode", "Все")
 st.session_state.setdefault("page", PAGES[0])
 st.session_state.setdefault("trip_limit", 0)
+st.session_state.setdefault("hub_open", False)
 
 page = st.segmented_control("Раздел", PAGES, key="page", label_visibility="collapsed") or PAGES[0]
 date_label = lambda x: "Все даты" if x == ALL else f"{fmt_date(x)}, {WEEKDAYS[x.weekday()]}"
 
+if page != PAGES[0]:                        # ушли со «Сводки» — подробности хаба закрываем
+    st.session_state.hub_open = False
+hub_open = bool(st.session_state.hub_open) and page == PAGES[0]
+
+
+# ───────────────────────── Хаб отгрузка ББ: подробности по маршрутам ─────────────────────────
+def hub_view():
+    st.button("← Назад к сводке", key="hub_back", on_click=close_hub)
+    st.markdown("<div class='sec'>Хаб отгрузка ББ: маршруты</div>", unsafe_allow_html=True)
+    try:
+        hub = load_hub()
+    except Exception as e:
+        st.warning("Не удалось прочитать «Хаб отгрузка ББ» из Metabase. Проверьте блок [metabase] в Secrets "
+                   "(url, api_key) и доступ к таблице 61.")
+        st.caption(str(e))
+        return
+    if hub.empty:
+        st.info("В «Хаб отгрузка ББ» нет данных.")
+        return
+
+    ds = sorted(hub["date"].unique())
+    today = now.date()
+    future = [d_ for d_ in ds if d_ >= today]
+    default = today if today in ds else (future[0] if future else ds[-1])
+    options = [ALL] + ds
+    if st.session_state.get("hub_date") not in options:
+        st.session_state.hub_date = default
+    st.selectbox("Дата отправки", options, key="hub_date", format_func=date_label)
+    sel = st.session_state.hub_date
+
+    sub = hub if sel == ALL else hub[hub["date"] == sel]
+    ok_n = int(sub["ok"].sum())
+    tot_n = len(sub)
+    no_n = tot_n - ok_n
+    pct = round(ok_n / tot_n * 100) if tot_n else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(kpi_box(n(ok_n), "принято коробок", "", "ok"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(kpi_box(n(no_n), "не принято коробок", "", "left" if no_n else "ok"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(kpi_box(n(tot_n), "тотал, коробок", "", "all"), unsafe_allow_html=True)
+    with c4:
+        st.markdown(kpi_box(f"{pct}%", "тотал в процентах", "принято от общего числа", "blue"),
+                    unsafe_allow_html=True)
+
+    st.markdown("<div class='sec'>По маршрутам</div>", unsafe_allow_html=True)
+    keys = ["route"] if sel != ALL else ["date", "route"]
+    g = sub.groupby(keys).agg(ok=("ok", "sum"), tot=("ok", "size")).reset_index()
+    g["no"] = g["tot"] - g["ok"]
+    g["pct"] = (g["ok"] / g["tot"] * 100).round().astype(int)
+    g = g.sort_values(["no", "route"], ascending=[False, True])
+
+    head = (["Дата"] if sel == ALL else []) + ["Маршрут", "Принято коробок", "Не принято коробок", "Тотал", "", "% принято"]
+    base_num = 2 if sel == ALL else 1
+    rows = []
+    for r in g.itertuples(index=False):
+        bar = f"<div class='bxbar'><i style='width:{r.pct}%'></i></div>"
+        cells = ([f"{fmt_date(r.date)}, {WEEKDAYS[r.date.weekday()]}"] if sel == ALL else []) + [
+            f"<b>{esc(r.route)}</b>", n(r.ok), f"<b>{n(r.no)}</b>" if r.no else n(r.no), n(r.tot), bar,
+            f"<b>{r.pct}%</b>"]
+        rows.append(cells)
+    rows.append(([""] if sel == ALL else []) + ["<b>Итого</b>", f"<b>{n(ok_n)}</b>", f"<b>{n(no_n)}</b>",
+                                                f"<b>{n(tot_n)}</b>", "", f"<b>{pct}%</b>"])
+    st.markdown(simple_table(head, rows, num_cols={base_num, base_num + 1, base_num + 2, base_num + 4}),
+                unsafe_allow_html=True)
+
+    if no_n == 0:
+        st.success("Все коробки приняты.")
+    label = "all" if sel == ALL else f"{sel:%Y-%m-%d}"
+
+    def _build():
+        bad = sub[~sub["ok"]].sort_values(["date", "route_full", "bar"])
+        x = pd.DataFrame({"Маршрут": bad["route_full"].values,
+                          "Не принятые штрих коды ББ": bad["bar"].values,
+                          "Дата отправки": bad["date"].values})
+        return to_xlsx({"Не принятые ББ": x})
+
+    xl_button("Выгрузить не принятые ББ в Excel", _build, f"hub_ne_prinyato_{label}.xlsx", "dl_hub")
+    st.caption("Принято — статус приёмки «Принят», остальные коробки считаются не принятыми. "
+               "Excel: Маршрут, Не принятые штрих коды ББ, Дата отправки (одна строка = один штрихкод).")
+
+
+if hub_open:
+    hub_view()
+
 # ───────────────────────── 1. Сводка по дням ─────────────────────────
-if page == PAGES[0]:
+if page == PAGES[0] and not hub_open:
     total = len(df)
-    left = int((~df["Собран"]).sum())
     pcs_total = int(df["Штук"].sum())
     pcs_left = int(df.loc[~df["Собран"], "Штук"].sum()) + new_pcs      # бэклог = несобранное + новые не маршрутизированные
 
@@ -2520,21 +2740,27 @@ if page == PAGES[0]:
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
+    # «Хаб отгрузка ББ» из Metabase (кэш 5 минут)
+    hub_g, hub_err = None, ""
+    try:
+        hub_g = hub_by_date(load_hub())
+    except Exception as e:                  # дашборд работает и без Metabase
+        hub_err = str(e)
+
     ser = summary.tail(14)
-    s_all = ser["Заказов"].tolist()
-    s_left = ser["Осталось"].tolist()
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
         tap("all", kpi_box(None, "Штук по статусам", "", "all", status=status_breakdown(df_all)),
             go_orders, ("Все", ALL))
     with k2:
-        tap("left", kpi_box(n(left + new_cnt), "не собрано заказов", "", "left", spark=s_left),
-            go_orders, ("Не собрано", ALL))
+        tap("hub", hub_card(hub_g, now.date(), hub_err), open_hub)
     with k3:
         tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs),
             go_orders, ("Не собрано", ALL))
-    st.caption("Нажмите на карточку, чтобы открыть список заказов.")
+    st.caption("Нажмите на карточку, чтобы открыть подробности.")
+    if hub_err:
+        st.caption(f"Хаб отгрузка ББ недоступен: {hub_err}")
 
     # ── новые заказы по датам доставки: нажатие открывает список «Не собрано» на эту дату ──
     if new_err:
