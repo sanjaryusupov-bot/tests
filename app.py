@@ -86,8 +86,13 @@ MB_MAGNIT_T = 58    # «Magnit Stock»
 MB_HUB_T = 61       # «Хаб отгрузка ББ» — приёмка коробок (биг-бэгов) на хабе
 MB_STOCK_DAYS = 90  # за сколько последних дней можно выбирать период
 MB_CAT_DAYS = 14    # за сколько последних дней собирать каталог товаров
+MB_NOW_DAYS = 10    # за сколько последних дней искать свежий снимок для «текущего остатка позиции»
 HUB_DAYS = 30       # за сколько последних дней читать «Хаб отгрузка ББ»
 HUB_CARD_DATES = 3  # сколько дат показывать мелким шрифтом на карточке хаба
+
+# Зоны хранения: где товар можно резервировать под заказы, а где нет
+NO_RESERVE_ZONES = ["BP", "1DMG", "1M-BUF", "2DMG"]
+RESERVE_ZONES = ["5M1", "1M1", "2M1", "1M2", "1ECO1", "1ZZ1", "3M1", "4M1", "HP2", "HP"]
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -614,6 +619,18 @@ div[data-testid="stDialog"] h2, div[data-testid="stDialog"] button[aria-label="C
 .hubt .hr b.g { color:#34C27A; }
 .hubt .hr b.r { color:#F2A23D; }
 .hubt .none { font-size:.7rem; color:$mute; }
+
+/* ── правила резерва по зонам (раздел «Движения по остаткам») ── */
+.zrules { display:flex; flex-direction:column; gap:8px; margin:6px 0 12px; }
+.zrule { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:10px 12px; border-radius:14px;
+         border:1px solid $line; background:$head; }
+.zrule .zt { font-weight:800; font-size:.82rem; margin-right:6px; color:$ink; }
+.zrule.yes { border-color:rgba(52,194,122,.45); background:linear-gradient(135deg, rgba(52,194,122,.16), $head 70%); }
+.zrule.no { border-color:rgba(242,162,61,.5); background:linear-gradient(135deg, rgba(242,162,61,.16), $head 70%); }
+.zrule .zc { display:inline-block; padding:2px 10px; border-radius:99px; font-size:.76rem; font-weight:800;
+             background:$card; border:1px solid $line; color:$ink; }
+.zrule.yes .zc { color:$ok_fg; background:$ok_bg; border-color:rgba(52,194,122,.35); }
+.zrule.no .zc { color:$no_fg; background:$no_bg; border-color:rgba(242,162,61,.35); }
 
 /* ── карточка отгрузки (компактная) ── */
 .ship { border-radius:16px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
@@ -1327,6 +1344,97 @@ def stock_report(h: pd.DataFrame, skus: list, d1: date, d2: date, raw: pd.DataFr
     ], columns=["Параметр", "Значение"])
     return dict(dates=dates, movements=mv_out, summary=summ, daily=daily_out, last=last_out,
                 all=all_out, params=params)
+
+
+# ───────────────────────── Текущий остаток позиции и правила резерва по зонам ─────────────────────────
+def zkey(z) -> str:
+    """Ключ зоны для сравнения: без пробелов, в верхнем регистре («1m-buf» = «1M-BUF»)."""
+    return re.sub(r"\s+", "", str(z)).upper()
+
+
+RES_KEYS = {zkey(z) for z in RESERVE_ZONES}
+NORES_KEYS = {zkey(z) for z in NO_RESERVE_ZONES}
+ZONE_ORDER = {zkey(z): i for i, z in enumerate(RESERVE_ZONES + NO_RESERVE_ZONES)}
+KIND_TEXT = {"yes": "можно зарезервировать", "no": "Заказ не зарезервируется", "?": "зона не указана в правилах"}
+
+
+def stock_now(h: pd.DataFrame, raw, names: dict):
+    """Остаток позиции по последнему снимку: по зонам и ячейкам.
+    Можно зарезервировать = «Доступно» в зонах с резервом; не зарезервируется = «Доступно» в зонах без резерва."""
+    if h is None or h.empty:
+        return None
+    last = h["date"].max()
+    mask = h["date"] == last
+    cur = h[mask]
+    g = cur.groupby(["sku", "zone", "cell", "inv"], as_index=False).agg(loc=("loc", "sum"), avail=("avail", "sum"))
+    g = g[(g["loc"] != 0) | (g["avail"] != 0)].copy()
+    g["res"] = g["loc"] - g["avail"]
+    zk = g["zone"].map(zkey)
+    g["kind"] = np.where(zk.isin(RES_KEYS), "yes", np.where(zk.isin(NORES_KEYS), "no", "?"))
+    g["comment"] = g["kind"].map(KIND_TEXT)
+    g["o"] = zk.map(ZONE_ORDER).fillna(99)
+    g["name"] = g["sku"].map(names).fillna("")
+    g = g.sort_values(["sku", "o", "zone", "cell"]).reset_index(drop=True)
+    raw_last = None
+    if raw is not None and not raw.empty and len(raw) == len(h):
+        raw_last = raw[mask.values].copy().reset_index(drop=True)
+        raw_last["Резерв (В ячейке − Доступно)"] = (cur["loc"] - cur["avail"]).values
+    return dict(date=last, rows=g, raw=raw_last)
+
+
+def stock_now_tables(rep: dict):
+    """(по зонам: товар × зона, по товарам: итоги можно / нельзя зарезервировать)."""
+    g = rep["rows"]
+    if g.empty:
+        return g.iloc[0:0], g.iloc[0:0]
+    z = (g.groupby(["sku", "name", "zone", "kind", "o"], as_index=False)
+         .agg(loc=("loc", "sum"), res=("res", "sum"), avail=("avail", "sum"), cells=("cell", "nunique"))
+         .sort_values(["sku", "o", "zone"]).reset_index(drop=True))
+    sk = g.groupby("sku").agg(name=("name", "first"), loc=("loc", "sum"), res=("res", "sum"), avail=("avail", "sum"))
+    for col, kind in (("can", "yes"), ("no", "no"), ("other", "?")):
+        sk[col] = g[g["kind"] == kind].groupby("sku")["avail"].sum().reindex(sk.index).fillna(0)
+    return z, sk.reset_index()
+
+
+def stock_now_excel(rep: dict) -> bytes:
+    """Excel: остаток позиции в формате выгрузки (зона / ID / товар / в ячейке / резерв / доступно / комментарий)
+    с итогами «Можно зарезервировать» и «Не зарезервируется», сводка по зонам, итоги по товарам, все данные Metabase."""
+    g = rep["rows"]
+    z, sk = stock_now_tables(rep)
+    cols = ["zone_prefix", "Внешний ID позиции", "name", "Ячейка", "Накладная",
+            "Amount In Location", "Reserved", "Amount Available", "Комментарии"]
+    data = [[r.zone, r.sku, r.name, r.cell, r.inv, r.loc, r.res, r.avail, r.comment] for r in g.itertuples(index=False)]
+    if data and not sk.empty:
+        data.append([None] * 9)
+        for r in sk.itertuples(index=False):
+            data.append([None, r.sku, r.name, None, None, None, "Можно зарезервировать", r.can, None])
+            data.append([None, r.sku, r.name, None, None, None, "Не зарезервируется", r.no, None])
+            if r.other:
+                data.append([None, r.sku, r.name, None, None, None, "Зона не в правилах", r.other, None])
+    main = pd.DataFrame(data, columns=cols)
+
+    zone_out = z.rename(columns={"sku": "Sku Wms ID", "name": "Товар", "zone": "Зона", "loc": "В ячейках",
+                                 "res": "Резерв", "avail": "Доступно", "cells": "Ячеек"})
+    if not zone_out.empty:
+        zone_out["Можно резервировать"] = zone_out["kind"].map(KIND_TEXT)
+        zone_out = zone_out[["Sku Wms ID", "Товар", "Зона", "Можно резервировать", "Ячеек", "В ячейках", "Резерв", "Доступно"]]
+    sk_out = sk.rename(columns={"sku": "Sku Wms ID", "name": "Товар", "loc": "В ячейках", "res": "Резерв",
+                                "avail": "Доступно", "can": "Можно зарезервировать",
+                                "no": "Не зарезервируется", "other": "Зона не в правилах"})
+    params = pd.DataFrame([
+        ["Остаток на снимок", f"{rep['date']:%d.%m.%Y}"],
+        ["Сформировано", f"{datetime.now(TZ):%d.%m.%Y %H:%M}"],
+        ["Зоны с резервом", ", ".join(RESERVE_ZONES)],
+        ["Зоны без резерва", ", ".join(NO_RESERVE_ZONES)],
+        ["Можно зарезервировать", "сумма «Amount Available» по зонам с резервом"],
+        ["Не зарезервируется", "сумма «Amount Available» по зонам без резерва"],
+        ["Reserved", "«В ячейках» (Amount In Location) − «Доступно» (Amount Available)"],
+    ], columns=["Параметр", "Значение"])
+    sheets = {"Остаток позиции": main, "Сводка по зонам": zone_out, "Итого по товарам": sk_out}
+    if rep.get("raw") is not None and not rep["raw"].empty:
+        sheets["Все данные"] = rep["raw"]
+    sheets["Правила"] = params
+    return to_xlsx(sheets)
 
 
 def fmt_date(d) -> str:
@@ -3507,7 +3615,82 @@ if page == PAGES[4]:
         chosen = st.multiselect("Товары", opts, default=opts if len(opts) <= 10 else [],
                                 format_func=lambda s: f"{nm.get(s, '')} · {s}", key=f"mv_sel_{q}")
 
-        period = st.date_input("Период", value=(max(dmin, dmax - timedelta(days=13)), dmax),
+        # ── текущий остаток выбранных позиций: что можно / нельзя зарезервировать (по зонам) ──
+        if chosen:
+            now_rep = None
+            try:
+                snap, snap_raw = load_stock_rows(tuple(sorted(chosen)), today - timedelta(days=MB_NOW_DAYS), today)
+                now_rep = stock_now(snap, snap_raw, nm)
+            except Exception as e:
+                st.error(f"Не удалось получить текущий остаток: {e}")
+
+            if now_rep is None or now_rep["rows"].empty:
+                if now_rep is not None or True:
+                    st.info(f"По выбранным товарам нет остатка в снимках за последние {MB_NOW_DAYS} дней.")
+            else:
+                zt, sk = stock_now_tables(now_rep)
+                st.markdown(f"<div class='sec'>Остаток позиции на {now_rep['date']:%d.%m.%Y}</div>",
+                            unsafe_allow_html=True)
+                if (today - now_rep["date"]).days > 1:
+                    st.caption(f"Последний снимок в Metabase от {now_rep['date']:%d.%m.%Y}: данные могут отставать.")
+
+                # надписи сверху: в каких зонах резерва не будет, а в каких будет
+                st.markdown(
+                    "<div class='zrules'>"
+                    "<div class='zrule no'><span class='zt'>Резерва не будет:</span>"
+                    + "".join(f"<span class='zc'>{esc(z_)}</span>" for z_ in NO_RESERVE_ZONES) + "</div>"
+                    "<div class='zrule yes'><span class='zt'>Резерв будет:</span>"
+                    + "".join(f"<span class='zc'>{esc(z_)}</span>" for z_ in RESERVE_ZONES) + "</div></div>",
+                    unsafe_allow_html=True)
+
+                tot_can, tot_no = int(sk["can"].sum()), int(sk["no"].sum())
+                tot_loc, tot_res = int(sk["loc"].sum()), int(sk["res"].sum())
+                k1, k2, k3, k4 = st.columns(4)
+                with k1:
+                    st.markdown(kpi_box(n(tot_can), "можно зарезервировать, шт", "доступно в зонах с резервом", "ok"),
+                                unsafe_allow_html=True)
+                with k2:
+                    st.markdown(kpi_box(n(tot_no), "не зарезервируется, шт", "доступно в зонах без резерва",
+                                        "left" if tot_no else "ok"), unsafe_allow_html=True)
+                with k3:
+                    st.markdown(kpi_box(n(tot_loc), "в ячейках всего, шт", "", "all"), unsafe_allow_html=True)
+                with k4:
+                    st.markdown(kpi_box(n(tot_res), "уже в резерве, шт", "в ячейках − доступно", "blue"),
+                                unsafe_allow_html=True)
+
+                # сводная по товарам
+                rows = [[esc(r.sku), esc(r.name), n(r.loc), n(r.res), f"<b>{n(r.can)}</b>", f"<b>{n(r.no)}</b>"]
+                        for r in sk.itertuples(index=False)]
+                st.markdown(simple_table(["Sku Wms ID", "Товар", "В ячейках", "Резерв", "Можно зарезервировать",
+                                          "Не зарезервируется"], rows, num_cols={2, 3, 4, 5}), unsafe_allow_html=True)
+
+                # сводная по зонам
+                st.markdown("<div class='sec'>По зонам</div>", unsafe_allow_html=True)
+                badge_of = {"yes": "<span class='badge ok'>можно зарезервировать</span>",
+                            "no": "<span class='badge no'>Заказ не зарезервируется</span>",
+                            "?": "<span class='chip wait'>зона не указана в правилах</span>"}
+                multi = zt["sku"].nunique() > 1
+                head = (["Товар"] if multi else []) + ["Зона", "Ячеек", "В ячейках", "Резерв", "Доступно", "Комментарий"]
+                base_i = 1 if multi else 0
+                rows = []
+                for r in zt.itertuples(index=False):
+                    rows.append(([f"{esc(r.name)} · {esc(r.sku)}"] if multi else []) + [
+                        f"<b>{esc(r.zone)}</b>", n(r.cells), n(r.loc), n(r.res), f"<b>{n(r.avail)}</b>",
+                        badge_of.get(r.kind, "")])
+                st.markdown(simple_table(head, rows, num_cols={base_i + 1, base_i + 2, base_i + 3, base_i + 4}),
+                            unsafe_allow_html=True)
+
+                try:
+                    xl_data = stock_now_excel(now_rep)
+                    one = chosen[0] if len(chosen) == 1 else f"{len(chosen)}sku"
+                    dl_button("Скачать Excel: остаток позиции", xl_data,
+                              f"ostatok_{one}_{now_rep['date']:%Y%m%d}.xlsx", "dl_now")
+                except Exception as e:
+                    st.error(f"Не удалось собрать Excel: {e}")
+                st.caption("Можно зарезервировать = «Доступно» в зонах с резервом; не зарезервируется = «Доступно» "
+                           "в зонах без резерва. В Excel: детали по ячейкам с итогами, сводка по зонам и все данные Metabase.")
+
+        period = st.date_input("Период (для движений)", value=(max(dmin, dmax - timedelta(days=13)), dmax),
                                min_value=dmin, max_value=dmax, key="mv_period", format="DD.MM.YYYY")
         d1, d2 = (period[0], period[1]) if isinstance(period, (tuple, list)) and len(period) == 2 else (None, None)
 
