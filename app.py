@@ -3802,7 +3802,7 @@ if page == PAGES[4]:
                        "Полная хронология, остаток по дням, последний остаток по ячейкам и все данные по товару — в файле.")
 
     # ── выгрузка Magnit Stock ──
-    st.markdown("<div class='sec'>Magnit Stock</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sec'>Общий сток</div>", unsafe_allow_html=True)
     st.caption("Загружает таблицу Magnit Stock из Metabase целиком и готовит файл Excel.")
     if st.button("Подготовить файл Magnit Stock", key="mg_go"):
         try:
