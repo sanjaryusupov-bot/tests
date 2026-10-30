@@ -6,12 +6,14 @@
 (в [metabase] можно добавить hub_table = 61, stock_table, magnit_table).
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
+Файлы на сервере (необязательные): change_history.json (колокольчик), visitors.json (окно «Посетители»).
 """
+import hashlib
 import threading
 import time
 import uuid
 import zlib
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import base64
 import html
 import json
@@ -85,7 +87,7 @@ MB_HUB_T = 61       # «Хаб отгрузка ББ» — приёмка кор
 MB_STOCK_DAYS = 90  # за сколько последних дней можно выбирать период
 MB_CAT_DAYS = 14    # за сколько последних дней собирать каталог товаров
 HUB_DAYS = 30       # за сколько последних дней читать «Хаб отгрузка ББ»
-HUB_CARD_DATES = 4  # сколько дат показывать мелким шрифтом на карточке хаба
+HUB_CARD_DATES = 3  # сколько дат показывать мелким шрифтом на карточке хаба
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -106,6 +108,8 @@ ADDRESS_TEXT = "просп. Ханабадтепа, 2/1"
 LOGO_TOP_HEIGHT = 32  # высота логотипа в верхней панели, px
 HISTORY_FILE = "change_history.json"   # история изменений для колокольчика (запасной файл на сервере)
 HISTORY_KEEP = 300                      # сколько последних событий хранить
+VISITORS_FILE = "visitors.json"         # история посетителей для окна «онлайн» (файл на сервере)
+VIS_KEEP_DAYS = 30                      # сколько дней хранить посетителей и их сессии
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -151,6 +155,13 @@ _ICONS = {
     "pin": "<path d='M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z'/><circle cx='12' cy='10' r='3'/>",
     "send": "<path d='m22 2-7 20-4-9-9-4Z'/><path d='M22 2 11 13'/>",
     "phone": "<path d='M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z'/>",
+    "users": "<path d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/><circle cx='9' cy='7' r='4'/><path d='M22 21v-2a4 4 0 0 0-3-3.87'/><path d='M16 3.13a4 4 0 0 1 0 7.75'/>",
+    "timer": "<path d='M10 2h4'/><path d='M12 14l3-3'/><circle cx='12' cy='14' r='8'/>",
+    "hourglass": "<path d='M5 22h14'/><path d='M5 2h14'/><path d='M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22'/><path d='M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2'/>",
+    "monitor": "<rect width='20' height='14' x='2' y='3' rx='2'/><path d='M8 21h8M12 17v4'/>",
+    "smartphone": "<rect width='14' height='20' x='5' y='2' rx='2' ry='2'/><path d='M12 18h.01'/>",
+    "globe": "<circle cx='12' cy='12' r='10'/><path d='M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20'/><path d='M2 12h20'/>",
+    "history": "<path d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/><path d='M3 3v5h5'/><path d='M12 7v5l4 2'/>",
 }
 NAV_ICON_NAMES = ["home", "list", "search", "box", "swap", "chart"]
 
@@ -183,7 +194,7 @@ SPARK_COL = {"all": "#E0338F", "left": "#F2A23D", "blue": "#3B9CFF", "ok": "#34C
 KPI_ICON = {"all": "box", "left": "check", "blue": "box", "ok": "check"}
 
 
-def spark_svg(vals, color, uid, w=118, h=42):
+def spark_svg(vals, color, uid, w=104, h=36):
     v = [float(x) for x in vals]
     if len(v) < 2:
         return ""
@@ -226,6 +237,53 @@ def status_breakdown(frame) -> list:
     if other:
         out.append(("ДРУГИЕ", other, "#8C93B5"))
     return out
+
+
+# ───────────────────────── Грузовая «Газель» на линии отгрузки ─────────────────────────
+# CSS общий: подключается и в основную страницу, и в карточку-«iframe» с таймером.
+TRUCK_CSS = """
+.lane { position:relative; padding-top:22px; margin-top:2px; }
+.truck { position:absolute; top:0; left:clamp(54px, var(--p, 0%), 100%); width:50px; height:26px;
+         transform:translateX(-100%); z-index:3; pointer-events:none;
+         animation:tarrive 2.4s cubic-bezier(.2,.7,.2,1) both; }
+.truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .42s ease-in-out infinite; }
+.truck .wh { animation:wspin .5s linear infinite; }
+.truck .sp { animation:tspeed .55s linear infinite; }
+.truck.stop svg, .truck.stop .wh { animation:none; }
+.truck.stop .sp { display:none; }
+@keyframes tarrive { from { left:54px; } }
+@keyframes tbob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-1px); } }
+@keyframes wspin { to { transform:rotate(360deg); } }
+@keyframes tspeed { 0% { opacity:0; transform:translateX(5px); } 40% { opacity:.9; } 100% { opacity:0; transform:translateX(-8px); } }
+"""
+
+
+def truck_svg() -> str:
+    """Грузовая «Газель»: будка, кабина со скошенным лобовым, колёса крутятся, сзади «ветер»."""
+    ink, g1, g2 = P["ink"], P["g1"], P["g2"]
+
+    def wheel(cx):
+        return (f"<g class='wh' style='transform-origin:{cx}px 27px'>"
+                f"<circle cx='{cx}' cy='27' r='5.6' fill='#20232C' stroke='{ink}' stroke-width='.8'/>"
+                f"<circle cx='{cx}' cy='27' r='2.2' fill='#C9CEDA'/>"
+                f"<path d='M{cx} 22.6v8.8M{cx - 4.4} 27h8.8' stroke='#C9CEDA' stroke-width='1'/></g>")
+
+    return ("<svg viewBox='0 0 64 34' xmlns='http://www.w3.org/2000/svg'>"
+            f"<g class='sp' stroke='{g1}' stroke-width='1.3' stroke-linecap='round'>"
+            "<path d='M-3 8h-9'/><path d='M-1 14h-11'/><path d='M-4 20h-8'/></g>"
+            f"<rect x='1' y='24' width='62' height='3' rx='1' fill='{ink}'/>"
+            f"<rect x='1.5' y='2.5' width='38' height='22' rx='2.5' fill='#FFFFFF' stroke='{ink}' stroke-width='1.3'/>"
+            f"<rect x='2' y='14' width='37' height='4' fill='{g1}'/><rect x='2' y='18' width='37' height='1.6' fill='{g2}'/>"
+            f"<path d='M41 8h8.5l6 8.5H61a2 2 0 0 1 2 2V24.5H41z' fill='{g1}' stroke='{ink}' "
+            f"stroke-width='1.3' stroke-linejoin='round'/>"
+            f"<path d='M43 10.2h5.6l4.4 6.3H43z' fill='#BFE3FF' stroke='{ink}' stroke-width='.9' stroke-linejoin='round'/>"
+            "<rect x='60.8' y='19.5' width='2.2' height='3' rx='.8' fill='#FFE27A'/>"
+            + wheel(12) + wheel(51) + "</svg>")
+
+
+def truck_html(pct, stop: bool) -> str:
+    """Машинка на линии: pct — на каком проценте стоит нос машины, stop — отгрузка закончилась (машина стоит)."""
+    return f"<div class='truck{' stop' if stop else ''}' style='--p:{int(pct)}%'>{truck_svg()}</div>"
 
 
 CSS = Template("""
@@ -273,7 +331,7 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
   50%  { opacity:.35; box-shadow:0 0 0 6px rgba(30,158,92,0); }
   100% { opacity:1;   box-shadow:0 0 0 0 rgba(30,158,92,0); }
 }
-.brand { display:flex; align-items:center; gap:10px; color:$accent; }
+.brand { display:flex; align-items:center; gap:10px; color:$accent; cursor:pointer; }
 .brand img { display:block; }
 .brand .bi { display:flex; color:$accent; }
 .brand .bn { font-weight:800; font-size:1.15rem; letter-spacing:.04em; color:$accent; }
@@ -416,6 +474,10 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
                      50% { transform:translateY(-3px); filter:drop-shadow(0 5px 10px rgba(224,51,143,.45)); } }
 .lt-one img { animation:ltfloat 3s ease-in-out infinite; }
 
+/* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн» и на логотип */
+.st-key-onl_open, .st-key-go_home { position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
+                                    overflow:hidden; opacity:0; pointer-events:none; }
+
 /* ── верхняя панель: поиск, онлайн, дата, колокольчик, тема ── */
 .st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px;
                  position:relative; z-index:60; }
@@ -432,6 +494,8 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tb-right .dot { width:8px; height:8px; border-radius:50%; background:#34C27A; animation:livepulse 1.4s ease-in-out infinite; }
 .tb-right .sep { width:1px; height:20px; background:$line; }
 .tb-right .tb-date { display:flex; align-items:center; gap:8px; }
+.tb-right .onl { cursor:pointer; padding:5px 10px; margin:-5px -10px; border-radius:10px; transition:background .15s, color .15s; }
+.tb-right .onl:hover { background:$head; color:$ink; }
 .tb-right .bell { position:relative; display:flex; cursor:pointer; }
 .tb-right .bell::after { content:""; position:absolute; left:-24px; right:-12px; top:100%; height:16px; }
 .tb-right .bell .bdot { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
@@ -453,33 +517,47 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
 
-/* «N онлайн»: при наведении — кто сидит и сколько времени */
-.tb-right .onl { position:relative; cursor:default; }
-.tb-right .onl::after { content:""; position:absolute; left:-10px; right:-10px; top:100%; height:16px; }
-.onl-pop { display:none; position:absolute; left:-10px; top:calc(100% + 12px); width:270px; max-width:88vw;
-           z-index:9999; padding:12px 14px; border-radius:14px; background:$card; border:1px solid $line;
-           box-shadow:0 18px 50px rgba(0,0,0,.45); white-space:normal; text-align:left; color:$ink; }
-.onl:hover .onl-pop, .onl-pop:hover { display:block; }
-.onl-pop .bp-h { font-weight:800; font-size:.9rem; color:$ink; margin-bottom:6px; }
-.onl-pop .ou { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:6px 0;
-               border-top:1px solid $line; font-size:.78rem; color:$ink; }
-.onl-pop .ou span { display:inline-flex; align-items:center; gap:7px; }
-.onl-pop .ou span i { width:7px; height:7px; border-radius:50%; background:#34C27A; display:inline-block; flex:none; }
-.onl-pop .ou b { font-variant-numeric:tabular-nums; color:$ink; }
-.onl-pop .ou em { font-style:normal; color:$accent; font-size:.7rem; font-weight:700; }
-.onl-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
-
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
 
+/* ── окно «Посетители» (открывается по клику на «N онлайн») ── */
+div[data-testid="stDialog"] div[role="dialog"] { background:$card !important; border:1px solid $line;
+                                                 border-radius:18px; color:$ink; }
+div[data-testid="stDialog"] h2, div[data-testid="stDialog"] button[aria-label="Close"] { color:$ink !important; }
+.vk-wrap { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin:6px 0 14px; }
+.vk { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px;
+      border-radius:14px; background:$head; border:1px solid $line; }
+.vk .vkl { font-size:.6rem; font-weight:700; letter-spacing:.06em; color:$mute; text-transform:uppercase; }
+.vk .vkv { font-size:1.2rem; font-weight:800; color:$ink; margin-top:2px; white-space:nowrap; }
+.vk .vki { width:34px; height:34px; border-radius:50%; flex:none; display:flex; align-items:center;
+           justify-content:center; background:$track; color:$accent; }
+.vtbl { border:1px solid $line; border-radius:14px; overflow-x:auto; background:$card; }
+.vrow { display:grid; grid-template-columns:minmax(170px,1.5fr) auto minmax(150px,1fr) minmax(230px,1.7fr); gap:12px;
+        align-items:center; padding:9px 14px; border-top:1px solid $line; min-width:660px; font-size:.8rem; color:$ink; }
+.vrow.vh { border-top:none; background:$head; font-weight:800; font-size:.8rem; }
+.vuser { display:flex; align-items:center; gap:10px; min-width:0; }
+.vav { width:34px; height:34px; border-radius:50%; flex:none; overflow:hidden; display:flex; align-items:center;
+       justify-content:center; color:#fff; font-weight:800; font-size:.72rem; }
+.vname { color:$accent; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vme { color:$mute; font-weight:500; margin-left:4px; }
+.vpill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:99px; font-size:.7rem;
+         font-weight:700; white-space:nowrap; }
+.vpill.s { background:$no_bg; color:$no_fg; }
+.vpill.t { background:$track; color:$ink; }
+.vpill.on { background:$ok_bg; color:$ok_fg; }
+.vdet { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.vd { display:inline-flex; color:$mute; cursor:help; }
+.vtx { color:$mute; font-size:.72rem; white-space:nowrap; }
+@media (max-width: 700px) { .vk-wrap { grid-template-columns:1fr; } }
+
 /* ── заголовок и главные кнопки ── */
 .top .crumb { display:flex; align-items:center; gap:6px; }
-.top h1 { display:flex; align-items:center; gap:14px; font-size:1.9rem; }
-.top h1::before { content:""; width:46px; height:46px; border-radius:13px; flex:none;
-  background:url("$u_box_w") center/24px no-repeat, linear-gradient(135deg,$g1,$g2); box-shadow:0 8px 24px $glow; }
+.top h1 { display:flex; align-items:center; gap:12px; font-size:1.55rem; }
+.top h1::before { content:""; width:36px; height:36px; border-radius:11px; flex:none;
+  background:url("$u_box_w") center/20px no-repeat, linear-gradient(135deg,$g1,$g2); box-shadow:0 6px 18px $glow; }
 .stApp .stButton > button[kind="primary"] { background:linear-gradient(135deg,$g1,$g2); color:#fff; border:none;
                                             box-shadow:0 8px 22px $glow; }
-.st-key-btn_refresh button, .st-key-btn_theme2 button { height:44px; border-radius:12px; gap:8px; }
+.st-key-btn_refresh button, .st-key-btn_theme2 button { height:40px; border-radius:12px; gap:8px; }
 
 /* ── вкладки-разделы ── */
 .stApp [data-testid="stButtonGroup"] { background:$card; border:1px solid $line; border-radius:14px; padding:4px; gap:2px; }
@@ -488,79 +566,88 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
   background:linear-gradient(135deg,$g1,$g2); color:#fff; box-shadow:0 4px 16px $glow; }
 .stApp [data-testid="stButtonGroup"] button[aria-checked="true"] p { color:#fff; }
 
-/* ── карточки KPI: иконка-плитка, подпись, процент, мини-график ── */
-.kpi { display:grid; grid-template-columns:auto 1fr auto; column-gap:16px; align-items:center; min-height:104px;
-       padding:16px 18px; border-radius:18px; overflow:hidden;
+/* ── карточки KPI: иконка-плитка, подпись, процент, мини-график (компактные) ── */
+.kpi { display:grid; grid-template-columns:auto 1fr auto; column-gap:12px; align-items:center; min-height:76px;
+       padding:10px 14px; border-radius:14px; overflow:hidden;
        border:1px solid rgba(224,51,143,.45); border-left:1px solid rgba(224,51,143,.45);
        background:linear-gradient(135deg, rgba(224,51,143,.30), $card 72%);
-       box-shadow:0 10px 34px rgba(224,51,143,.18), inset 0 1px 0 rgba(255,255,255,.05); }
-.kpi .ico { width:50px; height:50px; border-radius:14px; display:flex; align-items:center; justify-content:center;
-            background:linear-gradient(135deg,$g1,$g2); box-shadow:0 6px 18px rgba(224,51,143,.4); }
+       box-shadow:0 8px 26px rgba(224,51,143,.16), inset 0 1px 0 rgba(255,255,255,.05); }
+.kpi .ico { width:38px; height:38px; border-radius:11px; display:flex; align-items:center; justify-content:center;
+            background:linear-gradient(135deg,$g1,$g2); box-shadow:0 4px 12px rgba(224,51,143,.4); }
 .kpi .mid { min-width:0; }
-.kpi .v { font-size:1.85rem; font-weight:800; letter-spacing:-.02em; line-height:1.1; }
-.kpi .l { font-size:.86rem; font-weight:600; color:$mute; margin-top:3px; }
-.kpi .s { font-size:.76rem; color:$mute; margin-top:2px; }
-.kpi .sts { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:10px; padding-top:8px;
+.kpi .v { font-size:1.45rem; font-weight:800; letter-spacing:-.02em; line-height:1.1; }
+.kpi .l { font-size:.78rem; font-weight:600; color:$mute; margin-top:2px; }
+.kpi .s { font-size:.7rem; color:$mute; margin-top:1px; }
+.kpi .sts { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:3px 10px; margin-top:8px; padding-top:6px;
             border-top:1px dashed $line; }
-.kpi .sts .stt { width:100%; font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:$mute; }
-.kpi .sts .stp { display:inline-flex; align-items:center; gap:5px; font-size:.66rem; color:$mute; white-space:nowrap; }
+.kpi .sts .stt { width:100%; font-size:.56rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:$mute; }
+.kpi .sts .stp { display:inline-flex; align-items:center; gap:5px; font-size:.62rem; color:$mute; white-space:nowrap; }
 .kpi .sts .stp i { width:6px; height:6px; border-radius:50%; display:inline-block; }
 .kpi .sts .stp b { color:$ink; font-weight:700; }
-.st-key-tap_hub .kpi, .st-key-tap_pcs .kpi { min-height:150px; }
-.kpi.nov .l { font-size:.95rem; font-weight:800; color:$ink; margin:0; }
-.kpi.nov .sts { display:grid; grid-template-columns:1fr 1fr; gap:5px 18px; margin-top:12px; }
-.kpi.nov .sts .stp { justify-content:space-between; font-size:.7rem; }
+.st-key-tap_all .kpi, .st-key-tap_hub .kpi, .st-key-tap_pcs .kpi { min-height:112px; }
+.kpi.nov .l { font-size:.88rem; font-weight:800; color:$ink; margin:0; }
+.kpi.nov .sts { display:grid; grid-template-columns:1fr 1fr; gap:3px 14px; margin-top:8px; }
+.kpi.nov .sts .stp { justify-content:space-between; font-size:.66rem; }
 .kpi.nov .sts .stp span.nm { display:inline-flex; align-items:center; gap:5px; }
 .kpi .trend { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
-.kpi .delta { font-size:.74rem; font-weight:800; }
+.kpi .delta { font-size:.7rem; font-weight:800; }
 .kpi .delta.up { color:#34C27A; } .kpi .delta.dn { color:#F2A23D; }
 .kpi.left { border-color:rgba(242,162,61,.45); border-left:1px solid rgba(242,162,61,.45);
-            background:linear-gradient(135deg, rgba(242,162,61,.26), $card 72%); box-shadow:0 10px 34px rgba(242,162,61,.14); }
-.kpi.left .ico { background:linear-gradient(135deg,#F6A93B,#E8702A); box-shadow:0 6px 18px rgba(242,162,61,.4); }
+            background:linear-gradient(135deg, rgba(242,162,61,.26), $card 72%); box-shadow:0 8px 26px rgba(242,162,61,.13); }
+.kpi.left .ico { background:linear-gradient(135deg,#F6A93B,#E8702A); box-shadow:0 4px 12px rgba(242,162,61,.4); }
 .kpi.blue { border-color:rgba(59,130,246,.5); border-left:1px solid rgba(59,130,246,.5);
-            background:linear-gradient(135deg, rgba(59,130,246,.26), $card 72%); box-shadow:0 10px 34px rgba(59,130,246,.16); }
-.kpi.blue .ico { background:linear-gradient(135deg,#3B9CFF,#2563EB); box-shadow:0 6px 18px rgba(59,130,246,.4); }
+            background:linear-gradient(135deg, rgba(59,130,246,.26), $card 72%); box-shadow:0 8px 26px rgba(59,130,246,.15); }
+.kpi.blue .ico { background:linear-gradient(135deg,#3B9CFF,#2563EB); box-shadow:0 4px 12px rgba(59,130,246,.4); }
 .kpi.ok { border-color:rgba(52,194,122,.45); border-left:1px solid rgba(52,194,122,.45);
-          background:linear-gradient(135deg, rgba(52,194,122,.22), $card 72%); box-shadow:0 10px 34px rgba(52,194,122,.13); }
-.kpi.ok .ico { background:linear-gradient(135deg,#34C27A,#1E9E5C); box-shadow:0 6px 18px rgba(52,194,122,.4); }
+          background:linear-gradient(135deg, rgba(52,194,122,.22), $card 72%); box-shadow:0 8px 26px rgba(52,194,122,.12); }
+.kpi.ok .ico { background:linear-gradient(135deg,#34C27A,#1E9E5C); box-shadow:0 4px 12px rgba(52,194,122,.4); }
 [class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { transform:translateY(-1px); filter:brightness(1.08); }
 .kpi, .day { transition:transform .15s, filter .15s, border-color .15s; }
 
-/* ── карточка «Хаб отгрузка ББ»: мелкая таблица Дата / Принято / Не принято ── */
-.hubt { grid-column:1 / -1; display:flex; flex-direction:column; gap:3px; margin-top:10px; padding-top:8px;
+/* ── карточка «Хаб ББ»: мелкая таблица Дата / Принято / Не принято ── */
+.hubt { grid-column:1 / -1; display:flex; flex-direction:column; gap:2px; margin-top:8px; padding-top:6px;
         border-top:1px dashed $line; }
-.hubt .hr { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:8px; align-items:center; font-size:.7rem; color:$ink; }
-.hubt .hr.hh { font-size:.58rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:$mute; }
+.hubt .hr { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:8px; align-items:center; font-size:.66rem; color:$ink; }
+.hubt .hr.hh { font-size:.56rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:$mute; }
 .hubt .hr.hh span:nth-child(n+2), .hubt .hr b { text-align:right; }
 .hubt .hr b { font-variant-numeric:tabular-nums; font-weight:800; }
 .hubt .hr b.g { color:#34C27A; }
 .hubt .hr b.r { color:#F2A23D; }
-.hubt .none { font-size:.72rem; color:$mute; }
+.hubt .none { font-size:.7rem; color:$mute; }
 
-/* ── карточка отгрузки ── */
-.ship { border-radius:20px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
-        background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.12), 0 14px 40px $glow; }
-.ship .sh-t { display:flex; align-items:center; gap:8px; }
+/* ── карточка отгрузки (компактная) ── */
+.ship { border-radius:16px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
+        background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.12), 0 10px 30px $glow;
+        padding:10px 14px; margin-bottom:8px; }
+.ship .sh-t { display:flex; align-items:center; gap:8px; font-size:.95rem; }
+.ship .sh-p { font-size:1.4rem; }
+.ship .sh-m { font-size:.78rem; margin-bottom:0; margin-top:6px; }
+.ship .bar { height:12px; margin:0; }
 .pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; display:inline-block; }
-.bar { height:16px; background:$track; }
+.bar { height:10px; background:$track; }
 .bar > i { background-color:$g1;
   background-image:linear-gradient(135deg, rgba(255,255,255,.24) 25%, transparent 25%, transparent 50%,
                                    rgba(255,255,255,.24) 50%, rgba(255,255,255,.24) 75%, transparent 75%),
                    linear-gradient(90deg,$g1,$g2,#3B82F6);
-  background-size:32px 32px, 100% 100%; animation:stripes 1s linear infinite; box-shadow:0 0 14px $glow; }
+  background-size:32px 32px, 100% 100%; animation:stripes 1s linear infinite; box-shadow:0 0 12px $glow; }
 @keyframes stripes { from { background-position:0 0, 0 0; } to { background-position:32px 0, 0 0; } }
 
-/* ── строки по дням: цветная полоска, плашка с числом, стрелка ── */
-.day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:14px; padding:12px 14px;
-       grid-template-columns:92px 1fr auto 28px; gap:14px; }
+/* ── строки по дням: цветная полоска, плашка с числом, стрелка (компактные) ── */
+.day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:12px; padding:8px 12px;
+       grid-template-columns:70px 1fr auto 22px; gap:10px; }
+.day .d { font-size:.92rem; }
+.day .d small { font-size:.7rem; }
+.day .meta { font-size:.72rem; margin-top:4px; }
+.day .bar { height:9px; }
 .day.urg { border-left-color:#E5384F; }
 .day.amb { border-left-color:$left; }
 .day.full { border-left-color:$done; }
-.day .pct { background:$head; border:1px solid $line; border-radius:12px; padding:6px 14px; font-size:1.1rem;
-            min-width:58px; text-align:center; }
+.day .pct { background:$head; border:1px solid $line; border-radius:10px; padding:3px 10px; font-size:.95rem;
+            min-width:50px; text-align:center; }
+.day .pct small { font-size:.62rem; }
 .day .chev { display:flex; align-items:center; justify-content:center; color:$mute; }
 @media (max-width: 640px) {
-  .day { grid-template-columns:1fr auto 24px; }
+  .day { grid-template-columns:1fr auto 20px; }
   .day .mid { grid-column:1 / -1; order:4; }
 }
 .badge.no { background:$no_bg; color:$no_fg; border:1px solid rgba(242,162,61,.35); }
@@ -621,12 +708,14 @@ header[data-testid="stHeader"] * { pointer-events:none; }
 .stApp[data-test-script-state="running"] .st-key-gsearch::before {
   opacity:1; animation:boltspin 2.8s linear infinite; }
 @keyframes boltspin { to { --bolt:360deg; } }
+$truck_css
 </style>
 """)
 _vals = dict(P)
 _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "#FFFFFF"),
              u_download_s=icon_uri("download", P["mute"]),
-             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
+             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""),
+             truck_css=TRUCK_CSS)
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
 # иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить»
@@ -1051,7 +1140,7 @@ def hub_card_dates(g: pd.DataFrame, today: date) -> list:
 
 
 def hub_card(g, today: date, err: str = "") -> str:
-    """Карточка «Хаб отгрузка ББ»: мелкая таблица Дата / Принято коробок / Не принято коробок."""
+    """Карточка «Хаб ББ»: мелкая таблица Дата / Принято коробок / Не принято коробок."""
     if err or g is None or g.empty:
         body = "<div class='none'>Нет данных из Metabase</div>"
     else:
@@ -1061,8 +1150,8 @@ def hub_card(g, today: date, err: str = "") -> str:
             for d in hub_card_dates(g, today))
         body = ("<div class='hr hh'><span>Дата</span><span>Принято коробок</span><span>Не принято коробок</span></div>"
                 + rows)
-    return (f"<div class='kpi left nov'><div class='ico'>{ic('box', '#FFFFFF', 24)}</div>"
-            f"<div class='mid'><div class='l'>Хаб отгрузка ББ</div>"
+    return (f"<div class='kpi left nov'><div class='ico'>{ic('box', '#FFFFFF', 20)}</div>"
+            f"<div class='mid'><div class='l'>Хаб ББ</div>"
             f"<div class='s'>приёмка коробок · нажмите, чтобы открыть маршруты</div></div>"
             f"<div class='hubt'>{body}</div></div>")
 
@@ -1852,7 +1941,8 @@ def _logo_data_uri(names: tuple = tuple(LOGO_FILES)) -> str:
 
 def logo_html(h: int = None) -> str:
     """Логотипы M Cosmetic и партнёра по очереди плавно двигаются вверх по вертикальной ленте.
-    Один логотип — мягко «парит» с неоновой подсветкой. h — высота окна, px."""
+    Один логотип — мягко «парит» с неоновой подсветкой. h — высота окна, px.
+    По клику на логотип (скрипт внизу страницы) открывается «Сводка по дням»."""
     h = int(h or LOGO_HEIGHT)
     uris = [u for u in (_logo_data_uri(tuple(LOGO_FILES)), _logo_data_uri(tuple(LOGO2_FILES))) if u]
 
@@ -1862,7 +1952,7 @@ def logo_html(h: int = None) -> str:
                 "<rect x='2' y='2' width='26' height='26' rx='6' stroke='currentColor' stroke-width='3'/>"
                 "<path d='M9 12h9l-3-3M21 18h-9l3 3' stroke='currentColor' stroke-width='3' "
                 "stroke-linecap='round' stroke-linejoin='round'/></svg>")
-        return (f"<div class='brand'><span class='bi'>{icon}</span>"
+        return (f"<div class='brand' title='На главную'><span class='bi'>{icon}</span>"
                 f"<span class='bn' style='font-size:{h / 38:.2f}rem'>M COSMETIC</span></div>")
 
     def item(u):
@@ -1870,7 +1960,8 @@ def logo_html(h: int = None) -> str:
                 f"<img src='{u}' alt='logo' style='height:{h}px;width:auto;max-width:100%'></div>")
 
     if len(uris) == 1:
-        return f"<div class='brand'><div class='lt-win lt-one' style='height:{h}px'>{item(uris[0])}</div></div>"
+        return (f"<div class='brand' title='На главную'>"
+                f"<div class='lt-win lt-one' style='height:{h}px'>{item(uris[0])}</div></div>")
 
     # несколько логотипов: лента из N штук + копия первого в конце, чтобы цикл был бесшовным
     k = len(uris)
@@ -1889,7 +1980,7 @@ def logo_html(h: int = None) -> str:
            ".lt-item{display:flex;align-items:center}"
            "</style>")
     items = "".join(item(u) for u in uris + [uris[0]])
-    return (f"{css}<div class='brand'><div class='lt-win' style='height:{h}px'>"
+    return (f"{css}<div class='brand' title='На главную'><div class='lt-win' style='height:{h}px'>"
             f"<div class='lt-track{h}'>{items}</div></div></div>")
 
 
@@ -1922,7 +2013,7 @@ def set_page(p):
 
 
 def open_hub():
-    """Карточка «Хаб отгрузка ББ»: открыть подробности по маршрутам."""
+    """Карточка «Хаб ББ»: открыть подробности по маршрутам."""
     st.session_state.hub_open = True
 
 
@@ -1972,25 +2063,25 @@ def routing_table(g: pd.DataFrame) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
-# ── карточка «Отгрузка сегодня» с живым таймером (отдельный документ со своими стилями и скриптом) ──
+# ── карточка «Отгрузка сегодня» с живым таймером и едущей «Газелью» (отдельный документ со своими стилями и скриптом) ──
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:linear-gradient(135deg, $head, $card); border:1px solid $line; border-radius:20px;
-        box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 14px 40px $glow;
-        padding:16px 18px; margin:0 0 12px; box-sizing:border-box; }
+.ship { background:linear-gradient(135deg, $head, $card); border:1px solid $line; border-radius:16px;
+        box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 10px 30px $glow;
+        padding:10px 14px; margin:0 0 8px; box-sizing:border-box; }
 .sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
-.sh-t { font-weight:800; font-size:1.1rem; color:$ink; display:flex; align-items:center; gap:8px; }
+.sh-t { font-weight:800; font-size:.98rem; color:$ink; display:flex; align-items:center; gap:8px; }
 .pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; }
-.sh-t small { font-weight:500; color:$mute; font-size:.8rem; margin-left:6px; }
-.sh-p { font-weight:800; font-size:1.8rem; letter-spacing:-0.02em; color:$ink; }
-.sync { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center;
-        margin-left:8px; vertical-align:middle; font-size:.75rem; font-weight:800; box-sizing:border-box; }
+.sh-t small { font-weight:500; color:$mute; font-size:.76rem; margin-left:6px; }
+.sh-p { font-weight:800; font-size:1.4rem; letter-spacing:-0.02em; color:$ink; }
+.sync { display:inline-flex; width:18px; height:18px; border-radius:50%; align-items:center; justify-content:center;
+        margin-left:8px; vertical-align:middle; font-size:.7rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
 .sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
-.bar { height:32px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:10px 0; }
+.bar { height:26px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0; }
 .bar > i { display:block; height:100%; border-radius:99px; background-color:#1E9E5C;
   background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
                                    rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
@@ -2007,15 +2098,16 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
                    linear-gradient(90deg, #D32F2F, #D32F2F); }
 @keyframes move { from { background-position:0 0, 0 0; } to { background-position:32px 0, 0 0; } }
 .bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
-  gap:10px; color:#fff; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  gap:10px; color:#fff; font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
   text-shadow:0 1px 3px rgba(0,0,0,.6); }
-.bar-t small { font-size:.78rem; font-weight:700; }
-.sh-m { font-size:.85rem; color:$mute; }
+.bar-t small { font-size:.74rem; font-weight:700; }
+.sh-m { font-size:.78rem; color:$mute; margin-top:7px; }
 .sh-m b { color:$ink; }
+$truck_css
 </style></head><body>
 <div class="ship">
   <div class="sh-top"><div class="sh-t">Отгрузка сегодня <span class="pdot"></span><small>$date</small>$clock$sync</div><div class="sh-p">$pct%</div></div>
-  <div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div>
+  <div class="lane">$truck<div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div></div>
   <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
 </div>
 <script>
@@ -2046,13 +2138,17 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 })();
 </script></body></html>""")
 
+SHIP_IFRAME_H = 140   # высота карточки с таймером и машинкой, px
+
 
 def ship_doc(d: date, pct: int, sm: dict, sync: str = "") -> str:
+    done_all = sm["total"] > 0 and sm["done"] >= sm["total"]
     vals = dict(P)
     vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, clock=ic("clock", P["mute"], 15),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
-                all_done="true" if sm["done"] >= sm["total"] else "false")
+                all_done="true" if sm["done"] >= sm["total"] else "false",
+                truck=truck_html(pct, done_all), truck_css=TRUCK_CSS)
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -2094,7 +2190,7 @@ def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None, s
                             for nm, v, c in status)
             sts = f"<div class='sts'><span class='stt'>шт по статусам</span>{items}</div>"
     v_html = "" if value is None else f"<div class='v'>{value}</div>"
-    return (f"<div class='kpi {cls}{' nov' if value is None else ''}'><div class='ico'>{ic(icon, '#FFFFFF', 24)}</div>"
+    return (f"<div class='kpi {cls}{' nov' if value is None else ''}'><div class='ico'>{ic(icon, '#FFFFFF', 20)}</div>"
             f"<div class='mid'>{v_html}<div class='l'>{esc(label)}</div>{sub_html}</div>{trend}{sts}</div>")
 
 
@@ -2320,7 +2416,135 @@ BEAT_EVERY = 15      # как часто вкладка подаёт сигна�
 
 @st.cache_resource
 def _presence2() -> dict:
-    return {}        # общий для всех сессий: {id сессии: {"first": когда зашёл, "last": последний сигнал}}
+    return {}        # общий для всех сессий: {id сессии: {"first": когда зашёл, "last": последний сигнал, "vid": посетитель}}
+
+
+# ── посетители: кто и когда заходил (для окна по клику на «онлайн») ──
+def parse_ua(ua: str) -> dict:
+    """Браузер, ОС и тип устройства по User-Agent."""
+    low = (ua or "").lower()
+    if "telegram" in low:
+        br = "Telegram"
+    elif "edg/" in low or "edga/" in low or "edgios/" in low:
+        br = "Edge"
+    elif "opr/" in low or "opera" in low:
+        br = "Opera"
+    elif "yabrowser" in low:
+        br = "Яндекс"
+    elif "samsungbrowser" in low:
+        br = "Samsung"
+    elif "firefox" in low or "fxios" in low:
+        br = "Firefox"
+    elif "chrome" in low or "crios" in low:
+        br = "Chrome"
+    elif "safari" in low:
+        br = "Safari"
+    else:
+        br = "Браузер"
+    if "android" in low:
+        os_ = "Android"
+    elif "iphone" in low or "ipad" in low or "ipod" in low:
+        os_ = "iOS"
+    elif "windows" in low:
+        os_ = "Windows"
+    elif "mac os x" in low or "macintosh" in low:
+        os_ = "macOS"
+    elif "cros" in low:
+        os_ = "ChromeOS"
+    elif "linux" in low:
+        os_ = "Linux"
+    else:
+        os_ = "ОС"
+    if "ipad" in low or "tablet" in low or ("android" in low and "mobile" not in low):
+        dev = "tablet"
+    elif "mobi" in low or "iphone" in low:
+        dev = "mobile"
+    else:
+        dev = "desktop"
+    return {"browser": br, "os": os_, "device": dev}
+
+
+DEVICE_RU = {"mobile": "Телефон", "tablet": "Планшет", "desktop": "Компьютер"}
+
+
+def ensure_client():
+    """Один раз за сессию: id посетителя (cookie браузера), имя из Telegram (cookie), браузер/ОС из заголовков."""
+    if "cinfo" in st.session_state:
+        return
+    ua, tz, lang, ck = "", "", "", {}
+    try:
+        hdr = st.context.headers
+        ua = hdr.get("User-Agent", "") or ""
+        lang = (hdr.get("Accept-Language", "") or "").split(",")[0][:8]
+    except Exception:
+        pass
+    try:
+        ck = st.context.cookies
+    except Exception:
+        ck = {}
+    try:
+        tz = str(getattr(st.context, "timezone", "") or "")
+    except Exception:
+        tz = ""
+    vid = str(ck.get("mc_vid", "") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", vid):
+        vid = uuid.uuid4().hex[:16]
+    name = unquote(str(ck.get("mc_tg", "") or ""))[:60]
+    st.session_state.vid = vid
+    st.session_state.cinfo = dict(ua=parse_ua(ua), tz=tz, lang=lang, name=name)
+
+
+@st.cache_resource
+def _vis() -> dict:
+    """Общая для всех сессий история посетителей: {id посетителя: имя, последний визит, сессии [начало, конец, id сессии]}."""
+    h = {"data": {}, "lock": threading.Lock(), "saved": 0.0, "dirty": False}
+    try:
+        with open(VISITORS_FILE, encoding="utf-8") as f:
+            h["data"] = json.load(f).get("data", {})
+    except Exception:
+        pass
+    return h
+
+
+def _vis_save(h: dict, t: float):
+    cut = t - VIS_KEEP_DAYS * 86400
+    for k in [k for k, v in h["data"].items() if v.get("last", 0) < cut]:
+        h["data"].pop(k, None)
+    for v in h["data"].values():
+        v["sessions"] = [s for s in v.get("sessions", []) if s[1] >= cut]
+    try:
+        with open(VISITORS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"data": h["data"]}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    h["saved"], h["dirty"] = t, False
+
+
+def _vis_touch(sid: str, vid: str, t: float):
+    """Отмечает сигнал от открытой вкладки: продлевает текущую сессию посетителя или начинает новую."""
+    ci = st.session_state.get("cinfo") or {}
+    h, s8 = _vis(), sid[:8]
+    with h["lock"]:
+        v = h["data"].get(vid)
+        if v is None:
+            v = h["data"][vid] = {"name": "", "first": t, "last": t, "sessions": []}
+        v["last"] = t
+        if ci.get("name"):
+            v["name"] = ci["name"]
+        for k in ("ua", "tz", "lang"):
+            if ci.get(k):
+                v[k] = ci[k]
+        ss = v["sessions"]
+        for s in reversed(ss):
+            if s[2] == s8:
+                s[1] = t
+                break
+        else:
+            ss.append([t, t, s8])
+            del ss[:-200]
+            h["dirty"] = True
+        if h["dirty"] or t - h["saved"] > 120:
+            _vis_save(h, t)
 
 
 def online_now() -> list:
@@ -2328,11 +2552,14 @@ def online_now() -> list:
     if "sid" not in st.session_state:
         st.session_state.sid = uuid.uuid4().hex
     reg, t = _presence2(), time.time()
-    rec = reg.get(st.session_state.sid)
+    sid = st.session_state.sid
+    vid = st.session_state.get("vid") or sid[:16]
+    rec = reg.get(sid)
     if rec is None:
-        reg[st.session_state.sid] = {"first": t, "last": t}
+        reg[sid] = {"first": t, "last": t, "vid": vid}
     else:
         rec["last"] = t
+    _vis_touch(sid, vid, t)
     for k in [k for k, v in reg.items() if t - v["last"] > ONLINE_WINDOW]:
         reg.pop(k, None)
     return sorted((v["first"], k) for k, v in reg.items())
@@ -2346,6 +2573,144 @@ def dur_txt(sec: float) -> str:
     if m < 60:
         return f"{m} мин"
     return f"{m // 60} ч {m % 60} мин"
+
+
+def _plural(k, forms) -> str:
+    k = abs(int(k))
+    if 11 <= k % 100 <= 14:
+        return forms[2]
+    r = k % 10
+    return forms[0] if r == 1 else (forms[1] if 2 <= r <= 4 else forms[2])
+
+
+def ago_txt(sec: float) -> str:
+    s = max(int(sec), 0)
+    if s < 60:
+        return f"{s} {_plural(s, ('секунду', 'секунды', 'секунд'))} назад"
+    m = s // 60
+    if m < 60:
+        return f"{m} {_plural(m, ('минуту', 'минуты', 'минут'))} назад"
+    hh = m // 60
+    if hh < 48:
+        return f"{hh} {_plural(hh, ('час', 'часа', 'часов'))} назад"
+    dd = hh // 24
+    return f"{dd} {_plural(dd, ('день', 'дня', 'дней'))} назад"
+
+
+def clock_txt(sec: float) -> str:
+    s = max(int(sec), 0)
+    if s >= 3600:
+        return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _avatar(vid: str, name: str) -> str:
+    """Аватар посетителя: с именем — цветной кружок с инициалами, гость — «узор» из точек (по id посетителя)."""
+    dg = hashlib.md5(vid.encode()).digest()
+    hue = dg[0] * 360 // 256
+    if name:
+        ini = "".join(w[0] for w in name.replace("@", "").split()[:2]).upper() or "?"
+        return (f"<div class='vav' style='background:linear-gradient(135deg,hsl({hue},70%,52%),"
+                f"hsl({(hue + 50) % 360},70%,45%))'>{esc(ini)}</div>")
+    col = f"hsl({hue},62%,58%)"
+    dots = "".join(f"<circle cx='{8 + c * 5}' cy='{8 + r * 5}' r='2' fill='{col}'/>"
+                   for r in range(5) for c in range(5) if dg[1 + r * 3 + min(c, 4 - c)] & 1)
+    return f"<div class='vav' style='background:#fff'><svg width='34' height='34' viewBox='0 0 36 36'>{dots}</svg></div>"
+
+
+VIS_PERIODS = ["Сейчас", "Сегодня", "7 дней", "30 дней"]
+
+
+def _online_body():
+    """Содержимое окна «Посетители»: карточки (посетители, среднее время сессии, сессий на посетителя) и таблица."""
+    st.session_state.setdefault("vis_per", "7 дней")
+    st.segmented_control("Период", VIS_PERIODS, key="vis_per", label_visibility="collapsed")
+    per = st.session_state.get("vis_per") or "7 дней"
+
+    t_now = time.time()
+    hv, reg = _vis(), _presence2()
+    live = {k: r for k, r in list(reg.items()) if t_now - r["last"] <= ONLINE_WINDOW}
+    live_vids = {(r.get("vid") or k) for k, r in live.items()}
+    live_s8 = {k[:8] for k in live}
+    midnight = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    since = {"Сегодня": midnight, "7 дней": t_now - 7 * 86400, "30 дней": t_now - 30 * 86400}.get(per, 0)
+    with hv["lock"]:
+        data = {k: dict(v, sessions=[list(s) for s in v.get("sessions", [])]) for k, v in hv["data"].items()}
+
+    me = st.session_state.get("vid")
+    rows, durs, total_s = [], [], 0
+    for vid, v in data.items():
+        if per == "Сейчас":
+            ss = [s for s in v["sessions"] if s[2] in live_s8]
+        else:
+            ss = [s for s in v["sessions"] if s[1] >= since]
+        if not ss:
+            continue
+        total_s += len(ss)
+        durs += [max(s[1] - s[0], 0) for s in ss]
+        rows.append(dict(vid=vid, name=v.get("name", ""), sess=len(ss), last=v.get("last", ss[-1][1]),
+                         first=v.get("first", ss[0][0]), dur=max(ss[-1][1] - ss[-1][0], 0),
+                         online=vid in live_vids, ua=v.get("ua") or {}, tz=v.get("tz", ""), lang=v.get("lang", "")))
+    rows.sort(key=lambda r: -r["last"])
+
+    if not rows:
+        st.info("За выбранный период посетителей нет.")
+    else:
+        avg_t = sum(durs) / len(durs) if durs else 0
+        avg_s = total_s / len(rows)
+        avg_s_txt = f"{avg_s:.0f}" if abs(avg_s - round(avg_s)) < 0.05 else f"{avg_s:.1f}".replace(".", ",")
+
+        def card(label, value, icon):
+            return (f"<div class='vk'><div><div class='vkl'>{label}</div><div class='vkv'>{value}</div></div>"
+                    f"<span class='vki'>{ic(icon, 'currentColor', 17)}</span></div>")
+
+        out = ["<div class='vk-wrap'>",
+               card("Посетители", n(len(rows)), "users"),
+               card("Ср. время сессии", f"{clock_txt(avg_t)} мин", "timer"),
+               card("Ср. сессий на посетителя", avg_s_txt, "hourglass"),
+               "</div><div class='vtbl'>",
+               "<div class='vrow vh'><div>Посетитель</div><div></div><div>Последняя активность</div><div>Детали</div></div>"]
+        for r in rows[:100]:
+            name = r["name"] or "Гость"
+            you = "<span class='vme'>(вы)</span>" if r["vid"] == me else ""
+            sess = (f"<span class='vpill s'>{ic('hourglass', 'currentColor', 12)} {r['sess']} "
+                    f"{_plural(r['sess'], ('сессия', 'сессии', 'сессий'))}</span>")
+            if r["online"]:
+                last = "<span class='vpill on'>● онлайн</span>"
+            else:
+                last = f"<span class='vpill t'>{ic('history', 'currentColor', 12)} {ago_txt(t_now - r['last'])}</span>"
+            ua = r["ua"]
+            dev = ua.get("device", "desktop")
+            tz_txt = " · ".join(x for x in (r["tz"], r["lang"]) if x) or "нет данных"
+            det = (f"<span class='vd' title='Первый визит: {datetime.fromtimestamp(r['first'], TZ):%d.%m.%Y %H:%M}'>"
+                   f"{ic('calendar', 'currentColor', 15)}</span>"
+                   f"<span class='vd' title='Длительность последней сессии: {clock_txt(r['dur'])}'>"
+                   f"{ic('history', 'currentColor', 15)}</span>"
+                   f"<span class='vd' title='Часовой пояс и язык: {esc(tz_txt)}'>{ic('globe', 'currentColor', 15)}</span>"
+                   f"<span class='vd' title='{DEVICE_RU.get(dev, '')}'>"
+                   f"{ic('monitor' if dev == 'desktop' else 'smartphone', 'currentColor', 15)}</span>"
+                   f"<span class='vtx'>{esc(ua.get('os', ''))} · {esc(ua.get('browser', ''))}</span>")
+            out.append(f"<div class='vrow'><div class='vuser'>{_avatar(r['vid'], r['name'])}"
+                       f"<span class='vname'>{esc(name)}{you}</span></div><div>{sess}</div><div>{last}</div>"
+                       f"<div class='vdet'>{det}</div></div>")
+        out.append("</div>")
+        st.markdown("".join(out), unsafe_allow_html=True)
+
+    st.caption("Посетитель определяется по cookie браузера, сессия — одно открытие дашборда. Имя берётся из Telegram "
+               "(если дашборд открыт из бота) и появляется со следующего открытия. Время сессии считается по сигналам "
+               f"открытой вкладки (раз в {BEAT_EVERY} сек). История хранится {VIS_KEEP_DAYS} дней в файле на сервере.")
+    st.button("Обновить", key="vis_refresh")
+
+
+_dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+
+
+def online_dialog():
+    """Открывает окно «Посетители» (вызывается после клика на «N онлайн»)."""
+    if _dlg is None:
+        st.info("Окно посетителей работает в Streamlit 1.37 и новее.")
+        return
+    _dlg("Посетители", width="large")(_online_body)()
 
 
 # ── история изменений (для колокольчика): что добавилось, собрано, отгружено ──
@@ -2502,17 +2867,13 @@ def bell_html() -> str:
 @st.fragment(run_every=BEAT_EVERY)
 def topright():
     _auto_track()
-    users, nw, t = online_now(), datetime.now(TZ), time.time()
-    me = st.session_state.get("sid")
-    urows = "".join(
-        f"<div class='ou'><span><i></i>Пользователь {i}{' <em>(вы)</em>' if sid == me else ''}</span>"
-        f"<b>{dur_txt(t - first)}</b></div>" for i, (first, sid) in enumerate(users, 1))
-    onl_pop = (f"<div class='onl-pop'><div class='bp-h'>Сейчас в дашборде</div>{urows}"
-               f"<div class='bp-f'>Время — сколько человек сидит без перерыва. "
-               f"Обновляется раз в {BEAT_EVERY} сек.</div></div>")
+    online_now()
+    nw = datetime.now(TZ)
+    # считаем людей (а не вкладки): два окна одного человека — один онлайн
+    n_on = len({(r.get("vid") or k) for k, r in list(_presence2().items())}) or 1
     st.markdown(
-        f"<div class='tb-right'><span class='live onl'><i class='dot'></i>"
-        f"<span>{len(users)} онлайн</span>{onl_pop}</span><span class='sep'></span>"
+        f"<div class='tb-right'><span class='live onl' title='Нажмите, чтобы увидеть, кто сейчас в дашборде'>"
+        f"<i class='dot'></i><span>{n_on} онлайн</span></span><span class='sep'></span>"
         f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
         f"{bell_html()}</div>",
         unsafe_allow_html=True)
@@ -2532,6 +2893,8 @@ def on_gsearch():
         st.session_state.page = PAGES[4]
         st.session_state.mv_q = q_
 
+
+ensure_client()
 
 # ── боковое меню: логотип, разделы с иконками, статус, профиль ──
 with st.sidebar:
@@ -2563,10 +2926,28 @@ with st.container(key="topbar"):
         topright()
     with tb3:
         st.button("Тема", key="theme_btn", on_click=toggle_theme, help="Переключить день / ночь")
-components.html("""<script>try{var d=window.parent.document;if(!d.__ck){d.__ck=1;
+
+# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн» или на логотип
+if st.button("Онлайн", key="onl_open"):
+    online_dialog()
+st.button("На главную", key="go_home", on_click=set_page, args=(PAGES[0],))
+
+# скрипт в родительской странице: Ctrl+K, клик на «онлайн»/логотип, cookie посетителя и имя из Telegram
+components.html("""<script>try{var w=window.parent,d=w.document;
+if(!d.__ck){d.__ck=1;
 d.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
-e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});}}catch(e){}</script>""",
-                height=0)
+e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});
+d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.brand')?'.st-key-go_home button':'');
+if(q){var b=d.querySelector(q);if(b){b.click();}}});}
+var vid="__VID__",m=d.cookie.match(/(?:^|; )mc_vid=([^;]*)/);
+if(!m||m[1]!==vid){d.cookie='mc_vid='+vid+'; max-age=31536000; path=/; SameSite=Lax';}
+var nm='';try{var p=new URLSearchParams(w.location.hash.replace(/^#/,'')),dt=p.get('tgWebAppData');
+if(dt){var u=JSON.parse(new URLSearchParams(dt).get('user')||'{}');
+nm=((u.first_name||'')+' '+(u.last_name||'')).trim()||(u.username?'@'+u.username:'');}}catch(e){}
+if(nm){var en=encodeURIComponent(nm),c2=d.cookie.match(/(?:^|; )mc_tg=([^;]*)/);
+if(!c2||c2[1]!==en){d.cookie='mc_tg='+en+'; max-age=31536000; path=/; SameSite=Lax';}}
+}catch(e){}</script>""".replace("__VID__", str(st.session_state.get("vid", ""))), height=0)
 
 h1, h2, h3 = st.columns([6, 1.4, 1.5], vertical_alignment="bottom")
 with h1:
@@ -2629,7 +3010,7 @@ if page != PAGES[0]:                        # ушли со «Сводки» —
 hub_open = bool(st.session_state.hub_open) and page == PAGES[0]
 
 
-# ───────────────────────── Хаб отгрузка ББ: подробности по маршрутам ─────────────────────────
+# ───────────────────────── Хаб ББ: подробности по маршрутам ─────────────────────────
 def hub_view():
     st.button("← Назад к сводке", key="hub_back", on_click=close_hub)
     st.markdown("<div class='sec'>Хаб отгрузка ББ: маршруты</div>", unsafe_allow_html=True)
@@ -2723,14 +3104,16 @@ if page == PAGES[0] and not hub_open:
         sync_html = sync_icon(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
+        all_done = sm["total"] > 0 and sm["done"] >= sm["total"]
+        truck_stop = (not is_today) or all_done          # прошлый день или всё отгружено — машина стоит
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
           <span class="pdot"></span><small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{ic('clock', P['mute'], 15)}{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
-          <div class="bar"><i style="width:{pct_ship}%"></i></div>
+          <div class="lane">{truck_html(pct_ship, truck_stop)}<div class="bar"><i style="width:{pct_ship}%"></i></div></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
-        frame = (ship_doc(sd, pct_ship, sm, sync_html), 168) if is_today else None   # сегодня: анимированная линия + таймер
+        frame = (ship_doc(sd, pct_ship, sm, sync_html), SHIP_IFRAME_H) if is_today else None   # сегодня: линия + таймер + «Газель»
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
         elif frame:
@@ -2740,7 +3123,7 @@ if page == PAGES[0] and not hub_open:
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
-    # «Хаб отгрузка ББ» из Metabase (кэш 5 минут)
+    # «Хаб ББ» из Metabase (кэш 5 минут)
     hub_g, hub_err = None, ""
     try:
         hub_g = hub_by_date(load_hub())
@@ -2751,7 +3134,7 @@ if page == PAGES[0] and not hub_open:
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", kpi_box(None, "Штук по статусам", "", "all", status=status_breakdown(df_all)),
+        tap("all", kpi_box(None, "WMS Сборка шт", "", "all", status=status_breakdown(df_all)),
             go_orders, ("Все", ALL))
     with k2:
         tap("hub", hub_card(hub_g, now.date(), hub_err), open_hub)
@@ -2760,7 +3143,7 @@ if page == PAGES[0] and not hub_open:
             go_orders, ("Не собрано", ALL))
     st.caption("Нажмите на карточку, чтобы открыть подробности.")
     if hub_err:
-        st.caption(f"Хаб отгрузка ББ недоступен: {hub_err}")
+        st.caption(f"Хаб ББ недоступен: {hub_err}")
 
     # ── новые заказы по датам доставки: нажатие открывает список «Не собрано» на эту дату ──
     if new_err:
@@ -2781,7 +3164,7 @@ if page == PAGES[0] and not hub_open:
               <div class="d">{d_html}</div>
               <div class="mid"><span class="badge no">не маршрутизировано</span>
               <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div></div>
-              <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 18)}</div></div>""",
+              <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 16)}</div></div>""",
                 go_orders, ("Не собрано", target))
 
     xl_button("Выгрузить бэклог в Excel",
@@ -2804,7 +3187,7 @@ if page == PAGES[0] and not hub_open:
           <div class="mid"><div class="bar"><i style="width:{r['Процент']}%"></i></div>
           <div class="meta">собрано <b>{r['Собрано']}</b> зак. ({n(r['Штук собрано'])} шт) · осталось <b>{r['Осталось']}</b> зак.
           ({n(left_pcs)} шт) · всего {r['Заказов']} зак., {n(r['Штук'])} шт</div></div>
-          <div class="pct">{r['Процент']}%<small>собрано</small></div><div class="chev">{ic('chev', P['mute'], 18)}</div></div>""",
+          <div class="pct">{r['Процент']}%<small>собрано</small></div><div class="chev">{ic('chev', P['mute'], 16)}</div></div>""",
             go_orders, ("Собрано" if r["Осталось"] == 0 else "Не собрано", d))
 
 # ───────────────────────── 2. Заказы ─────────────────────────
@@ -3036,7 +3419,7 @@ if page == PAGES[3]:
                     top = m.groupby("Магазин")["Коробок"].sum().sort_values(ascending=False)
                     if shop == ALL:
                         st.markdown(kpi_box(esc(top.index[0]), "больше всего коробок",
-                                            f"{n(top.iloc[0])} шт", "left").replace("class='v'", "class='v' style='font-size:1.4rem'"),
+                                            f"{n(top.iloc[0])} шт", "left").replace("class='v'", "class='v' style='font-size:1.2rem'"),
                                     unsafe_allow_html=True)
                     else:
                         mx = m.loc[m["Коробок"].idxmax()]
