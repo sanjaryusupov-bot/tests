@@ -1072,7 +1072,100 @@ def load_stock_rows(skus: tuple, d_from: date, d_to: date):
 @st.cache_data(ttl=600, show_spinner=False)
 def load_magnit() -> pd.DataFrame:
     return mb_table("magnit_table", MB_MAGNIT_T)
+# ───────────────────────── Остаток позиции по Magnit Stock ─────────────────────────
+LIST_HEADERS = {"внешний id позиции", "товар", "sku wms id", "name", "sku", "название"}
 
+
+def _mpick(cols: dict, *keys):
+    """Первая найденная колонка из списка вариантов названий."""
+    for k in keys:
+        if k in cols:
+            return cols[k]
+    return None
+
+
+def _key(x) -> str:
+    """Ключ для сравнения значений: без регистра, лишних пробелов и «.0» на конце."""
+    s = str(x).strip().lower().replace("ё", "е")
+    s = re.sub(r"\.0$", "", s)
+    return re.sub(r"\s+", " ", s)
+
+
+def magnit_norm(raw: pd.DataFrame) -> pd.DataFrame:
+    """Magnit Stock -> sku / ext / wms / name / zone / cell / inv / loc / res / avail / kind (индекс как в raw)."""
+    cols = {_nk(c): c for c in raw.columns}
+    c_ext = _mpick(cols, "внешнийидпозиции", "внешнийид", "externalid", "externalitemid")
+    c_wms = _mpick(cols, "skuwmsid", "skuwms")
+    c_name = _mpick(cols, "name", "товар", "наименование")
+    c_zone = _mpick(cols, "zoneprefix", "зона")
+    c_loc = _mpick(cols, "amountinlocation")
+    c_res = _mpick(cols, "reserved", "резерв")
+    c_av = _mpick(cols, "amountavailable")
+    c_cell = _mpick(cols, "cellbarcode", "ячейка")
+    c_inv = _mpick(cols, "originalinvoicenumber", "накладная")
+    miss = [t for t, c in (("Внешний ID позиции / Sku Wms ID", c_ext or c_wms), ("name", c_name),
+                           ("zone_prefix", c_zone), ("Amount In Location", c_loc)) if c is None]
+    if miss:
+        raise ValueError("В Magnit Stock нет колонок: " + ", ".join(miss) + ". Есть: " + ", ".join(map(str, raw.columns)))
+
+    def txt(c):
+        if c is None:
+            return pd.Series("", index=raw.index)
+        return raw[c].fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+
+    ext, wms = txt(c_ext), txt(c_wms)
+    loc = _num(raw[c_loc])
+    avail = _num(raw[c_av]) if c_av else loc
+    res = _num(raw[c_res]) if c_res else (loc - avail)
+    d = pd.DataFrame({"sku": ext.where(ext != "", wms), "ext": ext, "wms": wms, "name": txt(c_name),
+                      "zone": txt(c_zone), "cell": txt(c_cell), "inv": txt(c_inv),
+                      "loc": loc, "res": res, "avail": avail}, index=raw.index)
+    zk = d["zone"].map(zkey)
+    d["kind"] = np.where(zk.isin(RES_KEYS), "yes", np.where(zk.isin(NORES_KEYS), "no", "?"))
+    return d[d["sku"] != ""]
+
+
+def magnit_find(m: pd.DataFrame, items: list):
+    """Ищет позиции по Внешнему ID, Sku Wms ID или названию. Возвращает (найденные строки, не найденные значения)."""
+    kext, kwms, kname = m["ext"].map(_key), m["wms"].map(_key), m["name"].map(_key)
+    total = pd.Series(False, index=m.index)
+    missing = []
+    for it in items:
+        k = _key(it)
+        if not k:
+            continue
+        mask = (kext == k) | (kwms == k) | (kname == k)
+        if not mask.any() and len(k) >= 4:                      # запасной вариант: часть названия
+            mask = kname.str.contains(k, regex=False)
+        if mask.any():
+            total |= mask
+        else:
+            missing.append(it)
+    return m[total], missing
+
+
+def magnit_rep(sub: pd.DataFrame, raw_all: pd.DataFrame, missing: list) -> dict:
+    """Собирает отчёт в том же формате, что использует stock_now_tables / stock_now_excel."""
+    g = sub.copy()
+    zk = g["zone"].map(zkey)
+    g["comment"] = g["kind"].map(KIND_TEXT)
+    g["o"] = zk.map(ZONE_ORDER).fillna(99)
+    g = g.sort_values(["sku", "o", "zone", "cell"]).reset_index(drop=True)
+    return dict(date=datetime.now(TZ).date(), rows=g,
+                raw=raw_all.loc[sub.index].reset_index(drop=True), missing=missing)
+
+
+def read_item_list(up) -> list:
+    """Список позиций из колонки A загруженного файла (xlsx или csv). Строка-заголовок пропускается."""
+    if up.name.lower().endswith(".csv"):
+        d = pd.read_csv(up, header=None, dtype=str, sep=None, engine="python")
+    else:
+        d = pd.read_excel(up, header=None, dtype=str)
+    out = [str(x).strip() for x in d.iloc[:, 0].dropna()]
+    out = [x for x in out if x]
+    if out and _key(out[0]) in LIST_HEADERS:
+        out = out[1:]
+    return list(dict.fromkeys(out))
 
 # ───────────────────────── Metabase: «Хаб отгрузка ББ» ─────────────────────────
 def _hk(x) -> str:
@@ -1433,6 +1526,8 @@ def stock_now_excel(rep: dict) -> bytes:
     sheets = {"Остаток позиции": main, "Сводка по зонам": zone_out, "Итого по товарам": sk_out}
     if rep.get("raw") is not None and not rep["raw"].empty:
         sheets["Все данные"] = rep["raw"]
+            if rep.get("missing"):
+        sheets["Не найдено"] = pd.DataFrame({"Не найдено в Magnit Stock": rep["missing"]})
     sheets["Правила"] = params
     return to_xlsx(sheets)
 
@@ -3000,6 +3095,7 @@ def on_gsearch():
     else:
         st.session_state.page = PAGES[4]
         st.session_state.mv_q = q_
+        st.session_state.mg_q = q_
 
 
 ensure_client()
@@ -3615,36 +3711,46 @@ if page == PAGES[4]:
         chosen = st.multiselect("Товары", opts, default=opts if len(opts) <= 10 else [],
                                 format_func=lambda s: f"{nm.get(s, '')} · {s}", key=f"mv_sel_{q}")
 
-        # ── текущий остаток выбранных позиций: что можно / нельзя зарезервировать (по зонам) ──
-        if chosen:
-            now_rep = None
-            try:
-                snap, snap_raw = load_stock_rows(tuple(sorted(chosen)), today - timedelta(days=MB_NOW_DAYS), today)
-                now_rep = stock_now(snap, snap_raw, nm)
-            except Exception as e:
-                st.error(f"Не удалось получить текущий остаток: {e}")
+            # ── Остаток позиции по Magnit Stock ──
+    st.markdown("<div class='sec'>Остаток позиции (Magnit Stock)</div>", unsafe_allow_html=True)
+    st.caption("Актуальные данные из таблицы Magnit Stock. Найдите одну позицию или загрузите список: "
+               "в колонке A файла могут быть Внешний ID позиции, Товар или Sku Wms ID (можно вперемешку).")
+    mi1, mi2 = st.columns(2)
+    with mi1:
+        mg_q = st.text_input("Одна позиция: название, Внешний ID или Sku Wms ID", key="mg_q").strip()
+    with mi2:
+        mg_up = st.file_uploader("Список позиций: Excel (.xlsx) или CSV, значения в колонке A",
+                                 type=["xlsx", "csv"], key="mg_up")
+    mg_paste = st.text_area("Или вставьте список, по одной позиции в строке", key="mg_paste", height=90)
 
-            if now_rep is None or now_rep["rows"].empty:
-                if now_rep is not None or True:
-                    st.info(f"По выбранным товарам нет остатка в снимках за последние {MB_NOW_DAYS} дней.")
+    mg_items = [mg_q] if mg_q else []
+    if mg_up is not None:
+        try:
+            mg_items += read_item_list(mg_up)
+        except Exception as e:
+            st.error(f"Не удалось прочитать файл: {e}")
+    mg_items += [x.strip() for x in mg_paste.splitlines() if x.strip()]
+    mg_items = list(dict.fromkeys(mg_items))
+
+    if mg_items:
+        mg_raw, mg_df = None, None
+        try:
+            mg_raw = load_magnit()
+            mg_df = magnit_norm(mg_raw)
+        except Exception as e:
+            st.error(f"Не удалось прочитать Magnit Stock: {e}")
+        if mg_df is not None:
+            mg_sub, mg_missing = magnit_find(mg_df, mg_items)
+            if mg_missing:
+                st.warning(f"Не найдено позиций: {len(mg_missing)} из {len(mg_items)}. "
+                           + ", ".join(esc(x) for x in mg_missing[:15]) + (" …" if len(mg_missing) > 15 else ""))
+            if mg_sub.empty:
+                st.info("По этим значениям в Magnit Stock ничего нет.")
             else:
-                zt, sk = stock_now_tables(now_rep)
-                st.markdown(f"<div class='sec'>Остаток позиции на {now_rep['date']:%d.%m.%Y}</div>",
-                            unsafe_allow_html=True)
-                if (today - now_rep["date"]).days > 1:
-                    st.caption(f"Последний снимок в Metabase от {now_rep['date']:%d.%m.%Y}: данные могут отставать.")
-
-                # надписи сверху: в каких зонах резерва не будет, а в каких будет
-                st.markdown(
-                    "<div class='zrules'>"
-                    "<div class='zrule no'><span class='zt'>Резерва не будет:</span>"
-                    + "".join(f"<span class='zc'>{esc(z_)}</span>" for z_ in NO_RESERVE_ZONES) + "</div>"
-                    "<div class='zrule yes'><span class='zt'>Резерв будет:</span>"
-                    + "".join(f"<span class='zc'>{esc(z_)}</span>" for z_ in RESERVE_ZONES) + "</div></div>",
-                    unsafe_allow_html=True)
+                rep_m = magnit_rep(mg_sub, mg_raw, mg_missing)
+                zt, sk = stock_now_tables(rep_m)
 
                 tot_can, tot_no = int(sk["can"].sum()), int(sk["no"].sum())
-                tot_loc, tot_res = int(sk["loc"].sum()), int(sk["res"].sum())
                 k1, k2, k3, k4 = st.columns(4)
                 with k1:
                     st.markdown(kpi_box(n(tot_can), "можно зарезервировать, шт", "доступно в зонах с резервом", "ok"),
@@ -3653,43 +3759,38 @@ if page == PAGES[4]:
                     st.markdown(kpi_box(n(tot_no), "не зарезервируется, шт", "доступно в зонах без резерва",
                                         "left" if tot_no else "ok"), unsafe_allow_html=True)
                 with k3:
-                    st.markdown(kpi_box(n(tot_loc), "в ячейках всего, шт", "", "all"), unsafe_allow_html=True)
+                    st.markdown(kpi_box(n(sk["loc"].sum()), "в ячейках всего, шт", f"позиций: {len(sk)}", "all"),
+                                unsafe_allow_html=True)
                 with k4:
-                    st.markdown(kpi_box(n(tot_res), "уже в резерве, шт", "в ячейках − доступно", "blue"),
+                    st.markdown(kpi_box(n(sk["res"].sum()), "уже в резерве, шт", "Reserved", "blue"),
                                 unsafe_allow_html=True)
 
-                # сводная по товарам
                 rows = [[esc(r.sku), esc(r.name), n(r.loc), n(r.res), f"<b>{n(r.can)}</b>", f"<b>{n(r.no)}</b>"]
-                        for r in sk.itertuples(index=False)]
-                st.markdown(simple_table(["Sku Wms ID", "Товар", "В ячейках", "Резерв", "Можно зарезервировать",
-                                          "Не зарезервируется"], rows, num_cols={2, 3, 4, 5}), unsafe_allow_html=True)
+                        for r in sk.head(500).itertuples(index=False)]
+                st.markdown(simple_table(["Внешний ID позиции", "Товар", "В ячейках", "Резерв",
+                                          "Можно зарезервировать", "Не зарезервируется"], rows,
+                                         num_cols={2, 3, 4, 5}), unsafe_allow_html=True)
 
-                # сводная по зонам
                 st.markdown("<div class='sec'>По зонам</div>", unsafe_allow_html=True)
                 badge_of = {"yes": "<span class='badge ok'>можно зарезервировать</span>",
                             "no": "<span class='badge no'>Заказ не зарезервируется</span>",
                             "?": "<span class='chip wait'>зона не указана в правилах</span>"}
                 multi = zt["sku"].nunique() > 1
-                head = (["Товар"] if multi else []) + ["Зона", "Ячеек", "В ячейках", "Резерв", "Доступно", "Комментарий"]
-                base_i = 1 if multi else 0
-                rows = []
-                for r in zt.itertuples(index=False):
-                    rows.append(([f"{esc(r.name)} · {esc(r.sku)}"] if multi else []) + [
-                        f"<b>{esc(r.zone)}</b>", n(r.cells), n(r.loc), n(r.res), f"<b>{n(r.avail)}</b>",
-                        badge_of.get(r.kind, "")])
-                st.markdown(simple_table(head, rows, num_cols={base_i + 1, base_i + 2, base_i + 3, base_i + 4}),
-                            unsafe_allow_html=True)
+                head = (["Товар"] if multi else []) + ["Зона", "В ячейках", "Резерв", "Доступно", "Комментарий"]
+                bi = 1 if multi else 0
+                rows = [(([f"{esc(r.name)} · {esc(r.sku)}"] if multi else []) +
+                         [f"<b>{esc(r.zone)}</b>", n(r.loc), n(r.res), f"<b>{n(r.avail)}</b>", badge_of.get(r.kind, "")])
+                        for r in zt.head(500).itertuples(index=False)]
+                st.markdown(simple_table(head, rows, num_cols={bi + 1, bi + 2, bi + 3}), unsafe_allow_html=True)
 
                 try:
-                    xl_data = stock_now_excel(now_rep)
-                    one = chosen[0] if len(chosen) == 1 else f"{len(chosen)}sku"
-                    dl_button("Скачать Excel: остаток позиции", xl_data,
-                              f"ostatok_{one}_{now_rep['date']:%Y%m%d}.xlsx", "dl_now")
+                    dl_button("Скачать Excel: остаток позиций (Magnit Stock)", stock_now_excel(rep_m),
+                              f"ostatok_magnit_{now:%Y%m%d_%H%M}.xlsx", "dl_mg_now")
                 except Exception as e:
                     st.error(f"Не удалось собрать Excel: {e}")
-                st.caption("Можно зарезервировать = «Доступно» в зонах с резервом; не зарезервируется = «Доступно» "
-                           "в зонах без резерва. В Excel: детали по ячейкам с итогами, сводка по зонам и все данные Metabase.")
-
+                st.caption("Можно зарезервировать = «Доступно» в зонах с резервом, не зарезервируется = «Доступно» в зонах "
+                           "без резерва. В Excel: детали по строкам с итогами, сводка по зонам, итоги по товарам, "
+                           "все данные Magnit Stock и лист «Не найдено».")
         period = st.date_input("Период (для движений)", value=(max(dmin, dmax - timedelta(days=13)), dmax),
                                min_value=dmin, max_value=dmax, key="mv_period", format="DD.MM.YYYY")
         d1, d2 = (period[0], period[1]) if isinstance(period, (tuple, list)) and len(period) == 2 else (None, None)
