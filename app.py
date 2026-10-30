@@ -1062,7 +1062,7 @@ def hub_card(g, today: date, err: str = "") -> str:
         body = ("<div class='hr hh'><span>Дата</span><span>Принято коробок</span><span>Не принято коробок</span></div>"
                 + rows)
     return (f"<div class='kpi left nov'><div class='ico'>{ic('box', '#FFFFFF', 24)}</div>"
-            f"<div class='mid'><div class='l'>Хаб ББ</div>"
+            f"<div class='mid'><div class='l'>Хаб отгрузка ББ</div>"
             f"<div class='s'>приёмка коробок · нажмите, чтобы открыть маршруты</div></div>"
             f"<div class='hubt'>{body}</div></div>")
 
@@ -2751,7 +2751,7 @@ if page == PAGES[0] and not hub_open:
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", kpi_box(None, "WMS Сборка шт", "", "all", status=status_breakdown(df_all)),
+        tap("all", kpi_box(None, "Штук по статусам", "", "all", status=status_breakdown(df_all)),
             go_orders, ("Все", ALL))
     with k2:
         tap("hub", hub_card(hub_g, now.date(), hub_err), open_hub)
