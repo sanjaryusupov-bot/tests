@@ -78,9 +78,10 @@ BOXES_TAB = "Ответы на форму (1)"
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
-# Категория и приоритет заказов (для Узуммаркет): вкладка «Лист1»
+# Категория, приоритет и колонки D / I / O заказов (для Узуммаркет): вкладка «Лист1»
 CAT_SHEET_ID = "1qaIGoF4PYPV2GZyvCN7D_kRQlchan6ZlAz2sl77TIhQ"
 CAT_GID = "0"
+UX_COLS = [(3, "Отгрузка"), (8, "Дата отгрузки Uzum"), (14, "Статус заказа")]   # D, I, O (индексы с нуля)
 
 # Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table, hub_table)
 MB_STOCK_T = 48     # «Stock Invoice Sku Cell» — история снимков остатков
@@ -124,7 +125,8 @@ CHAT_KEEP = 300                         # сколько последних со
 CHAT_MAX = 500                          # максимальная длина сообщения
 CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
 CHAT_FRESH_SEC = 9                      # сколько секунд висит всплывающее уведомление у колокольчика
-CHAT_POLL_MS = 2500                     # как часто открытое окно чата обновляется, мс
+CHAT_POLL_MS = 2500                     # как часто обновляется только список сообщений в окне чата, мс
+TRUCK_ANIMATE = True                    # False — машинка стоит без какой-либо анимации (колёса, покачивание)
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -257,22 +259,23 @@ def status_breakdown(frame) -> list:
 
 # ───────────────────────── Грузовик на линии отгрузки ─────────────────────────
 # CSS общий: подключается и в основную страницу, и в карточку-«iframe» с таймером.
+# Анимации линии убраны (линия статичная). Машинка остаётся; TRUCK_ANIMATE=False останавливает и её.
 TRUCK_CSS = """
 .lane { position:relative; padding-top:26px; margin-top:2px; }
 .truck { position:absolute; top:0; left:clamp(62px, var(--p, 0%), 100%); width:58px; height:28px;
-         transform:translateX(-100%); z-index:3; pointer-events:none;
-         animation:tarrive 2.4s cubic-bezier(.2,.7,.2,1) both; }
+         transform:translateX(-100%); z-index:3; pointer-events:none; }
 .truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .5s ease-in-out infinite; }
 .truck .wh { animation:wspin .55s linear infinite; }
 .truck .sp { animation:tspeed .6s linear infinite; }
 .truck .bm { opacity:.9; }
 .truck.stop svg, .truck.stop .wh { animation:none; }
 .truck.stop .sp, .truck.stop .bm { display:none; }
-@keyframes tarrive { from { left:62px; } }
 @keyframes tbob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-.7px); } }
 @keyframes wspin { to { transform:rotate(360deg); } }
 @keyframes tspeed { 0% { opacity:0; transform:translateX(5px); } 40% { opacity:.8; } 100% { opacity:0; transform:translateX(-8px); } }
 """
+if not TRUCK_ANIMATE:
+    TRUCK_CSS += ".truck, .truck svg, .truck .wh, .truck .sp { animation:none !important; }\n"
 
 
 def truck_svg() -> str:
@@ -520,8 +523,9 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
                      50% { transform:translateY(-3px); filter:drop-shadow(0 5px 10px rgba(224,51,143,.45)); } }
 .lt-one img { animation:ltfloat 3s ease-in-out infinite; }
 
-/* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн», на логотип, на кнопку чата и при наборе текста */
-.st-key-onl_open, .st-key-go_home, .st-key-chat_open, .st-key-chat_poll, .st-key-chat_ping {
+/* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн», на логотип, на кнопку чата,
+   на комментарий в колокольчике и при наборе текста в чате */
+.st-key-onl_open, .st-key-go_home, .st-key-chat_open, .st-key-chat_ping, [class*="st-key-cmgo_"] {
   position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
   overflow:hidden; opacity:0; pointer-events:none; }
 
@@ -575,9 +579,18 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
 .bell-pop .bp-cm { margin-bottom:10px; }
 .bell-pop .cm { padding:6px 10px; margin-top:5px; border-radius:10px; background:$head; border:1px solid $line;
-                border-left:3px solid $accent; font-size:.74rem; color:$ink; line-height:1.4; }
+                border-left:3px solid $accent; font-size:.74rem; color:$ink; line-height:1.4;
+                cursor:pointer; transition:border-color .15s, background .15s; }
+.bell-pop .cm:hover { border-color:$accent; background:$accent_soft; }
 .bell-pop .cm b { display:block; font-size:.7rem; color:$accent; margin-bottom:1px; }
 .bell-pop .cm small { display:block; color:$mute; font-size:.64rem; margin-top:2px; }
+
+/* переход к виджету из колокольчика: короткая подсветка карточки (без постоянной анимации) */
+.cm-flash { border-radius:16px; animation:cmflash 2.4s ease-out 1; }
+@keyframes cmflash {
+  0%, 55% { box-shadow:0 0 0 3px $accent, 0 0 28px $glow; }
+  100% { box-shadow:0 0 0 0 transparent; }
+}
 
 /* всплывающее уведомление у колокольчика (новое сообщение чата) */
 .bell-toast { position:absolute; right:-12px; top:calc(100% + 12px); width:280px; max-width:80vw; z-index:9998;
@@ -601,26 +614,49 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .stApp [data-testid="stPopover"] button:hover { color:$accent; border-color:$accent; }
 .stApp [data-testid="stPopover"] button p { font-size:.74rem; color:inherit; }
 
+/* ── окна (чат, посетители): размытый фон под окном ── */
+div[data-testid="stDialog"] { background:rgba(5,7,20,.5) !important;
+                              backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+div[data-testid="stDialog"]:has(.st-key-chat_panel) div[role="dialog"] {
+  border-radius:22px; border:1px solid rgba(139,61,255,.35);
+  box-shadow:0 28px 90px rgba(0,0,0,.6), 0 0 0 1px rgba(224,51,143,.12); }
+
 /* ── окно чата ── */
 .chat-hi { font-size:.85rem; color:$mute; margin-bottom:6px; }
-.chat-me { font-size:.85rem; color:$mute; }
-.chat-me b { color:$accent; }
-.chatbox { display:flex; flex-direction:column-reverse; gap:6px; min-height:220px; max-height:360px; overflow-y:auto;
-           padding:10px; border:1px solid $line; border-radius:14px; background:$head; }
-.chatbox .msg { max-width:82%; padding:7px 11px; border-radius:14px; font-size:.84rem; line-height:1.35; word-break:break-word; }
-.chatbox .msg b { display:block; font-size:.68rem; opacity:.85; margin-bottom:1px; }
-.chatbox .msg small { display:block; font-size:.6rem; opacity:.7; text-align:right; margin-top:2px; }
-.chatbox .msg.me { align-self:flex-end; background:linear-gradient(135deg,$g1,$g2); color:#fff; border-bottom-right-radius:4px; }
+.chat-head { display:flex; align-items:center; gap:10px; }
+.chat-head .cav { width:38px; height:38px; border-radius:50%; flex:none; display:flex; align-items:center;
+                  justify-content:center; color:#fff; font-weight:800; font-size:.8rem; }
+.chat-head .ct { display:flex; flex-direction:column; line-height:1.2; min-width:0; }
+.chat-head .ct b { color:$ink; font-size:.92rem; }
+.chat-head .ct span { color:$mute; font-size:.72rem; }
+.chatbox { display:flex; flex-direction:column-reverse; gap:3px; height:390px; overflow-y:auto; padding:12px;
+           border:1px solid $line; border-radius:18px; background:$head; overscroll-behavior:contain; }
+.chatbox .mrow { display:flex; align-items:flex-end; gap:8px; }
+.chatbox .mrow.me { justify-content:flex-end; }
+.chatbox .mrow.first { margin-top:7px; }
+.chatbox .mav { width:28px; height:28px; border-radius:50%; flex:none; display:flex; align-items:center;
+                justify-content:center; color:#fff; font-weight:800; font-size:.62rem; }
+.chatbox .mav.sp { background:none; }
+.chatbox .msg { max-width:78%; padding:7px 12px 5px; border-radius:16px; font-size:.84rem; line-height:1.35;
+                word-break:break-word; }
+.chatbox .msg b { display:block; font-size:.68rem; margin-bottom:1px; }
+.chatbox .msg small { display:block; font-size:.58rem; opacity:.7; text-align:right; margin-top:1px; }
+.chatbox .msg.me { background:linear-gradient(135deg,$g1,$g2); color:#fff; border-bottom-right-radius:5px;
+                   box-shadow:0 6px 18px $glow; }
 .chatbox .msg.me small { color:#fff; }
-.chatbox .msg.ot { align-self:flex-start; background:$card; border:1px solid $line; color:$ink; border-bottom-left-radius:4px; }
-.chatbox .msg.ot b { color:$accent; }
+.chatbox .msg.ot { background:$card; border:1px solid $line; color:$ink; border-bottom-left-radius:5px; }
+.chatbox .msg-day { align-self:center; margin:8px 0 4px; padding:2px 12px; border-radius:99px; font-size:.64rem;
+                    font-weight:700; color:$mute; background:$card; border:1px solid $line; }
 .chatbox .chat-empty { margin:auto; font-size:.8rem; color:$mute; }
-.typing { min-height:20px; margin:4px 2px 2px; font-size:.76rem; font-weight:600; color:$accent; }
+.typing { min-height:20px; margin:5px 2px 2px; font-size:.76rem; font-weight:600; color:$accent; }
 .typing i { display:inline-block; width:4px; height:4px; margin-left:3px; border-radius:50%; background:$accent;
             animation:tdot 1.2s infinite ease-in-out; }
 .typing i:nth-of-type(2) { animation-delay:.2s; }
 .typing i:nth-of-type(3) { animation-delay:.4s; }
 @keyframes tdot { 0%, 60%, 100% { opacity:.25; transform:translateY(0); } 30% { opacity:1; transform:translateY(-3px); } }
+.st-key-chat_send button { width:46px; height:46px; min-height:46px; padding:0; border-radius:50%; gap:0; }
+.st-key-chat_send button p { display:none; }
+.st-key-chat_panel .stTextInput input { height:46px; border-radius:99px !important; padding-left:18px !important; }
 
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
@@ -730,13 +766,15 @@ div[data-testid="stDialog"] h2, div[data-testid="stDialog"] button[aria-label="C
 .ship .bar { height:12px; margin:0; }
 .ship .cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; color:$mute; font-style:italic; }
 .pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; display:inline-block; }
-.bar { height:10px; background:$track; }
+
+/* ── линия прогресса: красивая, статичная (без анимации) ── */
+.bar { height:10px; background:$track; box-shadow:inset 0 1px 3px rgba(0,0,0,.35); }
 .bar > i { background-color:$g1;
-  background-image:linear-gradient(135deg, rgba(255,255,255,.24) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.24) 50%, rgba(255,255,255,.24) 75%, transparent 75%),
+  background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
                    linear-gradient(90deg,$g1,$g2,#3B82F6);
-  background-size:32px 32px, 100% 100%; animation:stripes 1s linear infinite; box-shadow:0 0 12px $glow; }
-@keyframes stripes { from { background-position:0 0, 0 0; } to { background-position:32px 0, 0 0; } }
+  box-shadow:0 0 12px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
+.day.full .bar > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+                                      linear-gradient(90deg,#1E9E5C,#34C27A); }
 
 /* ── строки по дням: цветная полоска, плашка с числом, стрелка (компактные) ── */
 .day { background:$row; border:1px solid $line; border-left:4px solid $g1; border-radius:12px; padding:8px 12px;
@@ -822,7 +860,7 @@ _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "
              truck_css=TRUCK_CSS)
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
-# иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить»
+# иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате
 _ir = []
 for _i, _nm in enumerate(NAV_ICON_NAMES):
     _ir.append(_icon_rule(f".st-key-nav_{_i} button", _nm, 18))
@@ -831,6 +869,7 @@ _theme_ic = "sun" if st.session_state.dark else "moon"
 _ir.append(_icon_rule(".st-key-theme_btn button", _theme_ic, 18))
 _ir.append(_icon_rule(".st-key-btn_theme2 button", _theme_ic, 17))
 _ir.append(_icon_rule(".st-key-btn_refresh button", "refresh", 17))
+_ir.append(_icon_rule(".st-key-chat_send button", "send", 18))
 st.markdown("<style>" + "".join(_ir) + "</style>", unsafe_allow_html=True)
 
 
@@ -992,8 +1031,9 @@ def load_boxes() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
-def load_cat_prio() -> dict:
-    """Лист1: Номер заказа 1С / Категория / Приоритет -> {номер заказа: (категория, приоритет)}."""
+def load_cat_prio():
+    """Лист1 -> ({номер заказа: (категория, приоритет, колонка D, колонка I, колонка O)}, [заголовки D, I, O]).
+    Колонки D / I / O берутся по их положению в таблице (D = 4-я, I = 9-я, O = 15-я)."""
     sheet = _client().open_by_key(CAT_SHEET_ID)
     ws = next((w for w in sheet.worksheets() if str(w.id) == CAT_GID), None) or sheet.worksheet("Лист1")
     rows = ws.get_all_values()
@@ -1004,14 +1044,22 @@ def load_cat_prio() -> dict:
         return next((i for i, h in enumerate(head) if key in h), default)
 
     i_o, i_c, i_p = col("номер заказа", 0), col("категори", 1), col("приоритет", 2)
+
+    def cell(r, i):
+        return r[i].strip() if len(r) > i else ""
+
+    heads = []
+    for idx, default in UX_COLS:
+        t = " ".join(rows[hi][idx].split()) if len(rows[hi]) > idx else ""
+        heads.append(t or default)
+
     out = {}
     for r in rows[hi + 1:]:
         if len(r) <= i_o or not r[i_o].strip():
             continue
-        cat = r[i_c].strip() if len(r) > i_c else ""
-        pr = r[i_p].strip() if len(r) > i_p else ""
-        out[r[i_o].strip().upper()] = (cat, pr)
-    return out
+        out[r[i_o].strip().upper()] = (cell(r, i_c), cell(r, i_p), cell(r, UX_COLS[0][0]),
+                                       cell(r, UX_COLS[1][0]), cell(r, UX_COLS[2][0]))
+    return out, heads
 
 
 # ───────────────────────── Metabase: остатки ─────────────────────────
@@ -2300,15 +2348,43 @@ def toggle_theme():
     st.session_state.dark = not st.session_state.dark
 
 
+def go_comment(key: str):
+    """Клик по комментарию в колокольчике: открыть страницу, где стоит виджет, и запомнить, к какому прокрутить."""
+    ss = st.session_state
+    ss.cm_focus = key
+    ss.hub_open = False
+    m = re.match(r"^oth(\d+)_", key)
+    if key.startswith("w_oth_") or m:
+        ss.page, ss.f_mode = PAGES[1], "Прочие заказы"
+        ss.oth_store = (EXCLUDE_STORES[int(m.group(1))]
+                        if m and int(m.group(1)) < len(EXCLUDE_STORES) else None)
+    elif key.startswith("hub_"):
+        ss.page, ss.hub_open = PAGES[0], True
+    elif key.startswith("pl_"):
+        ss.page, ss.f_mode = PAGES[1], "Маршрутизация"
+    elif key.startswith("bx_"):
+        ss.page = PAGES[3]
+    elif key.startswith("mg_"):
+        ss.page = PAGES[4]
+    elif key.startswith("an_"):
+        ss.page = PAGES[5]
+    else:
+        ss.page = PAGES[0]
+        if key.startswith("w_day_"):
+            ss.show_all_days = True          # день мог быть скрыт (готовность выше порога)
+
+
 def badge(collected: bool, new: bool = False) -> str:
     if new:
         return '<span class="badge no">не маршрутизирован</span>'
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
-def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False) -> str:
+def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=None) -> str:
+    """cp — колонки «Категория» и «Приоритет»; ux — три заголовка колонок D / I / O из Лист1 (для Узуммаркет)."""
     head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
             + ("<th>Категория</th><th>Приоритет</th>" if cp else "")
+            + (f"<th>{esc(ux[0])}</th><th>{esc(ux[1])}</th><th>{esc(ux[2])}</th>" if ux else "")
             + "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
     body = []
     for r in frame.head(limit).to_dict("records"):
@@ -2317,6 +2393,12 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False) -> st
             pr = r.get("Приоритет") or ""
             pr_html = f"<span class='badge no'>{esc(pr)}</span>" if pr else "—"
             extra = f"<td>{esc(r.get('Категория') or '—')}</td><td>{pr_html}</td>"
+        if ux:
+            stt = str(r.get("Статус заказа") or "")
+            st_html = (f"<span class='badge {'ok' if 'отгруж' in stt.lower() else 'no'}'>{esc(stt)}</span>"
+                       if stt else "—")
+            extra += (f"<td>{esc(r.get('Отгрузка') or '—')}</td><td>{esc(r.get('Дата Uzum') or '—')}</td>"
+                      f"<td>{st_html}</td>")
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'] or '—')}</td>{extra}<td class='num'>{n(r['Штук'])}</td>"
@@ -2338,7 +2420,8 @@ def routing_table(g: pd.DataFrame) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
-# ── карточка «Отгрузка сегодня» с живым таймером и едущим грузовиком (отдельный документ со своими стилями и скриптом) ──
+# ── карточка «Отгрузка сегодня» с живым таймером и машинкой (отдельный документ со своими стилями и скриптом) ──
+# Линия прогресса статичная: без бегущих полос и анимации при обновлении.
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -2356,22 +2439,18 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 .sync.ok { background:#1E9E5C; color:#fff; }
 .sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
-.bar { height:26px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0; }
-.bar > i { display:block; height:100%; border-radius:99px; background-color:#1E9E5C;
-  background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
-                   linear-gradient(90deg, #1E9E5C, #1E9E5C);
-  background-size:32px 32px, 100% 100%; animation:move 1s linear infinite; transition:background .6s; }
-.bar.g > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
-                   linear-gradient(90deg, $g1, $g2, #3B82F6); box-shadow:0 0 18px $glow; }
-.bar.y > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
-                   linear-gradient(90deg, #F2B705, #F2B705); }
-.bar.r > i { background-image:linear-gradient(135deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%,
-                                   rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%),
-                   linear-gradient(90deg, #D32F2F, #D32F2F); }
-@keyframes move { from { background-position:0 0, 0 0; } to { background-position:32px 0, 0 0; } }
+.bar { height:26px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
+       box-shadow:inset 0 1px 4px rgba(0,0,0,.35); }
+.bar > i { display:block; height:100%; border-radius:99px;
+  background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+                   linear-gradient(90deg, #1E9E5C, #34C27A);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35); }
+.bar.g > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+                              linear-gradient(90deg, $g1, $g2, #3B82F6); box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
+.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+                              linear-gradient(90deg, #F2B705, #FFD24D); }
+.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+                              linear-gradient(90deg, #D32F2F, #FF5A5A); }
 .bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
   gap:10px; color:#fff; font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
   text-shadow:0 1px 3px rgba(0,0,0,.6); }
@@ -2717,13 +2796,15 @@ def _cm_save(key: str, label: str):
 
 
 def comment_ui(key: str, label: str):
-    """Кнопка «Добавить комментарий» под виджетом: открывается окошко с полем и кнопкой «Сохранить»."""
+    """Кнопка «Добавить комментарий» под виджетом: открывается окошко с полем и кнопкой «Сохранить».
+    Контейнер cmu_<key> — «якорь»: к нему и к виджету над ним прокручивает клик по комментарию в колокольчике."""
     cur = comment_get(key)
     box = st.popover if hasattr(st, "popover") else st.expander
-    with box("Изменить комментарий" if cur else "Добавить комментарий"):
-        st.text_area("Комментарий", value=cur, key=f"cm_t_{key}", max_chars=COMMENT_MAX, height=90,
-                     label_visibility="collapsed", placeholder="Комментарий к виджету… (пусто — удалить)")
-        st.button("Сохранить", key=f"cm_s_{key}", on_click=_cm_save, args=(key, label))
+    with st.container(key=f"cmu_{key}"):
+        with box("Изменить комментарий" if cur else "Добавить комментарий"):
+            st.text_area("Комментарий", value=cur, key=f"cm_t_{key}", max_chars=COMMENT_MAX, height=90,
+                         label_visibility="collapsed", placeholder="Комментарий к виджету… (пусто — удалить)")
+            st.button("Сохранить", key=f"cm_s_{key}", on_click=_cm_save, args=(key, label))
 
 
 def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None, small: bool = False):
@@ -2748,7 +2829,7 @@ now = datetime.now(TZ)
 
 # верхняя панель: сколько человек онлайн + дата
 ONLINE_WINDOW = 40   # сколько секунд после последнего сигнала человек считается «онлайн»
-BEAT_EVERY = 3       # как часто вкладка подаёт сигнал и обновляется колокольчик/чат, сек
+BEAT_EVERY = 4       # как часто вкладка подаёт сигнал и обновляется колокольчик, сек
 
 
 @st.cache_resource
@@ -2805,7 +2886,8 @@ DEVICE_RU = {"mobile": "Телефон", "tablet": "Планшет", "desktop": 
 
 
 def ensure_client():
-    """Один раз за сессию: id посетителя (cookie браузера), имя из Telegram (cookie), браузер/ОС из заголовков."""
+    """Один раз за сессию: id посетителя (cookie браузера), имя из Telegram (cookie), браузер/ОС из заголовков.
+    Имя в чате подставляется автоматически (из cookie прошлого входа или из Telegram) — вводить его заново не нужно."""
     if "cinfo" in st.session_state:
         return
     ua, tz, lang, ck = "", "", "", {}
@@ -2830,6 +2912,10 @@ def ensure_client():
     chat_nm = unquote(str(ck.get("mc_chat", "") or ""))[:30]       # имя, под которым заходили в чат раньше
     st.session_state.vid = vid
     st.session_state.cinfo = dict(ua=parse_ua(ua), tz=tz, lang=lang, name=name, chat=chat_nm)
+    auto = " ".join((chat_nm or name).split())[:30]
+    if auto and not st.session_state.get("chat_name"):
+        st.session_state.chat_name = auto
+        st.session_state.chat_ck = auto if chat_nm else None      # cookie ещё нужно записать, если имя из Telegram
 
 
 @st.cache_resource
@@ -3097,12 +3183,16 @@ def _chat_login():
     nm = " ".join(str(st.session_state.get("chat_name_in", "")).split())[:30]
     if nm:
         st.session_state.chat_name = nm
+        st.session_state.chat_ck = None                         # cookie с новым именем запишем при показе окна
     else:
         st.session_state.chat_err = True
 
 
 def _chat_logout():
-    st.session_state.chat_name = ""
+    ss = st.session_state
+    ss.chat_name = ""
+    ss.chat_ck = None
+    ss.chat_clear = True                                        # забыть имя в cookie, чтобы не входить автоматически
 
 
 def _chat_ping():
@@ -3130,61 +3220,108 @@ def _chat_send():
         _chat_save(h)
 
 
-def _chat_body():
-    """Окно чата: сначала вход по имени, потом переписка. Обновляется скрытой кнопкой chat_poll (её нажимает скрипт)."""
+def _chat_hue(name: str) -> int:
+    return hashlib.md5(name.encode()).digest()[0] * 360 // 256
+
+
+@st.fragment(run_every=CHAT_POLL_MS / 1000)
+def _chat_live():
+    """Только список сообщений + «печатает…»: обновляется сам (раз в CHAT_POLL_MS), поле ввода при этом не трогается.
+    Скрытая кнопка chat_ping внутри этого блока — её жмёт скрипт при наборе текста; перерисовывается только он."""
     ss = st.session_state
-    h = _chat()
     me = ss.get("chat_name", "")
-
     if not me:
-        ss.setdefault("chat_name_in", (ss.get("cinfo") or {}).get("chat", ""))
-        st.markdown("<div class='chat-hi'>Введите имя, под которым вы будете писать в чате.</div>",
-                    unsafe_allow_html=True)
-        st.text_input("Ваше имя", key="chat_name_in", max_chars=30, placeholder="Например: Саша",
-                      on_change=_chat_login)
-        st.button("Войти в чат", key="chat_login", on_click=_chat_login, type="primary")
-        if ss.pop("chat_err", False):
-            st.warning("Введите имя.")
         return
-
-    c1, c2 = st.columns([3, 1.3], vertical_alignment="center")
-    with c1:
-        st.markdown(f"<div class='chat-me'>Вы вошли как <b>{esc(me)}</b></div>", unsafe_allow_html=True)
-    with c2:
-        st.button("Сменить имя", key="chat_logout", on_click=_chat_logout, width="stretch")
-
+    h = _chat()
     _chat_mark_read()
     nw, t_now = datetime.now(TZ), time.time()
     with h["lock"]:
-        msgs = list(h["msgs"][-80:])
+        msgs = list(h["msgs"][-60:])
         typers = sorted(k for k, t in h["typing"].items() if k != me and t_now - t < CHAT_TYPING_SEC)
 
-    rows = []
-    for m in reversed(msgs):                                  # column-reverse: новые сообщения внизу
+    light = 68 if ss.get("dark", True) else 40
+    items, prev, prev_day = [], None, None
+    for m in msgs:
         try:
             ts = datetime.fromisoformat(m["t"]).astimezone(TZ)
-            stamp = f"{ts:%H:%M}" if ts.date() == nw.date() else f"{ts:%d.%m %H:%M}"
         except Exception:
-            stamp = ""
+            ts = nw
+        if ts.date() != prev_day:
+            prev_day, prev = ts.date(), None
+            items.append(f"<div class='msg-day'>{'Сегодня' if ts.date() == nw.date() else f'{ts:%d.%m.%Y}'}</div>")
         mine = m["by"] == me
-        who = "" if mine else f"<b>{esc(m['by'])}</b>"
-        rows.append(f"<div class='msg {'me' if mine else 'ot'}'>{who}{esc(m['text'])}<small>{stamp}</small></div>")
-    if not rows:
-        rows.append("<div class='chat-empty'>Сообщений пока нет. Напишите первым.</div>")
+        first = prev != m["by"]
+        prev = m["by"]
+        hue = _chat_hue(m["by"])
+        if mine:
+            av, who = "", ""
+        elif first:
+            ini = "".join(w[0] for w in m["by"].split()[:2]).upper() or "?"
+            av = (f"<div class='mav' style='background:linear-gradient(135deg,hsl({hue},70%,52%),"
+                  f"hsl({(hue + 50) % 360},70%,45%))'>{esc(ini)}</div>")
+            who = f"<b style='color:hsl({hue},75%,{light}%)'>{esc(m['by'])}</b>"
+        else:
+            av, who = "<div class='mav sp'></div>", ""
+        items.append(f"<div class='mrow {'me' if mine else 'ot'}{' first' if first else ''}'>{av}"
+                     f"<div class='msg {'me' if mine else 'ot'}'>{who}{esc(m['text'])}<small>{ts:%H:%M}</small></div></div>")
+    if not msgs:
+        items.append("<div class='chat-empty'>Сообщений пока нет. Напишите первым.</div>")
     typing = ""
     if typers:
         typing = (f"{esc(', '.join(typers))} {'печатают' if len(typers) > 1 else 'печатает'}"
                   "<i></i><i></i><i></i>")
-    st.markdown(f"<div class='chatbox'>{''.join(rows)}</div><div class='typing'>{typing}</div>",
+    st.markdown(f"<div class='chatbox'>{''.join(reversed(items))}</div><div class='typing'>{typing}</div>",
                 unsafe_allow_html=True)
-
-    st.text_input("Сообщение", key="chat_msg", max_chars=CHAT_MAX, label_visibility="collapsed",
-                  placeholder="Напишите сообщение и нажмите Enter…", on_change=_chat_send)
-    st.button("Отправить", key="chat_send", on_click=_chat_send, type="primary")
-    st.button("poll", key="chat_poll")                         # скрытые кнопки: обновление окна и сигнал «печатает»
     st.button("ping", key="chat_ping", on_click=_chat_ping)
-    st.caption("Чат общий для всех, кто зашёл по имени. Сообщения хранятся на сервере (chat.json); "
-               "новое сообщение приходит в колокольчик красным уведомлением.")
+
+
+def _cookie_js(js: str):
+    components.html(f"<script>try{{var d=window.parent.document;{js}}}catch(e){{}}</script>", height=0)
+
+
+def _chat_body():
+    """Окно чата. Имя запоминается в cookie браузера: при следующем входе чат открывается сразу."""
+    ss = st.session_state
+    me = ss.get("chat_name", "")
+
+    with st.container(key="chat_panel"):
+        if not me:
+            if ss.pop("chat_clear", False):                     # вышли — стираем сохранённое имя
+                _cookie_js("d.cookie='mc_chat=; max-age=0; path=/; SameSite=Lax';")
+            ss.setdefault("chat_name_in", (ss.get("cinfo") or {}).get("chat", ""))
+            st.markdown("<div class='chat-hi'>Введите имя, под которым вы будете писать в чате. "
+                        "Оно запомнится, и в следующий раз вводить его не нужно.</div>", unsafe_allow_html=True)
+            st.text_input("Ваше имя", key="chat_name_in", max_chars=30, placeholder="Например: Саша",
+                          on_change=_chat_login)
+            st.button("Войти в чат", key="chat_login", on_click=_chat_login, type="primary")
+            if ss.pop("chat_err", False):
+                st.warning("Введите имя.")
+            return
+
+        if ss.get("chat_ck") != me:                             # один раз запоминаем имя в cookie на год
+            _cookie_js(f"d.cookie='mc_chat={quote(me, safe='')}; max-age=31536000; path=/; SameSite=Lax';")
+            ss.chat_ck = me
+
+        hue = _chat_hue(me)
+        ini = "".join(w[0] for w in me.split()[:2]).upper() or "?"
+        c1, c2 = st.columns([3, 1.3], vertical_alignment="center")
+        with c1:
+            st.markdown(f"<div class='chat-head'><div class='cav' style='background:linear-gradient(135deg,"
+                        f"hsl({hue},70%,52%),hsl({(hue + 50) % 360},70%,45%))'>{esc(ini)}</div>"
+                        f"<div class='ct'><b>Общий чат</b><span>Вы: {esc(me)}</span></div></div>",
+                        unsafe_allow_html=True)
+        with c2:
+            st.button("Сменить имя", key="chat_logout", on_click=_chat_logout, width="stretch")
+
+        _chat_live()
+
+        cA, cB = st.columns([6, 1], vertical_alignment="center")
+        with cA:
+            st.text_input("Сообщение", key="chat_msg", max_chars=CHAT_MAX, label_visibility="collapsed",
+                          placeholder="Напишите сообщение и нажмите Enter…", on_change=_chat_send)
+        with cB:
+            st.button("Отправить", key="chat_send", on_click=_chat_send, type="primary")
+        st.caption("Чат общий для всех, кто зашёл по имени. Новое сообщение приходит в колокольчик красным уведомлением.")
 
 
 def chat_dialog():
@@ -3192,7 +3329,7 @@ def chat_dialog():
     if _dlg is None:
         st.info("Чат работает в Streamlit 1.37 и новее.")
         return
-    _dlg("Чат", width="large")(_chat_body)()
+    _dlg("Чат", width="small")(_chat_body)()
 
 
 # ── сводка для колокольчика: что добавилось, собрано, отгружено ──
@@ -3308,16 +3445,23 @@ def _auto_track():
         pass
 
 
+def _cm_recent(limit: int) -> list:
+    """Последние комментарии: [(ключ виджета, данные)], новые сверху."""
+    cm = _cmts()
+    with cm["lock"]:
+        items = list(cm["data"].items())
+    return sorted(items, key=lambda kv: kv[1].get("t", ""), reverse=True)[:limit]
+
+
 def bell_html() -> str:
-    """Колокольчик: при наведении — комментарии к виджетам, новые сообщения чата и сводка за сегодня.
+    """Колокольчик: при наведении — комментарии к виджетам (клик по комментарию открывает этот виджет),
+    новые сообщения чата и сводка за сегодня.
     Горит красным и «звонит», если вы печатаете в чате, только что отправили сообщение или есть непрочитанные.
     Рядом — значок чата. Новое сообщение всплывает уведомлением у колокольчика."""
     h = _hist()
     with h["lock"]:
         events, cur = list(h["events"]), dict(h["cur"])
-    cm = _cmts()
-    with cm["lock"]:
-        comments = sorted(cm["data"].values(), key=lambda v: v.get("t", ""), reverse=True)[:15]
+    comments = _cm_recent(15)
     nw = datetime.now(TZ)
 
     def tt(e):
@@ -3360,17 +3504,18 @@ def bell_html() -> str:
     if cur:
         td += f"<br>Отгружено сегодня: <b>{n(cur['shipped_today'])}</b> зак. · <b>{n(cur['shipped_today_pcs'])}</b> шт"
 
-    # комментарии к виджетам
+    # комментарии к виджетам: клик открывает страницу и прокручивает к виджету
     cm_rows = []
-    for c in comments:
+    for k, c in comments:
         try:
             ts = datetime.fromisoformat(c["t"]).astimezone(TZ)
             stamp = f"{ts:%H:%M}" if ts.date() == nw.date() else f"{ts:%d.%m %H:%M}"
         except Exception:
             stamp = ""
         by = f" · {esc(c['by'])}" if c.get("by") else ""
-        cm_rows.append(f"<div class='cm'><b>{esc(c.get('label', 'Виджет'))}</b>{esc(c.get('text', ''))}"
-                       f"<small>{stamp}{by}</small></div>")
+        cm_rows.append(f"<div class='cm' data-cm='{zlib.crc32(k.encode())}' title='Открыть виджет'>"
+                       f"<b>{esc(c.get('label', 'Виджет'))}</b>{esc(c.get('text', ''))}"
+                       f"<small>{stamp}{by} · открыть виджет ›</small></div>")
     if not cm_rows:
         cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под любым виджетом кнопкой "
                        "«Добавить комментарий».</div>")
@@ -3379,8 +3524,8 @@ def bell_html() -> str:
            f"<div class='bp-box'>{chat_line}{now_box}<br>{td}</div>"
            f"<div class='bp-cm'><div class='bp-h' style='font-size:.82rem;margin:2px 0 0'>Комментарии к виджетам</div>"
            f"{''.join(cm_rows)}</div>"
-           f"<div class='bp-f'>Комментарии общие для всех. Сводка обновляется раз в {CACHE_SECONDS // 60} мин, "
-           f"пока дашборд открыт.</div></div>")
+           f"<div class='bp-f'>Нажмите на комментарий, чтобы перейти к виджету. Комментарии общие для всех. "
+           f"Сводка обновляется раз в {CACHE_SECONDS // 60} мин, пока дашборд открыт.</div></div>")
     badge_ = f"<i class='cnt'>{unread if unread < 100 else '99+'}</i>" if unread else ""
     chatbtn = f"<div class='chatbtn' title='Чат'>{ic('chat', P['mute'], 18)}{badge_}</div>"
     bell = f"<div class='bell{' red' if red else ''}'>{ic('bell', P['mute'], 18)}{dot}{toast}{pop}</div>"
@@ -3451,27 +3596,53 @@ with st.container(key="topbar"):
     with tb3:
         st.button("Тема", key="theme_btn", on_click=toggle_theme, help="Переключить день / ночь")
 
-# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн», логотип или значок чата
-if st.button("Онлайн", key="onl_open"):
-    online_dialog()
-if st.button("Чат", key="chat_open"):
-    chat_dialog()
+# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн», логотип, значок чата
+# или на комментарий в колокольчике
 st.button("На главную", key="go_home", on_click=set_page, args=(PAGES[0],))
+for _ck in [k for k, _ in _cm_recent(30)]:
+    st.button("к виджету", key=f"cmgo_{zlib.crc32(_ck.encode())}", on_click=go_comment, args=(_ck,))
 
-# скрипт в родительской странице: Ctrl+K, клики на «онлайн»/логотип/чат, «печатает», обновление чата,
-# cookie посетителя, имя из Telegram и имя в чате
+
+@st.fragment
+def _launchers():
+    """Окна открываются из отдельного небольшого блока: нажатие перерисовывает только его, а не всю страницу —
+    поэтому чат и «Посетители» открываются быстро."""
+    if st.button("Онлайн", key="onl_open"):
+        try:
+            online_dialog()
+        except Exception:
+            st.session_state.open_dlg = "onl"
+            st.rerun()
+    if st.button("Чат", key="chat_open"):
+        try:
+            chat_dialog()
+        except Exception:
+            st.session_state.open_dlg = "chat"
+            st.rerun()
+
+
+_launchers()
+_od = st.session_state.pop("open_dlg", None)      # запасной путь, если окно нельзя открыть из блока
+if _od == "onl":
+    online_dialog()
+elif _od == "chat":
+    chat_dialog()
+
+# скрипт в родительской странице: Ctrl+K, клики на «онлайн»/логотип/чат/комментарий в колокольчике,
+# «печатает», cookie посетителя, имя из Telegram и имя в чате
 _chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
 if(!d.__ck){d.__ck=1;
 d.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
 e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});
 d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+var c=t.closest('.cm[data-cm]');
+if(c){var bc=d.querySelector('.st-key-cmgo_'+c.getAttribute('data-cm')+' button');if(bc){bc.click();}return;}
 var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
 if(q){var b=d.querySelector(q);if(b){b.click();}}});
 d.addEventListener('input',function(e){var t=e.target;if(!t||!t.closest||!t.closest('.st-key-chat_msg'))return;
-var k=Date.now();if(k-(d.__tp||0)<1500)return;d.__tp=k;
-var b=d.querySelector('.st-key-chat_ping button');if(b){b.click();}});
-w.setInterval(function(){var b=d.querySelector('.st-key-chat_poll button');if(b){b.click();}},__POLL__);}
+var k=Date.now();if(k-(d.__tp||0)<3000)return;d.__tp=k;
+var b=d.querySelector('.st-key-chat_ping button');if(b){b.click();}});}
 var vid="__VID__",m=d.cookie.match(/(?:^|; )mc_vid=([^;]*)/);
 if(!m||m[1]!==vid){d.cookie='mc_vid='+vid+'; max-age=31536000; path=/; SameSite=Lax';}
 var cn=__CHAT__;if(cn){var ec=encodeURIComponent(cn),c3=d.cookie.match(/(?:^|; )mc_chat=([^;]*)/);
@@ -3482,7 +3653,7 @@ nm=((u.first_name||'')+' '+(u.last_name||'')).trim()||(u.username?'@'+u.username
 if(nm){var en=encodeURIComponent(nm),c2=d.cookie.match(/(?:^|; )mc_tg=([^;]*)/);
 if(!c2||c2[1]!==en){d.cookie='mc_tg='+en+'; max-age=31536000; path=/; SameSite=Lax';}}
 }catch(e){}</script>""".replace("__VID__", str(st.session_state.get("vid", "")))
-                .replace("__CHAT__", _chat_js).replace("__POLL__", str(CHAT_POLL_MS)), height=0)
+                .replace("__CHAT__", _chat_js), height=0)
 
 h1, h2, h3 = st.columns([6, 1.4, 1.5], vertical_alignment="bottom")
 with h1:
@@ -3713,7 +3884,7 @@ if page == PAGES[0] and not hub_open:
               lambda: backlog_excel(df, new_orders), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
 
     show_all = st.toggle(f"Показать все дни (по умолчанию только дни с готовностью ниже {HIDE_FROM_DAYS_PCT}%)",
-                         value=False)
+                         key="show_all_days")
     shown = summary if show_all else summary[summary["Процент"] < HIDE_FROM_DAYS_PCT]
     hidden = len(summary) - len(shown)
     if hidden:
@@ -3777,17 +3948,24 @@ if page == PAGES[1]:
             oi = EXCLUDE_STORES.index(sel)
             part = oth[oth["_k"] == norm_store(sel)]
             is_uz = norm_store(sel) == norm_store("Узуммаркет")
+            ux_heads = None
             if is_uz:
                 try:
-                    cpmap = load_cat_prio()
+                    cpmap, ux_heads = load_cat_prio()
                 except Exception as e:
-                    cpmap = {}
-                    st.warning("Не удалось прочитать категории и приоритеты. Откройте таблицу для почты сервисного "
-                               "аккаунта (роль «Читатель»).")
+                    cpmap, ux_heads = {}, [t for _, t in UX_COLS]
+                    st.warning("Не удалось прочитать категории, приоритеты и колонки D / I / O из «Лист1». "
+                               "Откройте таблицу для почты сервисного аккаунта (роль «Читатель»).")
                     st.caption(str(e))
                 key_ = part["Заказ"].str.strip().str.upper()
-                part = part.assign(Категория=key_.map(lambda k: cpmap.get(k, ("", ""))[0]),
-                                   Приоритет=key_.map(lambda k: cpmap.get(k, ("", ""))[1]))
+                empty5 = ("", "", "", "", "")
+                part = part.assign(**{
+                    "Категория": key_.map(lambda k: cpmap.get(k, empty5)[0]),
+                    "Приоритет": key_.map(lambda k: cpmap.get(k, empty5)[1]),
+                    "Отгрузка": key_.map(lambda k: cpmap.get(k, empty5)[2]),          # колонка D
+                    "Дата Uzum": key_.map(lambda k: cpmap.get(k, empty5)[3]),         # колонка I
+                    "Статус заказа": key_.map(lambda k: cpmap.get(k, empty5)[4]),     # колонка O
+                })
             nc, dn = part[~part["Собран"]], part[part["Собран"]]
             st.button("← Все прочие заказы", on_click=set_oth, args=(None,), key="oth_back")
             st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
@@ -3808,12 +3986,12 @@ if page == PAGES[1]:
                 if nc.empty:
                     st.success("Не собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(nc), cp=is_uz), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads), unsafe_allow_html=True)
                 st.markdown("<div class='sec'>Собранные заказы</div>", unsafe_allow_html=True)
                 if dn.empty:
                     st.info("Собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(dn), cp=is_uz), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads), unsafe_allow_html=True)
     elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
@@ -4327,3 +4505,14 @@ if page == PAGES[5]:
                                "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
                 st.caption("Заказы на магазин считаются по уникальным номерам заказов за выбранный период. "
                            "Комментарии к виджетам общие для всех и видны в колокольчике сверху.")
+
+# ───────────────────────── Переход к виджету по клику на комментарий в колокольчике ─────────────────────────
+if st.session_state.get("cm_focus"):
+    _focus = json.dumps(str(st.session_state.pop("cm_focus")))
+    components.html("""<script>(function(){var k=__K__,tries=0,d=window.parent.document;
+function go(){var c=d.querySelector('.st-key-cmu_'+k);
+if(!c){if(tries++<40){setTimeout(go,150);}return;}
+var el=c.previousElementSibling||c;
+el.scrollIntoView({behavior:'smooth',block:'center'});
+el.classList.add('cm-flash');setTimeout(function(){el.classList.remove('cm-flash');},2600);}
+go();})();</script>""".replace("__K__", _focus), height=0)
