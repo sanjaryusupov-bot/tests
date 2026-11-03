@@ -6,7 +6,8 @@
 (в [metabase] можно добавить hub_table = 61, stock_table, magnit_table).
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
-Файлы на сервере (необязательные): change_history.json (колокольчик), visitors.json (окно «Посетители»).
+Файлы на сервере (необязательные): change_history.json (колокольчик), visitors.json (окно «Посетители»),
+comments.json (комментарии к виджетам аналитики).
 """
 import hashlib
 import threading
@@ -115,6 +116,8 @@ HISTORY_FILE = "change_history.json"   # история изменений дл�
 HISTORY_KEEP = 300                      # сколько последних событий хранить
 VISITORS_FILE = "visitors.json"         # история посетителей для окна «онлайн» (файл на сервере)
 VIS_KEEP_DAYS = 30                      # сколько дней хранить посетителей и их сессии
+COMMENTS_FILE = "comments.json"         # комментарии к виджетам аналитики (файл на сервере)
+COMMENT_MAX = 300                       # максимальная длина комментария
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -244,46 +247,73 @@ def status_breakdown(frame) -> list:
     return out
 
 
-# ───────────────────────── Грузовая «Газель» на линии отгрузки ─────────────────────────
+# ───────────────────────── Грузовик на линии отгрузки ─────────────────────────
 # CSS общий: подключается и в основную страницу, и в карточку-«iframe» с таймером.
 TRUCK_CSS = """
-.lane { position:relative; padding-top:22px; margin-top:2px; }
-.truck { position:absolute; top:0; left:clamp(54px, var(--p, 0%), 100%); width:50px; height:26px;
+.lane { position:relative; padding-top:26px; margin-top:2px; }
+.truck { position:absolute; top:0; left:clamp(62px, var(--p, 0%), 100%); width:58px; height:28px;
          transform:translateX(-100%); z-index:3; pointer-events:none;
          animation:tarrive 2.4s cubic-bezier(.2,.7,.2,1) both; }
-.truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .42s ease-in-out infinite; }
-.truck .wh { animation:wspin .5s linear infinite; }
-.truck .sp { animation:tspeed .55s linear infinite; }
+.truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .5s ease-in-out infinite; }
+.truck .wh { animation:wspin .55s linear infinite; }
+.truck .sp { animation:tspeed .6s linear infinite; }
+.truck .bm { opacity:.9; }
 .truck.stop svg, .truck.stop .wh { animation:none; }
-.truck.stop .sp { display:none; }
-@keyframes tarrive { from { left:54px; } }
-@keyframes tbob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-1px); } }
+.truck.stop .sp, .truck.stop .bm { display:none; }
+@keyframes tarrive { from { left:62px; } }
+@keyframes tbob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-.7px); } }
 @keyframes wspin { to { transform:rotate(360deg); } }
-@keyframes tspeed { 0% { opacity:0; transform:translateX(5px); } 40% { opacity:.9; } 100% { opacity:0; transform:translateX(-8px); } }
+@keyframes tspeed { 0% { opacity:0; transform:translateX(5px); } 40% { opacity:.8; } 100% { opacity:0; transform:translateX(-8px); } }
 """
 
 
 def truck_svg() -> str:
-    """Грузовая «Газель»: будка, кабина со скошенным лобовым, колёса крутятся, сзади «ветер»."""
-    ink, g1, g2 = P["ink"], P["g1"], P["g2"]
+    """Грузовик (фургон): плоский стиль без толстых контуров — фургон с полосой, кабина со стеклом и зеркалом,
+    фары, бампер, колёса в арках и тень. Колёса крутятся, спереди свет фар, сзади «ветер»."""
+    g1, g2 = P["g1"], P["g2"]
 
     def wheel(cx):
-        return (f"<g class='wh' style='transform-origin:{cx}px 27px'>"
-                f"<circle cx='{cx}' cy='27' r='5.6' fill='#20232C' stroke='{ink}' stroke-width='.8'/>"
-                f"<circle cx='{cx}' cy='27' r='2.2' fill='#C9CEDA'/>"
-                f"<path d='M{cx} 22.6v8.8M{cx - 4.4} 27h8.8' stroke='#C9CEDA' stroke-width='1'/></g>")
+        return (f"<path d='M{cx - 6.6} 27 a6.6 6.6 0 0 1 13.2 0z' fill='#0E1016'/>"
+                f"<g class='wh' style='transform-origin:{cx}px 27.6px'>"
+                f"<circle cx='{cx}' cy='27.6' r='5' fill='#16181F'/>"
+                f"<circle cx='{cx}' cy='27.6' r='2.8' fill='#C9CEDA'/>"
+                f"<circle cx='{cx}' cy='27.6' r='1' fill='#5C6270'/>"
+                f"<path d='M{cx} 24.8v5.6M{cx - 2.8} 27.6h5.6' stroke='#8D93A3' stroke-width='.7'/></g>")
 
-    return ("<svg viewBox='0 0 64 34' xmlns='http://www.w3.org/2000/svg'>"
-            f"<g class='sp' stroke='{g1}' stroke-width='1.3' stroke-linecap='round'>"
-            "<path d='M-3 8h-9'/><path d='M-1 14h-11'/><path d='M-4 20h-8'/></g>"
-            f"<rect x='1' y='24' width='62' height='3' rx='1' fill='{ink}'/>"
-            f"<rect x='1.5' y='2.5' width='38' height='22' rx='2.5' fill='#FFFFFF' stroke='{ink}' stroke-width='1.3'/>"
-            f"<rect x='2' y='14' width='37' height='4' fill='{g1}'/><rect x='2' y='18' width='37' height='1.6' fill='{g2}'/>"
-            f"<path d='M41 8h8.5l6 8.5H61a2 2 0 0 1 2 2V24.5H41z' fill='{g1}' stroke='{ink}' "
-            f"stroke-width='1.3' stroke-linejoin='round'/>"
-            f"<path d='M43 10.2h5.6l4.4 6.3H43z' fill='#BFE3FF' stroke='{ink}' stroke-width='.9' stroke-linejoin='round'/>"
-            "<rect x='60.8' y='19.5' width='2.2' height='3' rx='.8' fill='#FFE27A'/>"
-            + wheel(12) + wheel(51) + "</svg>")
+    defs = ("<defs>"
+            f"<linearGradient id='tg1' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='{g1}'/>"
+            f"<stop offset='1' stop-color='{g2}'/></linearGradient>"
+            f"<linearGradient id='tg2' x1='0' y1='0' x2='1' y2='0'><stop offset='0' stop-color='{g1}'/>"
+            f"<stop offset='1' stop-color='{g2}'/></linearGradient>"
+            "<linearGradient id='tg3' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#FFFFFF'/>"
+            "<stop offset='1' stop-color='#CDD3DF'/></linearGradient>"
+            "<linearGradient id='tg4' x1='0' y1='0' x2='1' y2='0'><stop offset='0' stop-color='#FFF1B0' "
+            "stop-opacity='.55'/><stop offset='1' stop-color='#FFF1B0' stop-opacity='0'/></linearGradient>"
+            "</defs>")
+    return ("<svg viewBox='0 0 72 34' xmlns='http://www.w3.org/2000/svg'>" + defs +
+            f"<g class='sp' stroke='{g1}' stroke-width='1.2' stroke-linecap='round'>"
+            "<path d='M-3 9h-9'/><path d='M-1 15h-11'/><path d='M-4 21h-8'/></g>"
+            "<ellipse cx='36' cy='33' rx='33' ry='1.6' fill='rgba(0,0,0,.28)'/>"
+            "<path class='bm' d='M68 20.2 L76 16.6 V25.4 L68 22.6Z' fill='url(#tg4)'/>"
+            # фургон
+            "<rect x='2' y='3' width='41' height='22' rx='2' fill='url(#tg3)'/>"
+            "<rect x='2' y='3' width='41' height='1.3' rx='.6' fill='#FFFFFF' opacity='.7'/>"
+            "<rect x='2' y='15' width='41' height='3.2' fill='url(#tg2)'/>"
+            f"<rect x='2' y='18.6' width='41' height='1.1' fill='{g2}' opacity='.7'/>"
+            "<path d='M4.6 4.5V24' stroke='rgba(0,0,0,.14)' stroke-width='.7'/>"
+            "<rect x='1.6' y='21' width='1.3' height='2.6' rx='.5' fill='#E5384F'/>"
+            # рама
+            "<rect x='2' y='25' width='66' height='2.5' rx='1' fill='#2A2E39'/>"
+            # кабина
+            "<path d='M45 8H56Q58 8 59.2 9.8L64.5 17.2Q66.2 18.8 67.2 21V25H45Z' fill='url(#tg1)'/>"
+            "<path d='M47.5 10.4H55.4L60.4 17.2H47.5Z' fill='#9FD3F5'/>"
+            "<path d='M47.5 10.4H51L47.5 15Z' fill='#FFFFFF' opacity='.35'/>"
+            "<path d='M53 18.6V25' stroke='rgba(0,0,0,.28)' stroke-width='.7'/>"
+            "<rect x='54' y='19.6' width='2.4' height='.8' rx='.4' fill='#FFFFFF' opacity='.6'/>"
+            "<rect x='44.2' y='11.5' width='1.8' height='4.6' rx='.9' fill='#1F2330'/>"
+            "<rect x='66' y='20' width='2' height='2.6' rx='.8' fill='#FFF1B0'/>"
+            "<rect x='64.6' y='23.6' width='4.2' height='2' rx='1' fill='#3A3F4D'/>"
+            + wheel(13) + wheel(54) + "</svg>")
 
 
 def truck_html(pct, stop: bool) -> str:
@@ -509,6 +539,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tb-right .bell .bdot { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
                         background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
 .bell-pop { display:none; position:absolute; right:-12px; top:calc(100% + 12px); width:370px; max-width:88vw;
+            max-height:80vh; overflow-y:auto;
             z-index:9999; padding:14px 16px; border-radius:16px; background:$card; border:1px solid $line;
             box-shadow:0 18px 50px rgba(0,0,0,.45); white-space:normal; text-align:left; color:$ink; cursor:default; }
 .bell:hover .bell-pop, .bell-pop:hover { display:block; }
@@ -524,6 +555,19 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .ev small { color:$mute; font-size:.7rem; }
 .bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
+.bell-pop .bp-cm { margin-bottom:10px; }
+.bell-pop .cm { padding:6px 10px; margin-top:5px; border-radius:10px; background:$head; border:1px solid $line;
+                border-left:3px solid $accent; font-size:.74rem; color:$ink; line-height:1.4; }
+.bell-pop .cm b { display:block; font-size:.7rem; color:$accent; margin-bottom:1px; }
+.bell-pop .cm small { display:block; color:$mute; font-size:.64rem; margin-top:2px; }
+
+/* комментарий внутри виджета: мелкие буквы */
+.kpi .cmt { margin-top:5px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
+            color:$mute; font-style:italic; word-break:break-word; }
+.stApp [data-testid="stPopover"] button { min-height:30px; padding:.1rem .7rem; font-size:.74rem; border-radius:10px;
+                                          background:$head; color:$mute; border:1px solid $line; }
+.stApp [data-testid="stPopover"] button:hover { color:$accent; border-color:$accent; }
+.stApp [data-testid="stPopover"] button p { font-size:.74rem; color:inherit; }
 
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
@@ -1508,6 +1552,11 @@ def n(x) -> str:
     return f"{int(x):,}".replace(",", " ")
 
 
+def f1(x) -> str:
+    """Число с одним знаком после запятой: 3,4."""
+    return f"{float(x):.1f}".replace(".", ",")
+
+
 def esc(x) -> str:
     return html.escape(str(x))
 
@@ -2234,7 +2283,7 @@ def routing_table(g: pd.DataFrame) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
-# ── карточка «Отгрузка сегодня» с живым таймером и едущей «Газелью» (отдельный документ со своими стилями и скриптом) ──
+# ── карточка «Отгрузка сегодня» с живым таймером и едущим грузовиком (отдельный документ со своими стилями и скриптом) ──
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -2338,11 +2387,12 @@ def simple_table(head: list, rows: list, num_cols=()) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'><tr>{th}</tr>{''.join(body)}</table></div>"
 
 
-def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None, status=None) -> str:
+def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None, status=None, note="") -> str:
     """Карточка: иконка-плитка, число, подпись; справа — процент и мини-график (если переданы);
-    status — [(название, штук, цвет)] мелким шрифтом внизу карточки."""
+    status — [(название, штук, цвет)] мелким шрифтом внизу карточки; note — комментарий мелкими буквами."""
     icon = icon or KPI_ICON.get(cls, "box")
     sub_html = f"<div class='s'>{sub}</div>" if sub else ""
+    note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     trend = ""
     if spark or delta is not None:
         dh = ""
@@ -2362,7 +2412,7 @@ def kpi_box(value, label, sub="", cls="ok", spark=None, delta=None, icon=None, s
             sts = f"<div class='sts'><span class='stt'>шт по статусам</span>{items}</div>"
     v_html = "" if value is None else f"<div class='v'>{value}</div>"
     return (f"<div class='kpi {cls}{' nov' if value is None else ''}'><div class='ico'>{ic(icon, '#FFFFFF', 20)}</div>"
-            f"<div class='mid'>{v_html}<div class='l'>{esc(label)}</div>{sub_html}</div>{trend}{sts}</div>")
+            f"<div class='mid'>{v_html}<div class='l'>{esc(label)}</div>{sub_html}{note_html}</div>{trend}{sts}</div>")
 
 
 # ───────────────────────── Ручные рейсы: хранение ─────────────────────────
@@ -2567,6 +2617,56 @@ def plan_ui(dk: str, stores: dict):
         st.warning("Не удалось сохранить рейсы: дайте сервисному аккаунту доступ «Редактор» к таблице.")
     else:
         st.caption("Изменения сохраняются автоматически. Готовый файл — в разделе «Рейсы».")
+
+
+# ───────────────────────── Комментарии к виджетам аналитики ─────────────────────────
+@st.cache_resource
+def _cmts() -> dict:
+    """Общая для всех сессий память комментариев: {ключ виджета: {text, label, t, by}}."""
+    h = {"data": {}, "lock": threading.Lock()}
+    try:
+        with open(COMMENTS_FILE, encoding="utf-8") as f:
+            h["data"] = json.load(f).get("data", {})
+    except Exception:
+        pass
+    return h
+
+
+def comment_get(key: str) -> str:
+    return _cmts()["data"].get(key, {}).get("text", "")
+
+
+def _cm_save(key: str, label: str):
+    """Сохраняет (или удаляет, если текст пустой) комментарий к виджету."""
+    text = " ".join(str(st.session_state.get(f"cm_t_{key}", "")).split())[:COMMENT_MAX]
+    h = _cmts()
+    with h["lock"]:
+        if text:
+            by = (st.session_state.get("cinfo") or {}).get("name", "")
+            h["data"][key] = dict(text=text, label=label, t=datetime.now(TZ).isoformat(), by=by)
+        else:
+            h["data"].pop(key, None)
+        try:
+            with open(COMMENTS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"data": h["data"]}, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+
+def comment_ui(key: str, label: str):
+    """Кнопка «Добавить комментарий» под виджетом: открывается окошко с полем и кнопкой «Сохранить»."""
+    cur = comment_get(key)
+    box = st.popover if hasattr(st, "popover") else st.expander
+    with box("Изменить комментарий" if cur else "Добавить комментарий"):
+        st.text_area("Комментарий", value=cur, key=f"cm_t_{key}", max_chars=COMMENT_MAX, height=90,
+                     label_visibility="collapsed", placeholder="Комментарий к виджету… (пусто — удалить)")
+        st.button("Сохранить", key=f"cm_s_{key}", on_click=_cm_save, args=(key, label))
+
+
+def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None):
+    """Виджет аналитики с комментарием: сверху карточка (комментарий мелкими буквами внутри), снизу кнопка."""
+    st.markdown(kpi_box(value, label, sub, cls, icon=icon, note=comment_get(key)), unsafe_allow_html=True)
+    comment_ui(key, label)
 
 
 # ───────────────────────── Загрузка и шапка ─────────────────────────
@@ -2992,10 +3092,13 @@ def _auto_track():
 
 
 def bell_html() -> str:
-    """Колокольчик: при наведении — история изменений и сводка за сегодня."""
+    """Колокольчик: при наведении — комментарии к виджетам, история изменений и сводка за сегодня."""
     h = _hist()
     with h["lock"]:
         events, cur, since = list(h["events"]), dict(h["cur"]), h["since"]
+    cm = _cmts()
+    with cm["lock"]:
+        comments = sorted(cm["data"].values(), key=lambda v: v.get("t", ""), reverse=True)[:15]
     nw = datetime.now(TZ)
 
     def tt(e):
@@ -3006,7 +3109,7 @@ def bell_html() -> str:
     for e in today:
         sums[e["k"]][0] += e["n"]
         sums[e["k"]][1] += e["pcs"]
-    dot = "<i class='bdot'></i>" if any((nw - tt(e)).total_seconds() < 86400 for e in events) else ""
+    dot = "<i class='bdot'></i>" if (comments or any((nw - tt(e)).total_seconds() < 86400 for e in events)) else ""
 
     now_box = ""
     if cur:
@@ -3016,6 +3119,21 @@ def bell_html() -> str:
           f"({n(sums['collected'][1])} шт) · маршрутизировано <b>{n(sums['routed'][0])}</b>")
     if cur:
         td += f"<br>Отгружено сегодня: <b>{n(cur['shipped_today'])}</b> зак. · <b>{n(cur['shipped_today_pcs'])}</b> шт"
+
+    # комментарии к виджетам
+    cm_rows = []
+    for c in comments:
+        try:
+            ts = datetime.fromisoformat(c["t"]).astimezone(TZ)
+            stamp = f"{ts:%H:%M}" if ts.date() == nw.date() else f"{ts:%d.%m %H:%M}"
+        except Exception:
+            stamp = ""
+        by = f" · {esc(c['by'])}" if c.get("by") else ""
+        cm_rows.append(f"<div class='cm'><b>{esc(c.get('label', 'Виджет'))}</b>{esc(c.get('text', ''))}"
+                       f"<small>{stamp}{by}</small></div>")
+    if not cm_rows:
+        cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под виджетами в разделе «Аналитика».</div>")
+
     rows = []
     for e in reversed(events[-40:]):
         t = tt(e)
@@ -3027,8 +3145,11 @@ def bell_html() -> str:
         rows.append("<div class='empty'>Изменений пока не было. Они появятся здесь, как только в таблице "
                     "что-то добавится, соберётся или отгрузится.</div>")
     since_txt = f"{datetime.fromisoformat(since).astimezone(TZ):%d.%m %H:%M}" if since else "—"
-    pop = (f"<div class='bell-pop'><div class='bp-h'>История изменений</div>"
+    pop = (f"<div class='bell-pop'><div class='bp-h'>Уведомления</div>"
            f"<div class='bp-box'>{now_box}<br>{td}</div>"
+           f"<div class='bp-cm'><div class='bp-h' style='font-size:.82rem;margin:2px 0 0'>Комментарии</div>"
+           f"{''.join(cm_rows)}</div>"
+           f"<div class='bp-h' style='font-size:.82rem'>История изменений</div>"
            f"<div class='bp-list'>{''.join(rows)}</div>"
            f"<div class='bp-f'>Изменения фиксируются при обновлении данных (раз в {CACHE_SECONDS // 60} мин, пока "
            f"дашборд открыт). Отслеживание с {since_txt}.</div></div>")
@@ -3285,7 +3406,7 @@ if page == PAGES[0] and not hub_open:
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
-        frame = (ship_doc(sd, pct_ship, sm, sync_html), SHIP_IFRAME_H) if is_today else None   # сегодня: линия + таймер + «Газель»
+        frame = (ship_doc(sd, pct_ship, sm, sync_html), SHIP_IFRAME_H) if is_today else None   # сегодня: линия + таймер + грузовик
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
         elif frame:
@@ -3560,10 +3681,10 @@ if page == PAGES[3]:
             if st.session_state.get("b_shop") not in [ALL] + shops:
                 st.session_state.b_shop = ALL
 
-            f1, f2 = st.columns(2)
-            with f1:
+            f1_, f2_ = st.columns(2)
+            with f1_:
                 st.selectbox("Месяц", months, key="b_month", format_func=month_label)
-            with f2:
+            with f2_:
                 st.selectbox("Магазин", [ALL] + shops, key="b_shop",
                              format_func=lambda s: "Все магазины" if s == ALL else s)
             mk, shop = st.session_state.b_month, st.session_state.b_shop
@@ -3843,17 +3964,47 @@ if page == PAGES[5]:
                 done_ = int(part.loc[part["Собран"], "Штук"].sum())
                 colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#1E9E5C", "#E8A33D"])
 
+                def an_store_stats():
+                    """Второй ряд виджетов: заказы на один магазин (мин / среднее / макс) и среднее шт в одном заказе."""
+                    sp = part[part["Магазин"].astype(str).str.strip() != ""]
+                    cnt = sp.groupby("Магазин")["Заказ"].nunique() if not sp.empty else pd.Series(dtype=int)
+                    s1, s2, s3, s4 = st.columns(4)
+                    if cnt.empty:
+                        with s1:
+                            an_widget("an_min", "—", "мин. заказов на магазин", "нет данных по магазинам", "all")
+                        with s2:
+                            an_widget("an_avg", "—", "среднее заказов на магазин", "нет данных по магазинам", "all")
+                        with s3:
+                            an_widget("an_max", "—", "макс. заказов на магазин", "нет данных по магазинам", "all")
+                    else:
+                        mn_v, mx_v = int(cnt.min()), int(cnt.max())
+                        mn_names, mx_names = cnt[cnt == mn_v].index.tolist(), cnt[cnt == mx_v].index.tolist()
+
+                        def who(names):
+                            return esc(names[0]) + (f" и ещё {len(names) - 1}" if len(names) > 1 else "")
+
+                        with s1:
+                            an_widget("an_min", n(mn_v), "мин. заказов на магазин", who(mn_names), "blue", "box")
+                        with s2:
+                            an_widget("an_avg", f1(cnt.mean()), "среднее заказов на магазин",
+                                      f"по {n(len(cnt))} магазинам", "all", "box")
+                        with s3:
+                            an_widget("an_max", n(mx_v), "макс. заказов на магазин", who(mx_names), "left", "box")
+                    with s4:
+                        an_widget("an_pcs", n(round(tot / len(part))) if len(part) else "—",
+                                  "среднее шт в одном заказе", f"{n(tot)} шт · {n(len(part))} заказов", "ok", "box")
+
                 if not weekly:
                     g = part.groupby(["Дата", "Статус"], as_index=False)["Штук"].sum()
                     g["Дата"] = pd.to_datetime(g["Дата"])
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.markdown(kpi_box(n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all"),
-                                    unsafe_allow_html=True)
+                        an_widget("an_total", n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all")
                     with c2:
-                        st.markdown(kpi_box(n(done_), "собрано, шт", "", "ok"), unsafe_allow_html=True)
+                        an_widget("an_done", n(done_), "собрано, шт", "", "ok")
                     with c3:
-                        st.markdown(kpi_box(n(tot - done_), "не собрано, шт", "", "left"), unsafe_allow_html=True)
+                        an_widget("an_left", n(tot - done_), "не собрано, шт", "", "left")
+                    an_store_stats()
                     chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
                              .encode(x=alt.X("yearmonthdate(Дата):T", title=None,
                                              axis=alt.Axis(format="%d.%m", labelAngle=-45)),
@@ -3886,15 +4037,13 @@ if page == PAGES[5]:
                         sub3 = "нет предыдущей недели для сравнения"
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.markdown(kpi_box(n(tot), "всего штук за период", f"недель: {len(wk)}", "all"),
-                                    unsafe_allow_html=True)
+                        an_widget("an_wk_total", n(tot), "всего штук за период", f"недель: {len(wk)}", "all")
                     with c2:
-                        st.markdown(kpi_box(n(wk["Штук"].mean()), "в среднем за неделю, шт", "", "ok"),
-                                    unsafe_allow_html=True)
+                        an_widget("an_wk_avg", n(wk["Штук"].mean()), "в среднем за неделю, шт", "", "ok")
                     with c3:
-                        st.markdown(kpi_box(n(last_w["Штук"]), f"последняя неделя ({last_w['Неделя']})", sub3,
-                                            "left" if len(wk) > 1 and last_w["Δ"] < 0 else "ok"),
-                                    unsafe_allow_html=True)
+                        an_widget("an_wk_last", n(last_w["Штук"]), f"последняя неделя ({last_w['Неделя']})", sub3,
+                                  "left" if len(wk) > 1 and last_w["Δ"] < 0 else "ok")
+                    an_store_stats()
 
                     g = (part.groupby(["W", "Статус"], as_index=False)["Штук"].sum())
                     g["Неделя"] = (g["W"].dt.strftime("%d.%m") + "–" +
@@ -3933,3 +4082,5 @@ if page == PAGES[5]:
                 else:
                     st.caption("Столбец = один день. Зелёная часть — собранные штуки, оранжевая — не собранные "
                                "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
+                st.caption("Заказы на магазин считаются по уникальным номерам заказов за выбранный период. "
+                           "Комментарии к виджетам общие для всех и видны в колокольчике сверху.")
