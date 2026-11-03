@@ -6,8 +6,9 @@
 (в [metabase] можно добавить hub_table = 61, stock_table, magnit_table).
 requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
-Файлы на сервере (необязательные): change_history.json (колокольчик), visitors.json (окно «Посетители»),
-comments.json (комментарии к виджетам аналитики).
+Файлы на сервере (необязательные): change_history.json (сводка в колокольчике), visitors.json (окно «Посетители»),
+comments.json (комментарии к виджетам), chat.json (сообщения чата).
+Чат работает в Streamlit 1.37 и новее (окно st.dialog).
 """
 import hashlib
 import threading
@@ -112,12 +113,18 @@ CONTACT_TG = "@sanyspv"
 ADDRESS_URL = "https://yandex.uz/maps/-/CXb1NI87"
 ADDRESS_TEXT = "просп. Ханабадтепа, 2/1"
 LOGO_TOP_HEIGHT = 32  # высота логотипа в верхней панели, px
-HISTORY_FILE = "change_history.json"   # история изменений для колокольчика (запасной файл на сервере)
+HISTORY_FILE = "change_history.json"   # сводка изменений для колокольчика (запасной файл на сервере)
 HISTORY_KEEP = 300                      # сколько последних событий хранить
 VISITORS_FILE = "visitors.json"         # история посетителей для окна «онлайн» (файл на сервере)
 VIS_KEEP_DAYS = 30                      # сколько дней хранить посетителей и их сессии
-COMMENTS_FILE = "comments.json"         # комментарии к виджетам аналитики (файл на сервере)
+COMMENTS_FILE = "comments.json"         # комментарии к виджетам (файл на сервере)
 COMMENT_MAX = 300                       # максимальная длина комментария
+CHAT_FILE = "chat.json"                 # сообщения чата (файл на сервере)
+CHAT_KEEP = 300                         # сколько последних сообщений хранить
+CHAT_MAX = 500                          # максимальная длина сообщения
+CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
+CHAT_FRESH_SEC = 9                      # сколько секунд висит всплывающее уведомление у колокольчика
+CHAT_POLL_MS = 2500                     # как часто открытое окно чата обновляется, мс
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -154,6 +161,7 @@ _ICONS = {
     "sun": "<circle cx='12' cy='12' r='4'/><path d='M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41'/>",
     "moon": "<path d='M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z'/>",
     "bell": "<path d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/><path d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/>",
+    "chat": "<path d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/>",
     "calendar": "<rect x='3' y='4' width='18' height='18' rx='2'/><path d='M16 2v4M8 2v4M3 10h18'/>",
     "chev": "<path d='m9 18 6-6-6-6'/>",
     "download": "<path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><path d='m7 10 5 5 5-5'/><path d='M12 15V3'/>",
@@ -512,11 +520,12 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
                      50% { transform:translateY(-3px); filter:drop-shadow(0 5px 10px rgba(224,51,143,.45)); } }
 .lt-one img { animation:ltfloat 3s ease-in-out infinite; }
 
-/* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн» и на логотип */
-.st-key-onl_open, .st-key-go_home { position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
-                                    overflow:hidden; opacity:0; pointer-events:none; }
+/* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн», на логотип, на кнопку чата и при наборе текста */
+.st-key-onl_open, .st-key-go_home, .st-key-chat_open, .st-key-chat_poll, .st-key-chat_ping {
+  position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
+  overflow:hidden; opacity:0; pointer-events:none; }
 
-/* ── верхняя панель: поиск, онлайн, дата, колокольчик, тема ── */
+/* ── верхняя панель: поиск, онлайн, дата, колокольчик, чат, тема ── */
 .st-key-topbar { background:$card; border:1px solid $line; border-radius:16px; padding:8px 14px; margin-bottom:14px;
                  position:relative; z-index:60; }
 .st-key-topbar [data-testid="stHorizontalBlock"] { align-items:center; gap:.75rem; }
@@ -538,6 +547,21 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .tb-right .bell::after { content:""; position:absolute; left:-24px; right:-12px; top:100%; height:16px; }
 .tb-right .bell .bdot { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%;
                         background:#FF3B7F; box-shadow:0 0 8px #FF3B7F; }
+.tb-right .bell.red svg { stroke:#FF3B3B !important; filter:drop-shadow(0 0 6px #FF3B3B);
+                          transform-origin:50% 0; animation:bellring 1.8s ease-in-out infinite; }
+.tb-right .bell.red .bdot { width:10px; height:10px; background:#FF3B3B; box-shadow:0 0 10px #FF3B3B;
+                            animation:livepulse 1.1s ease-in-out infinite; }
+@keyframes bellring {
+  0%, 40%, 100% { transform:rotate(0); }
+  5% { transform:rotate(16deg); } 12% { transform:rotate(-14deg); } 19% { transform:rotate(10deg); }
+  26% { transform:rotate(-8deg); } 33% { transform:rotate(4deg); }
+}
+.tb-right .chatbtn { position:relative; display:flex; cursor:pointer; padding:5px; margin:-5px; border-radius:10px;
+                     transition:background .15s; }
+.tb-right .chatbtn:hover { background:$head; }
+.tb-right .chatbtn .cnt { position:absolute; top:-3px; right:-5px; min-width:15px; height:15px; padding:0 3px;
+                          border-radius:99px; background:#FF3B3B; color:#fff; font-size:.6rem; font-weight:800;
+                          display:flex; align-items:center; justify-content:center; box-shadow:0 0 8px rgba(255,59,59,.7); }
 .bell-pop { display:none; position:absolute; right:-12px; top:calc(100% + 12px); width:370px; max-width:88vw;
             max-height:80vh; overflow-y:auto;
             z-index:9999; padding:14px 16px; border-radius:16px; background:$card; border:1px solid $line;
@@ -547,12 +571,6 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .bp-box { padding:8px 10px; border-radius:10px; background:$head; border:1px solid $line;
                     font-size:.74rem; color:$mute; line-height:1.55; margin-bottom:8px; }
 .bell-pop .bp-box b { color:$ink; }
-.bell-pop .bp-list { max-height:300px; overflow-y:auto; }
-.bell-pop .ev { display:grid; grid-template-columns:78px 8px 1fr; gap:8px; align-items:baseline; padding:5px 0;
-                border-top:1px solid $line; font-size:.76rem; color:$ink; }
-.bell-pop .ev .t { color:$mute; font-size:.7rem; font-variant-numeric:tabular-nums; }
-.bell-pop .ev i { width:8px; height:8px; border-radius:50%; display:inline-block; }
-.bell-pop .ev small { color:$mute; font-size:.7rem; }
 .bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
 .bell-pop .bp-cm { margin-bottom:10px; }
@@ -561,13 +579,48 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .cm b { display:block; font-size:.7rem; color:$accent; margin-bottom:1px; }
 .bell-pop .cm small { display:block; color:$mute; font-size:.64rem; margin-top:2px; }
 
+/* всплывающее уведомление у колокольчика (новое сообщение чата) */
+.bell-toast { position:absolute; right:-12px; top:calc(100% + 12px); width:280px; max-width:80vw; z-index:9998;
+              padding:10px 12px; border-radius:14px; background:$card; border:1px solid #FF3B3B;
+              box-shadow:0 12px 36px rgba(255,59,59,.35); color:$ink; font-size:.78rem; line-height:1.35;
+              white-space:normal; text-align:left; pointer-events:none; animation:toastlife 9s ease forwards; }
+.bell-toast b { display:block; color:#FF3B3B; font-size:.72rem; margin-bottom:2px; }
+@keyframes toastlife {
+  0% { opacity:0; transform:translateY(-8px); }
+  6% { opacity:1; transform:none; }
+  88% { opacity:1; }
+  100% { opacity:0; visibility:hidden; }
+}
+
 /* комментарий внутри виджета: мелкие буквы */
 .kpi .cmt { margin-top:5px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
             color:$mute; font-style:italic; word-break:break-word; }
+.day .dcmt { margin-top:5px; font-size:.62rem; line-height:1.35; color:$mute; font-style:italic; word-break:break-word; }
 .stApp [data-testid="stPopover"] button { min-height:30px; padding:.1rem .7rem; font-size:.74rem; border-radius:10px;
                                           background:$head; color:$mute; border:1px solid $line; }
 .stApp [data-testid="stPopover"] button:hover { color:$accent; border-color:$accent; }
 .stApp [data-testid="stPopover"] button p { font-size:.74rem; color:inherit; }
+
+/* ── окно чата ── */
+.chat-hi { font-size:.85rem; color:$mute; margin-bottom:6px; }
+.chat-me { font-size:.85rem; color:$mute; }
+.chat-me b { color:$accent; }
+.chatbox { display:flex; flex-direction:column-reverse; gap:6px; min-height:220px; max-height:360px; overflow-y:auto;
+           padding:10px; border:1px solid $line; border-radius:14px; background:$head; }
+.chatbox .msg { max-width:82%; padding:7px 11px; border-radius:14px; font-size:.84rem; line-height:1.35; word-break:break-word; }
+.chatbox .msg b { display:block; font-size:.68rem; opacity:.85; margin-bottom:1px; }
+.chatbox .msg small { display:block; font-size:.6rem; opacity:.7; text-align:right; margin-top:2px; }
+.chatbox .msg.me { align-self:flex-end; background:linear-gradient(135deg,$g1,$g2); color:#fff; border-bottom-right-radius:4px; }
+.chatbox .msg.me small { color:#fff; }
+.chatbox .msg.ot { align-self:flex-start; background:$card; border:1px solid $line; color:$ink; border-bottom-left-radius:4px; }
+.chatbox .msg.ot b { color:$accent; }
+.chatbox .chat-empty { margin:auto; font-size:.8rem; color:$mute; }
+.typing { min-height:20px; margin:4px 2px 2px; font-size:.76rem; font-weight:600; color:$accent; }
+.typing i { display:inline-block; width:4px; height:4px; margin-left:3px; border-radius:50%; background:$accent;
+            animation:tdot 1.2s infinite ease-in-out; }
+.typing i:nth-of-type(2) { animation-delay:.2s; }
+.typing i:nth-of-type(3) { animation-delay:.4s; }
+@keyframes tdot { 0%, 60%, 100% { opacity:.25; transform:translateY(0); } 30% { opacity:1; transform:translateY(-3px); } }
 
 .st-key-theme_btn button { width:40px; height:40px; min-height:40px; padding:0; border-radius:12px; background:$head; gap:0; }
 .st-key-theme_btn button p { display:none; }
@@ -675,6 +728,7 @@ div[data-testid="stDialog"] h2, div[data-testid="stDialog"] button[aria-label="C
 .ship .sh-p { font-size:1.4rem; }
 .ship .sh-m { font-size:.78rem; margin-bottom:0; margin-top:6px; }
 .ship .bar { height:12px; margin:0; }
+.ship .cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; color:$mute; font-style:italic; }
 .pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; display:inline-block; }
 .bar { height:10px; background:$track; }
 .bar > i { background-color:$g1;
@@ -1354,7 +1408,7 @@ def hub_card_dates(g: pd.DataFrame, today: date) -> list:
     return ds[:HUB_CARD_DATES]
 
 
-def hub_card(g, today: date, err: str = "") -> str:
+def hub_card(g, today: date, err: str = "", note: str = "") -> str:
     """Карточка «Хаб ББ»: мелкая таблица Дата / Принято коробок / Не принято коробок."""
     if err or g is None or g.empty:
         body = "<div class='none'>Нет данных из Metabase</div>"
@@ -1365,9 +1419,10 @@ def hub_card(g, today: date, err: str = "") -> str:
             for d in hub_card_dates(g, today))
         body = ("<div class='hr hh'><span>Дата</span><span>Принято коробок</span><span>Не принято коробок</span></div>"
                 + rows)
+    note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     return (f"<div class='kpi left nov'><div class='ico'>{ic('box', '#FFFFFF', 20)}</div>"
             f"<div class='mid'><div class='l'>Хаб ББ</div>"
-            f"<div class='s'>приёмка коробок · нажмите, чтобы открыть маршруты</div></div>"
+            f"<div class='s'>приёмка коробок · нажмите, чтобы открыть маршруты</div>{note_html}</div>"
             f"<div class='hubt'>{body}</div></div>")
 
 
@@ -2323,12 +2378,15 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 .bar-t small { font-size:.74rem; font-weight:700; }
 .sh-m { font-size:.78rem; color:$mute; margin-top:7px; }
 .sh-m b { color:$ink; }
+.cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
+       color:$mute; font-style:italic; word-break:break-word; }
 $truck_css
 </style></head><body>
 <div class="ship">
   <div class="sh-top"><div class="sh-t">Отгрузка сегодня <span class="pdot"></span><small>$date</small>$clock$sync</div><div class="sh-p">$pct%</div></div>
   <div class="lane">$truck<div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div></div>
   <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
+  $note
 </div>
 <script>
 (function () {
@@ -2361,14 +2419,15 @@ $truck_css
 SHIP_IFRAME_H = 140   # высота карточки с таймером и машинкой, px
 
 
-def ship_doc(d: date, pct: int, sm: dict, sync: str = "") -> str:
+def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "") -> str:
     done_all = sm["total"] > 0 and sm["done"] >= sm["total"]
+    note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     vals = dict(P)
     vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, clock=ic("clock", P["mute"], 15),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
                 all_done="true" if sm["done"] >= sm["total"] else "false",
-                truck=truck_html(pct, done_all), truck_css=TRUCK_CSS)
+                truck=truck_html(pct, done_all), truck_css=TRUCK_CSS, note=note_html)
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -2593,14 +2652,12 @@ def plan_ui(dk: str, stores: dict):
         sub += f" · до лимита {n(rem)} шт" if rem >= 0 else f" · выше лимита на {n(-rem)} шт"
     k1, k2, k3 = st.columns(3)
     with k1:
-        st.markdown(kpi_box(n(cur_q), f"в машине: {ordinal(int(k)).lower()}", sub,
-                            "left" if limit and cur_q > limit else "ok"), unsafe_allow_html=True)
+        an_widget("pl_cur", n(cur_q), f"в машине: {ordinal(int(k)).lower()}", sub,
+                  "left" if limit and cur_q > limit else "ok")
     with k2:
-        st.markdown(kpi_box(n(assigned_q), "распределено всего", f"из {n(total_q)} шт · точек: {len(assigned)}", "all"),
-                    unsafe_allow_html=True)
+        an_widget("pl_all", n(assigned_q), "распределено всего", f"из {n(total_q)} шт · точек: {len(assigned)}", "all")
     with k3:
-        st.markdown(kpi_box(n(left_q), "осталось распределить", f"точек: {len(left)}", "left" if left else "ok"),
-                    unsafe_allow_html=True)
+        an_widget("pl_left", n(left_q), "осталось распределить", f"точек: {len(left)}", "left" if left else "ok")
 
     if left:
         st.caption("Не распределено: " + ", ".join(f"{s} ({n(stores[s]['qty'])})" for s in left))
@@ -2619,7 +2676,7 @@ def plan_ui(dk: str, stores: dict):
         st.caption("Изменения сохраняются автоматически. Готовый файл — в разделе «Рейсы».")
 
 
-# ───────────────────────── Комментарии к виджетам аналитики ─────────────────────────
+# ───────────────────────── Комментарии к виджетам ─────────────────────────
 @st.cache_resource
 def _cmts() -> dict:
     """Общая для всех сессий память комментариев: {ключ виджета: {text, label, t, by}}."""
@@ -2636,13 +2693,19 @@ def comment_get(key: str) -> str:
     return _cmts()["data"].get(key, {}).get("text", "")
 
 
+def cm_line(key: str, cls: str = "dcmt") -> str:
+    """Комментарий мелкими буквами для вставки в HTML (строки по дням и т.п.)."""
+    t = comment_get(key)
+    return f"<div class='{cls}'>💬 {esc(' '.join(t.split()))}</div>" if t else ""
+
+
 def _cm_save(key: str, label: str):
     """Сохраняет (или удаляет, если текст пустой) комментарий к виджету."""
     text = " ".join(str(st.session_state.get(f"cm_t_{key}", "")).split())[:COMMENT_MAX]
     h = _cmts()
     with h["lock"]:
         if text:
-            by = (st.session_state.get("cinfo") or {}).get("name", "")
+            by = st.session_state.get("chat_name") or (st.session_state.get("cinfo") or {}).get("name", "")
             h["data"][key] = dict(text=text, label=label, t=datetime.now(TZ).isoformat(), by=by)
         else:
             h["data"].pop(key, None)
@@ -2663,9 +2726,12 @@ def comment_ui(key: str, label: str):
         st.button("Сохранить", key=f"cm_s_{key}", on_click=_cm_save, args=(key, label))
 
 
-def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None):
-    """Виджет аналитики с комментарием: сверху карточка (комментарий мелкими буквами внутри), снизу кнопка."""
-    st.markdown(kpi_box(value, label, sub, cls, icon=icon, note=comment_get(key)), unsafe_allow_html=True)
+def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None, small: bool = False):
+    """Виджет с комментарием: сверху карточка (комментарий мелкими буквами внутри), снизу кнопка комментария."""
+    card = kpi_box(value, label, sub, cls, icon=icon, note=comment_get(key))
+    if small:
+        card = card.replace("class='v'", "class='v' style='font-size:1.2rem'")
+    st.markdown(card, unsafe_allow_html=True)
     comment_ui(key, label)
 
 
@@ -2682,7 +2748,7 @@ now = datetime.now(TZ)
 
 # верхняя панель: сколько человек онлайн + дата
 ONLINE_WINDOW = 40   # сколько секунд после последнего сигнала человек считается «онлайн»
-BEAT_EVERY = 15      # как часто вкладка подаёт сигнал, сек
+BEAT_EVERY = 3       # как часто вкладка подаёт сигнал и обновляется колокольчик/чат, сек
 
 
 @st.cache_resource
@@ -2761,8 +2827,9 @@ def ensure_client():
     if not re.fullmatch(r"[0-9a-f]{16}", vid):
         vid = uuid.uuid4().hex[:16]
     name = unquote(str(ck.get("mc_tg", "") or ""))[:60]
+    chat_nm = unquote(str(ck.get("mc_chat", "") or ""))[:30]       # имя, под которым заходили в чат раньше
     st.session_state.vid = vid
-    st.session_state.cinfo = dict(ua=parse_ua(ua), tz=tz, lang=lang, name=name)
+    st.session_state.cinfo = dict(ua=parse_ua(ua), tz=tz, lang=lang, name=name, chat=chat_nm)
 
 
 @st.cache_resource
@@ -2984,7 +3051,151 @@ def online_dialog():
     _dlg("Посетители", width="large")(_online_body)()
 
 
-# ── история изменений (для колокольчика): что добавилось, собрано, отгружено ──
+# ───────────────────────── Чат ─────────────────────────
+@st.cache_resource
+def _chat() -> dict:
+    """Общая для всех сессий память чата: сообщения, кто сейчас печатает, до какого сообщения что прочитано."""
+    h = {"msgs": [], "typing": {}, "seen": {}, "lock": threading.Lock()}
+    try:
+        with open(CHAT_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        h["msgs"] = d.get("msgs", [])
+        h["seen"] = {k: int(v) for k, v in d.get("seen", {}).items()}
+    except Exception:
+        pass
+    return h
+
+
+def _chat_save(h: dict):
+    try:
+        with open(CHAT_FILE, "w", encoding="utf-8") as f:
+            json.dump({"msgs": h["msgs"][-CHAT_KEEP:], "seen": h["seen"]}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _chat_last_id(h: dict) -> int:
+    return int(h["msgs"][-1]["id"]) if h["msgs"] else 0
+
+
+def chat_unread() -> int:
+    """Сколько новых сообщений от других ещё не открыто в чате (считается по посетителю)."""
+    h, ss = _chat(), st.session_state
+    vid, me = ss.get("vid", ""), ss.get("chat_name", "")
+    with h["lock"]:
+        seen = h["seen"].setdefault(vid, _chat_last_id(h))     # первый визит: старые сообщения не считаем
+        return sum(1 for m in h["msgs"] if int(m["id"]) > seen and m["by"] != me)
+
+
+def _chat_mark_read():
+    h, vid = _chat(), st.session_state.get("vid", "")
+    with h["lock"]:
+        h["seen"][vid] = _chat_last_id(h)
+
+
+def _chat_login():
+    nm = " ".join(str(st.session_state.get("chat_name_in", "")).split())[:30]
+    if nm:
+        st.session_state.chat_name = nm
+    else:
+        st.session_state.chat_err = True
+
+
+def _chat_logout():
+    st.session_state.chat_name = ""
+
+
+def _chat_ping():
+    """Сигнал «человек сейчас печатает» (его шлёт скрипт, пока идёт набор текста)."""
+    name = st.session_state.get("chat_name", "")
+    if name:
+        h = _chat()
+        with h["lock"]:
+            h["typing"][name] = time.time()
+
+
+def _chat_send():
+    ss = st.session_state
+    name = ss.get("chat_name", "")
+    text = " ".join(str(ss.get("chat_msg", "")).split())[:CHAT_MAX]
+    ss.chat_msg = ""
+    if not name or not text:
+        return
+    h = _chat()
+    with h["lock"]:
+        h["msgs"].append(dict(id=_chat_last_id(h) + 1, t=datetime.now(TZ).isoformat(), by=name, text=text))
+        h["msgs"] = h["msgs"][-CHAT_KEEP:]
+        h["typing"].pop(name, None)
+        h["seen"][ss.get("vid", "")] = _chat_last_id(h)
+        _chat_save(h)
+
+
+def _chat_body():
+    """Окно чата: сначала вход по имени, потом переписка. Обновляется скрытой кнопкой chat_poll (её нажимает скрипт)."""
+    ss = st.session_state
+    h = _chat()
+    me = ss.get("chat_name", "")
+
+    if not me:
+        ss.setdefault("chat_name_in", (ss.get("cinfo") or {}).get("chat", ""))
+        st.markdown("<div class='chat-hi'>Введите имя, под которым вы будете писать в чате.</div>",
+                    unsafe_allow_html=True)
+        st.text_input("Ваше имя", key="chat_name_in", max_chars=30, placeholder="Например: Саша",
+                      on_change=_chat_login)
+        st.button("Войти в чат", key="chat_login", on_click=_chat_login, type="primary")
+        if ss.pop("chat_err", False):
+            st.warning("Введите имя.")
+        return
+
+    c1, c2 = st.columns([3, 1.3], vertical_alignment="center")
+    with c1:
+        st.markdown(f"<div class='chat-me'>Вы вошли как <b>{esc(me)}</b></div>", unsafe_allow_html=True)
+    with c2:
+        st.button("Сменить имя", key="chat_logout", on_click=_chat_logout, width="stretch")
+
+    _chat_mark_read()
+    nw, t_now = datetime.now(TZ), time.time()
+    with h["lock"]:
+        msgs = list(h["msgs"][-80:])
+        typers = sorted(k for k, t in h["typing"].items() if k != me and t_now - t < CHAT_TYPING_SEC)
+
+    rows = []
+    for m in reversed(msgs):                                  # column-reverse: новые сообщения внизу
+        try:
+            ts = datetime.fromisoformat(m["t"]).astimezone(TZ)
+            stamp = f"{ts:%H:%M}" if ts.date() == nw.date() else f"{ts:%d.%m %H:%M}"
+        except Exception:
+            stamp = ""
+        mine = m["by"] == me
+        who = "" if mine else f"<b>{esc(m['by'])}</b>"
+        rows.append(f"<div class='msg {'me' if mine else 'ot'}'>{who}{esc(m['text'])}<small>{stamp}</small></div>")
+    if not rows:
+        rows.append("<div class='chat-empty'>Сообщений пока нет. Напишите первым.</div>")
+    typing = ""
+    if typers:
+        typing = (f"{esc(', '.join(typers))} {'печатают' if len(typers) > 1 else 'печатает'}"
+                  "<i></i><i></i><i></i>")
+    st.markdown(f"<div class='chatbox'>{''.join(rows)}</div><div class='typing'>{typing}</div>",
+                unsafe_allow_html=True)
+
+    st.text_input("Сообщение", key="chat_msg", max_chars=CHAT_MAX, label_visibility="collapsed",
+                  placeholder="Напишите сообщение и нажмите Enter…", on_change=_chat_send)
+    st.button("Отправить", key="chat_send", on_click=_chat_send, type="primary")
+    st.button("poll", key="chat_poll")                         # скрытые кнопки: обновление окна и сигнал «печатает»
+    st.button("ping", key="chat_ping", on_click=_chat_ping)
+    st.caption("Чат общий для всех, кто зашёл по имени. Сообщения хранятся на сервере (chat.json); "
+               "новое сообщение приходит в колокольчик красным уведомлением.")
+
+
+def chat_dialog():
+    """Открывает окно чата (вызывается после клика на значок чата)."""
+    if _dlg is None:
+        st.info("Чат работает в Streamlit 1.37 и новее.")
+        return
+    _dlg("Чат", width="large")(_chat_body)()
+
+
+# ── сводка для колокольчика: что добавилось, собрано, отгружено ──
 EV_META = {"added": ("добавлено заказов", "#E0338F"), "routed": ("маршрутизировано", "#8B3DFF"),
            "collected": ("собрано", "#34C27A"), "shipped": ("отгружено", "#3B9CFF"),
            "removed": ("убрано из таблицы", "#8C93B5")}
@@ -2993,7 +3204,7 @@ EV_META = {"added": ("добавлено заказов", "#E0338F"), "routed": 
 @st.cache_resource
 def _hist() -> dict:
     """Общая для всех сессий память: последний снимок заказов и список событий."""
-    h = {"snap": None, "events": [], "since": None, "cur": {}, "lock": threading.Lock()}
+    h = {"snap": None, "events": [], "since": None, "cur": {}, "last": 0.0, "lock": threading.Lock()}
     try:
         with open(HISTORY_FILE, encoding="utf-8") as f:
             d = json.load(f)
@@ -3074,7 +3285,13 @@ def record_history(df: pd.DataFrame, ship, new_orders):
 
 
 def _auto_track():
-    """Подтягивает данные (из кэша) и фиксирует изменения — работает, пока дашборд открыт хотя бы у кого-то."""
+    """Подтягивает данные (из кэша) и фиксирует изменения — работает, пока дашборд открыт хотя бы у кого-то.
+    Не чаще раза в 30 секунд (верхняя панель обновляется чаще ради чата)."""
+    h = _hist()
+    t = time.time()
+    if t - h.get("last", 0) < 30:
+        return
+    h["last"] = t
     try:
         d = load()
         try:
@@ -3092,10 +3309,12 @@ def _auto_track():
 
 
 def bell_html() -> str:
-    """Колокольчик: при наведении — комментарии к виджетам, история изменений и сводка за сегодня."""
+    """Колокольчик: при наведении — комментарии к виджетам, новые сообщения чата и сводка за сегодня.
+    Горит красным и «звонит», если вы печатаете в чате, только что отправили сообщение или есть непрочитанные.
+    Рядом — значок чата. Новое сообщение всплывает уведомлением у колокольчика."""
     h = _hist()
     with h["lock"]:
-        events, cur, since = list(h["events"]), dict(h["cur"]), h["since"]
+        events, cur = list(h["events"]), dict(h["cur"])
     cm = _cmts()
     with cm["lock"]:
         comments = sorted(cm["data"].values(), key=lambda v: v.get("t", ""), reverse=True)[:15]
@@ -3109,8 +3328,29 @@ def bell_html() -> str:
     for e in today:
         sums[e["k"]][0] += e["n"]
         sums[e["k"]][1] += e["pcs"]
-    dot = "<i class='bdot'></i>" if (comments or any((nw - tt(e)).total_seconds() < 86400 for e in events)) else ""
 
+    # чат: непрочитанные, набор текста, свежее сообщение
+    me = st.session_state.get("chat_name", "")
+    ch = _chat()
+    with ch["lock"]:
+        last = dict(ch["msgs"][-1]) if ch["msgs"] else None
+        typing_me = bool(me) and time.time() - ch["typing"].get(me, 0) < 3
+    unread = chat_unread()
+    age = None
+    if last:
+        try:
+            age = (nw - datetime.fromisoformat(last["t"]).astimezone(TZ)).total_seconds()
+        except Exception:
+            age = None
+    fresh = last is not None and age is not None and age < CHAT_FRESH_SEC
+    red = unread > 0 or typing_me or (fresh and last["by"] == me)
+    dot = "<i class='bdot'></i>" if (red or comments) else ""
+    toast = ""
+    if fresh:
+        txt = last["text"] if len(last["text"]) <= 140 else last["text"][:140] + "…"
+        toast = f"<div class='bell-toast'><b>{esc(last['by'])}</b>{esc(txt)}</div>"
+
+    chat_line = (f"Чат: новых сообщений <b>{n(unread)}</b><br>" if unread else "Чат: новых сообщений нет<br>")
     now_box = ""
     if cur:
         now_box = (f"Сейчас: не собрано <b>{n(cur['left'])}</b> зак. · бэклог <b>{n(cur['pcs_left'])}</b> шт"
@@ -3132,28 +3372,19 @@ def bell_html() -> str:
         cm_rows.append(f"<div class='cm'><b>{esc(c.get('label', 'Виджет'))}</b>{esc(c.get('text', ''))}"
                        f"<small>{stamp}{by}</small></div>")
     if not cm_rows:
-        cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под виджетами в разделе «Аналитика».</div>")
+        cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под любым виджетом кнопкой "
+                       "«Добавить комментарий».</div>")
 
-    rows = []
-    for e in reversed(events[-40:]):
-        t = tt(e)
-        label, col = EV_META.get(e["k"], (e["k"], "#8C93B5"))
-        stamp = f"{t:%H:%M}" if t.date() == nw.date() else f"{t:%d.%m %H:%M}"
-        rows.append(f"<div class='ev'><span class='t'>{stamp}</span><i style='background:{col}'></i>"
-                    f"<span><b>{n(e['n'])}</b> {label} <small>· {n(e['pcs'])} шт</small></span></div>")
-    if not rows:
-        rows.append("<div class='empty'>Изменений пока не было. Они появятся здесь, как только в таблице "
-                    "что-то добавится, соберётся или отгрузится.</div>")
-    since_txt = f"{datetime.fromisoformat(since).astimezone(TZ):%d.%m %H:%M}" if since else "—"
     pop = (f"<div class='bell-pop'><div class='bp-h'>Уведомления</div>"
-           f"<div class='bp-box'>{now_box}<br>{td}</div>"
-           f"<div class='bp-cm'><div class='bp-h' style='font-size:.82rem;margin:2px 0 0'>Комментарии</div>"
+           f"<div class='bp-box'>{chat_line}{now_box}<br>{td}</div>"
+           f"<div class='bp-cm'><div class='bp-h' style='font-size:.82rem;margin:2px 0 0'>Комментарии к виджетам</div>"
            f"{''.join(cm_rows)}</div>"
-           f"<div class='bp-h' style='font-size:.82rem'>История изменений</div>"
-           f"<div class='bp-list'>{''.join(rows)}</div>"
-           f"<div class='bp-f'>Изменения фиксируются при обновлении данных (раз в {CACHE_SECONDS // 60} мин, пока "
-           f"дашборд открыт). Отслеживание с {since_txt}.</div></div>")
-    return f"<div class='bell'>{ic('bell', P['mute'], 18)}{dot}{pop}</div>"
+           f"<div class='bp-f'>Комментарии общие для всех. Сводка обновляется раз в {CACHE_SECONDS // 60} мин, "
+           f"пока дашборд открыт.</div></div>")
+    badge_ = f"<i class='cnt'>{unread if unread < 100 else '99+'}</i>" if unread else ""
+    chatbtn = f"<div class='chatbtn' title='Чат'>{ic('chat', P['mute'], 18)}{badge_}</div>"
+    bell = f"<div class='bell{' red' if red else ''}'>{ic('bell', P['mute'], 18)}{dot}{toast}{pop}</div>"
+    return bell + chatbtn
 
 
 @st.fragment(run_every=BEAT_EVERY)
@@ -3209,7 +3440,7 @@ with st.sidebar:
 
 # ── верхняя панель ──
 with st.container(key="topbar"):
-    tb0, tb1, tb2, tb3 = st.columns([1.5, 4.5, 3.1, .55], vertical_alignment="center")
+    tb0, tb1, tb2, tb3 = st.columns([1.5, 4.3, 3.4, .55], vertical_alignment="center")
     with tb0:
         st.markdown(logo_html(LOGO_TOP_HEIGHT), unsafe_allow_html=True)
     with tb1:
@@ -3220,27 +3451,38 @@ with st.container(key="topbar"):
     with tb3:
         st.button("Тема", key="theme_btn", on_click=toggle_theme, help="Переключить день / ночь")
 
-# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн» или на логотип
+# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн», логотип или значок чата
 if st.button("Онлайн", key="onl_open"):
     online_dialog()
+if st.button("Чат", key="chat_open"):
+    chat_dialog()
 st.button("На главную", key="go_home", on_click=set_page, args=(PAGES[0],))
 
-# скрипт в родительской странице: Ctrl+K, клик на «онлайн»/логотип, cookie посетителя и имя из Telegram
+# скрипт в родительской странице: Ctrl+K, клики на «онлайн»/логотип/чат, «печатает», обновление чата,
+# cookie посетителя, имя из Telegram и имя в чате
+_chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
 if(!d.__ck){d.__ck=1;
 d.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
 e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});
 d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
-var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.brand')?'.st-key-go_home button':'');
-if(q){var b=d.querySelector(q);if(b){b.click();}}});}
+var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
+if(q){var b=d.querySelector(q);if(b){b.click();}}});
+d.addEventListener('input',function(e){var t=e.target;if(!t||!t.closest||!t.closest('.st-key-chat_msg'))return;
+var k=Date.now();if(k-(d.__tp||0)<1500)return;d.__tp=k;
+var b=d.querySelector('.st-key-chat_ping button');if(b){b.click();}});
+w.setInterval(function(){var b=d.querySelector('.st-key-chat_poll button');if(b){b.click();}},__POLL__);}
 var vid="__VID__",m=d.cookie.match(/(?:^|; )mc_vid=([^;]*)/);
 if(!m||m[1]!==vid){d.cookie='mc_vid='+vid+'; max-age=31536000; path=/; SameSite=Lax';}
+var cn=__CHAT__;if(cn){var ec=encodeURIComponent(cn),c3=d.cookie.match(/(?:^|; )mc_chat=([^;]*)/);
+if(!c3||c3[1]!==ec){d.cookie='mc_chat='+ec+'; max-age=31536000; path=/; SameSite=Lax';}}
 var nm='';try{var p=new URLSearchParams(w.location.hash.replace(/^#/,'')),dt=p.get('tgWebAppData');
 if(dt){var u=JSON.parse(new URLSearchParams(dt).get('user')||'{}');
 nm=((u.first_name||'')+' '+(u.last_name||'')).trim()||(u.username?'@'+u.username:'');}}catch(e){}
 if(nm){var en=encodeURIComponent(nm),c2=d.cookie.match(/(?:^|; )mc_tg=([^;]*)/);
 if(!c2||c2[1]!==en){d.cookie='mc_tg='+en+'; max-age=31536000; path=/; SameSite=Lax';}}
-}catch(e){}</script>""".replace("__VID__", str(st.session_state.get("vid", ""))), height=0)
+}catch(e){}</script>""".replace("__VID__", str(st.session_state.get("vid", "")))
+                .replace("__CHAT__", _chat_js).replace("__POLL__", str(CHAT_POLL_MS)), height=0)
 
 h1, h2, h3 = st.columns([6, 1.4, 1.5], vertical_alignment="bottom")
 with h1:
@@ -3336,14 +3578,13 @@ def hub_view():
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.markdown(kpi_box(n(ok_n), "принято коробок", "", "ok"), unsafe_allow_html=True)
+        an_widget("hub_ok", n(ok_n), "принято коробок", "", "ok")
     with c2:
-        st.markdown(kpi_box(n(no_n), "не принято коробок", "", "left" if no_n else "ok"), unsafe_allow_html=True)
+        an_widget("hub_no", n(no_n), "не принято коробок", "", "left" if no_n else "ok")
     with c3:
-        st.markdown(kpi_box(n(tot_n), "тотал, коробок", "", "all"), unsafe_allow_html=True)
+        an_widget("hub_tot", n(tot_n), "тотал, коробок", "", "all")
     with c4:
-        st.markdown(kpi_box(f"{pct}%", "тотал в процентах", "принято от общего числа", "blue"),
-                    unsafe_allow_html=True)
+        an_widget("hub_pct", f"{pct}%", "тотал в процентах", "принято от общего числа", "blue")
 
     st.markdown("<div class='sec'>По маршрутам</div>", unsafe_allow_html=True)
     keys = ["route"] if sel != ALL else ["date", "route"]
@@ -3399,20 +3640,23 @@ if page == PAGES[0] and not hub_open:
         is_today = (sd == now.date()) and sm["total"] > 0
         all_done = sm["total"] > 0 and sm["done"] >= sm["total"]
         truck_stop = (not is_today) or all_done          # прошлый день или всё отгружено — машина стоит
+        ship_note = comment_get("w_ship")
         ship_html = f"""<div class="ship"><div class="sh-top">
           <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
           <span class="pdot"></span><small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{ic('clock', P['mute'], 15)}{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
           <div class="lane">{truck_html(pct_ship, truck_stop)}<div class="bar"><i style="width:{pct_ship}%"></i></div></div>
           <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
-          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div></div>"""
-        frame = (ship_doc(sd, pct_ship, sm, sync_html), SHIP_IFRAME_H) if is_today else None   # сегодня: линия + таймер + грузовик
+          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div>{cm_line('w_ship', 'cmt')}</div>"""
+        ship_h = SHIP_IFRAME_H + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
+        frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note), ship_h) if is_today else None   # сегодня: линия + таймер + грузовик
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
         elif frame:
             components.html(frame[0], height=frame[1])
         else:
             st.markdown(ship_html, unsafe_allow_html=True)
+        comment_ui("w_ship", "Отгрузка сегодня")
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
@@ -3427,13 +3671,17 @@ if page == PAGES[0] and not hub_open:
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
     k1, k2, k3 = st.columns(3)
     with k1:
-        tap("all", kpi_box(None, "WMS Сборка шт", "", "all", status=status_breakdown(df_all)),
+        tap("all", kpi_box(None, "WMS Сборка шт", "", "all", status=status_breakdown(df_all),
+                           note=comment_get("w_all")),
             go_orders, ("Все", ALL))
+        comment_ui("w_all", "WMS Сборка шт")
     with k2:
-        tap("hub", hub_card(hub_g, now.date(), hub_err), open_hub)
+        tap("hub", hub_card(hub_g, now.date(), hub_err, comment_get("w_hub")), open_hub)
+        comment_ui("w_hub", "Хаб ББ")
     with k3:
-        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs),
+        tap("pcs", kpi_box(n(pcs_left), "бэклог, шт", "", "blue", spark=s_pcs, note=comment_get("w_pcs")),
             go_orders, ("Не собрано", ALL))
+        comment_ui("w_pcs", "бэклог, шт")
     st.caption("Нажмите на карточку, чтобы открыть подробности.")
     if hub_err:
         st.caption(f"Хаб ББ недоступен: {hub_err}")
@@ -3456,9 +3704,10 @@ if page == PAGES[0] and not hub_open:
             tap(key, f"""<div class="day {'urg' if d_ is not None and (d_ - now.date()).days <= 3 else 'amb'}">
               <div class="d">{d_html}</div>
               <div class="mid"><span class="badge no">не маршрутизировано</span>
-              <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div></div>
+              <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div>{cm_line('w_' + key)}</div>
               <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 16)}</div></div>""",
                 go_orders, ("Не собрано", target))
+            comment_ui(f"w_{key}", f"Не маршрутизировано {fmt_date(d_) if d_ is not None else 'без даты'}")
 
     xl_button("Выгрузить бэклог в Excel",
               lambda: backlog_excel(df, new_orders), f"backlog_{now:%Y-%m-%d}.xlsx", "dl_backlog")
@@ -3479,9 +3728,10 @@ if page == PAGES[0] and not hub_open:
           <div class="d">{fmt_date(d)}<small>{WEEKDAYS[d.weekday()]}, {d:%Y}</small></div>
           <div class="mid"><div class="bar"><i style="width:{r['Процент']}%"></i></div>
           <div class="meta">собрано <b>{r['Собрано']}</b> зак. ({n(r['Штук собрано'])} шт) · осталось <b>{r['Осталось']}</b> зак.
-          ({n(left_pcs)} шт) · всего {r['Заказов']} зак., {n(r['Штук'])} шт</div></div>
+          ({n(left_pcs)} шт) · всего {r['Заказов']} зак., {n(r['Штук'])} шт</div>{cm_line(f'w_day_{d:%Y%m%d}')}</div>
           <div class="pct">{r['Процент']}%<small>собрано</small></div><div class="chev">{ic('chev', P['mute'], 16)}</div></div>""",
             go_orders, ("Собрано" if r["Осталось"] == 0 else "Не собрано", d))
+        comment_ui(f"w_day_{d:%Y%m%d}", f"Сводка {fmt_date(d)}")
 
 # ───────────────────────── 2. Заказы ─────────────────────────
 if page == PAGES[1]:
@@ -3519,10 +3769,12 @@ if page == PAGES[1]:
                     tap(f"oth_{i}", kpi_box(n(len(nc)), name,
                         f"не собрано заказов · {n(nc['Штук'].sum())} шт<br>"
                         f"собрано: {n(len(dn))} зак. · {n(dn['Штук'].sum())} шт",
-                        "left" if len(nc) else "ok", icon="box"),
+                        "left" if len(nc) else "ok", icon="box", note=comment_get(f"w_oth_{i}")),
                         set_oth, (name,))
+                    comment_ui(f"w_oth_{i}", name)
             st.caption("Нажмите на карточку, чтобы открыть список заказов магазина.")
         else:
+            oi = EXCLUDE_STORES.index(sel)
             part = oth[oth["_k"] == norm_store(sel)]
             is_uz = norm_store(sel) == norm_store("Узуммаркет")
             if is_uz:
@@ -3541,15 +3793,13 @@ if page == PAGES[1]:
             st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
             o1, o2, o3, o4 = st.columns(4)
             with o1:
-                st.markdown(kpi_box(n(len(nc)), "не собрано заказов", "", "left" if len(nc) else "ok"),
-                            unsafe_allow_html=True)
+                an_widget(f"oth{oi}_nc", n(len(nc)), f"{sel}: не собрано заказов", "", "left" if len(nc) else "ok")
             with o2:
-                st.markdown(kpi_box(n(nc["Штук"].sum()), "не собрано, шт", "", "left" if len(nc) else "ok"),
-                            unsafe_allow_html=True)
+                an_widget(f"oth{oi}_ncp", n(nc["Штук"].sum()), f"{sel}: не собрано, шт", "", "left" if len(nc) else "ok")
             with o3:
-                st.markdown(kpi_box(n(len(dn)), "собрано заказов", "", "ok"), unsafe_allow_html=True)
+                an_widget(f"oth{oi}_dn", n(len(dn)), f"{sel}: собрано заказов", "", "ok")
             with o4:
-                st.markdown(kpi_box(n(dn["Штук"].sum()), "собрано, шт", "", "ok"), unsafe_allow_html=True)
+                an_widget(f"oth{oi}_dnp", n(dn["Штук"].sum()), f"{sel}: собрано, шт", "", "ok")
 
             if part.empty:
                 st.info("Заказов этого магазина нет.")
@@ -3701,27 +3951,23 @@ if page == PAGES[3]:
                 total_b, recs, n_shops = int(m["Коробок"].sum()), len(m), m["Магазин"].nunique()
                 c1, c2, c3, c4 = st.columns(4)
                 with c1:
-                    st.markdown(kpi_box(n(total_b), "коробок за месяц", f"{recs} записей"), unsafe_allow_html=True)
+                    an_widget("bx_total", n(total_b), "коробок за месяц", f"{recs} записей")
                 with c2:
                     if shop == ALL:
-                        st.markdown(kpi_box(n(n_shops), "магазинов", "прислали данные", "all"), unsafe_allow_html=True)
+                        an_widget("bx_shops", n(n_shops), "магазинов", "прислали данные", "all")
                     else:
-                        st.markdown(kpi_box(n(round(total_b / recs)), "в среднем за запись", "коробок", "all"),
-                                    unsafe_allow_html=True)
+                        an_widget("bx_avg", n(round(total_b / recs)), "в среднем за запись", "коробок", "all")
                 with c3:
                     top = m.groupby("Магазин")["Коробок"].sum().sort_values(ascending=False)
                     if shop == ALL:
-                        st.markdown(kpi_box(esc(top.index[0]), "больше всего коробок",
-                                            f"{n(top.iloc[0])} шт", "left").replace("class='v'", "class='v' style='font-size:1.2rem'"),
-                                    unsafe_allow_html=True)
+                        an_widget("bx_top", esc(top.index[0]), "больше всего коробок",
+                                  f"{n(top.iloc[0])} шт", "left", small=True)
                     else:
                         mx = m.loc[m["Коробок"].idxmax()]
-                        st.markdown(kpi_box(n(mx["Коробок"]), "максимум за запись",
-                                            f"{mx['Время']:%d.%m.%Y}", "left"), unsafe_allow_html=True)
+                        an_widget("bx_max", n(mx["Коробок"]), "максимум за запись", f"{mx['Время']:%d.%m.%Y}", "left")
                 with c4:
-                    st.markdown(kpi_box(n(last["Коробок"]), "последняя запись",
-                                        f"{esc(last['Магазин'])} · {last['Время']:%d.%m %H:%M}", "ok"),
-                                unsafe_allow_html=True)
+                    an_widget("bx_last", n(last["Коробок"]), "последняя запись",
+                              f"{esc(last['Магазин'])} · {last['Время']:%d.%m %H:%M}", "ok")
 
                 if shop == ALL:
                     st.markdown("<div class='sec'>Магазины за месяц</div>", unsafe_allow_html=True)
@@ -3814,17 +4060,14 @@ if page == PAGES[4]:
                 tot_can, tot_no = int(sk["can"].sum()), int(sk["no"].sum())
                 k1, k2, k3, k4 = st.columns(4)
                 with k1:
-                    st.markdown(kpi_box(n(tot_can), "можно зарезервировать, шт", "доступно в зонах с резервом", "ok"),
-                                unsafe_allow_html=True)
+                    an_widget("mg_can", n(tot_can), "можно зарезервировать, шт", "доступно в зонах с резервом", "ok")
                 with k2:
-                    st.markdown(kpi_box(n(tot_no), "не зарезервируется, шт", "доступно в зонах без резерва",
-                                        "left" if tot_no else "ok"), unsafe_allow_html=True)
+                    an_widget("mg_no", n(tot_no), "не зарезервируется, шт", "доступно в зонах без резерва",
+                              "left" if tot_no else "ok")
                 with k3:
-                    st.markdown(kpi_box(n(sk["loc"].sum()), "в ячейках всего, шт", f"позиций: {len(sk)}", "all"),
-                                unsafe_allow_html=True)
+                    an_widget("mg_loc", n(sk["loc"].sum()), "в ячейках всего, шт", f"позиций: {len(sk)}", "all")
                 with k4:
-                    st.markdown(kpi_box(n(sk["res"].sum()), "уже в резерве, шт", "Reserved", "blue"),
-                                unsafe_allow_html=True)
+                    an_widget("mg_res", n(sk["res"].sum()), "уже в резерве, шт", "Reserved", "blue")
 
                 rows = [[esc(r.sku), esc(r.name), n(r.loc), n(r.res), f"<b>{n(r.can)}</b>", f"<b>{n(r.no)}</b>"]
                         for r in sk.head(500).itertuples(index=False)]
