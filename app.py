@@ -2426,50 +2426,67 @@ SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:linear-gradient(135deg, $head, $card); border:1px solid $line; border-radius:16px;
-        box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 10px 30px $glow;
-        padding:10px 14px; margin:0 0 8px; box-sizing:border-box; }
-.sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
-.sh-t { font-weight:800; font-size:.98rem; color:$ink; display:flex; align-items:center; gap:8px; }
-.pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; }
-.sh-t small { font-weight:500; color:$mute; font-size:.76rem; margin-left:6px; }
-.sh-p { font-weight:800; font-size:1.4rem; letter-spacing:-0.02em; color:$ink; }
+.ship { background:linear-gradient(135deg, $head, $card); border:1px solid rgba(139,61,255,.55); border-radius:18px;
+        box-shadow:0 0 0 1px rgba(224,51,143,.18), 0 12px 34px $glow;
+        padding:12px 16px; margin:0 0 8px; box-sizing:border-box; }
+.sh-top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.sh-t { display:flex; align-items:center; gap:12px; min-width:0; }
+.sh-t .tr { display:flex; flex:none; }
+.sh-t b { font-weight:800; font-size:1.08rem; color:$ink; white-space:nowrap; }
+.pdot { width:9px; height:9px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; flex:none; }
+.sh-t small { font-weight:500; color:$mute; font-size:.88rem; }
+.sh-t .ci { display:flex; color:$mute; }
 .sync { display:inline-flex; width:18px; height:18px; border-radius:50%; align-items:center; justify-content:center;
-        margin-left:8px; vertical-align:middle; font-size:.7rem; font-weight:800; box-sizing:border-box; }
+        font-size:.7rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
 .sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
-.bar { height:26px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
+.sh-p { font-weight:800; font-size:1.5rem; letter-spacing:-0.02em; color:$ink; line-height:1; }
+
+/* линия: статичная, градиент розовый -> фиолетовый -> синий, текст по центру */
+.bar { height:28px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
        box-shadow:inset 0 1px 4px rgba(0,0,0,.35); }
 .bar > i { display:block; height:100%; border-radius:99px;
-  background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
-                   linear-gradient(90deg, #1E9E5C, #34C27A);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35); }
-.bar.g > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
-                              linear-gradient(90deg, $g1, $g2, #3B82F6); box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
-.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+  background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
+                   linear-gradient(90deg, #E0338F, #8B3DFF, #3B82F6);
+  box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
+.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
                               linear-gradient(90deg, #F2B705, #FFD24D); }
-.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
                               linear-gradient(90deg, #D32F2F, #FF5A5A); }
 .bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
-  gap:10px; color:#fff; font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
-  text-shadow:0 1px 3px rgba(0,0,0,.6); }
+  gap:8px; color:#fff; font-weight:700; font-size:.92rem; font-variant-numeric:tabular-nums;
+  text-shadow:0 1px 3px rgba(0,0,0,.55); }
 .bar-t small { font-size:.74rem; font-weight:700; }
-.sh-m { font-size:.78rem; color:$mute; margin-top:7px; }
-.sh-m b { color:$ink; }
-.cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
+.bar-t svg { flex:none; }
+
+/* нижняя строка: три блока с разделителями */
+.stats { display:flex; flex-wrap:wrap; align-items:center; row-gap:6px; margin-top:12px; font-size:.86rem; color:$mute; }
+.stt { display:flex; align-items:center; gap:8px; padding:0 18px; border-left:1px solid $line; white-space:nowrap; }
+.stt:first-child { padding-left:2px; border-left:none; }
+.stt b { color:$ink; font-weight:800; font-size:1.02rem; }
+.stt .ico { display:flex; flex:none; }
+.cmt { margin-top:8px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
        color:$mute; font-style:italic; word-break:break-word; }
 $truck_css
 </style></head><body>
 <div class="ship">
-  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <span class="pdot"></span><small>$date</small>$clock$sync</div><div class="sh-p">$pct%</div></div>
+  <div class="sh-top">
+    <div class="sh-t"><span class="tr">$truck_mini</span><b>$title</b><span class="pdot"></span>
+      <small>$date</small><span class="ci">$clock</span>$sync</div>
+    <div class="sh-p">$pct%</div>
+  </div>
   <div class="lane">$truck<div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div></div>
-  <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
+  <div class="stats">
+    <div class="stt"><span class="ico">$i_box</span><span>Отгружено <b>$done</b> из $total заказов</span></div>
+    <div class="stt"><span class="ico">$i_ok</span><span><b>$pcs_done</b> из $pcs шт</span></div>
+    <div class="stt"><span class="ico">$i_clk</span><span>осталось <b>$left</b> зак. ($pcs_left шт)</span></div>
+  </div>
   $note
 </div>
 <script>
 (function () {
-  var DONE = $all_done, TARGET = 17 * 3600;
+  var DONE = $all_done, LIVE = $live, TARGET = 17 * 3600, CHK = "$check_ico";
   var fmt = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit',
                                                second: '2-digit', hour12: false});
   function pad(x) { return (x < 10 ? '0' : '') + x; }
@@ -2479,8 +2496,9 @@ $truck_css
   }
   function tick() {
     var bar = document.getElementById('dl-bar'), box = document.getElementById('dl-time');
-    var s = nowSec(), left = TARGET - s, cls, h;
-    if (DONE) { cls = 'g'; h = '✓ Все заказы отгружены'; }
+    var s = nowSec(), left = TARGET - s, cls = 'g', h;
+    if (DONE) { h = CHK + 'Все заказы отгружены'; }
+    else if (!LIVE) { h = 'Отгружено $pct%'; }
     else {
       cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
       var a = Math.abs(left);
@@ -2491,22 +2509,38 @@ $truck_css
     box.innerHTML = h;
   }
   tick();
-  setInterval(tick, 1000);
+  if (LIVE && !DONE) { setInterval(tick, 1000); }
 })();
 </script></body></html>""")
 
-SHIP_IFRAME_H = 140   # высота карточки с таймером и машинкой, px
+SHIP_IFRAME_H = 156   # высота карточки, px
 
 
-def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "") -> str:
+def truck_mini() -> str:
+    """Маленький грузовик с «линиями скорости» слева от заголовка карточки."""
+    g1, g2 = P["g1"], P["g2"]
+    return ("<svg width='42' height='26' viewBox='0 0 42 26' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+            f"<g stroke='{g1}' stroke-width='1.7' stroke-linecap='round'>"
+            "<path d='M1 8h8'/><path d='M3 13h6'/><path d='M1 18h8'/></g>"
+            f"<rect x='12' y='5' width='16' height='13' rx='2' fill='{g1}'/>"
+            f"<path d='M29 9h5.5l4.5 4.5V18H29z' fill='{g2}'/>"
+            f"<circle cx='18' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/>"
+            f"<circle cx='34' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/></svg>")
+
+
+def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
+             title: str = "Отгрузка сегодня", live: bool = True) -> str:
     done_all = sm["total"] > 0 and sm["done"] >= sm["total"]
     note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     vals = dict(P)
-    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, clock=ic("clock", P["mute"], 15),
+    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, title=title,
+                clock=ic("clock", P["mute"], 16), truck_mini=truck_mini(),
+                i_box=ic("box", "#A66BFF", 18), i_ok=ic("check", "#A66BFF", 18), i_clk=ic("clock", "#5B8DEF", 18),
+                check_ico=ic("check", "#FFFFFF", 18),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
-                all_done="true" if sm["done"] >= sm["total"] else "false",
-                truck=truck_html(pct, done_all), truck_css=TRUCK_CSS, note=note_html)
+                all_done="true" if done_all else "false", live="true" if live else "false",
+                truck=truck_html(pct, done_all or not live), truck_css=TRUCK_CSS, note=note_html)
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -3820,7 +3854,9 @@ if page == PAGES[0] and not hub_open:
           <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
           ({n(sm['pcs'] - sm['pcs_done'])} шт)</div>{cm_line('w_ship', 'cmt')}</div>"""
         ship_h = SHIP_IFRAME_H + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
-        frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note), ship_h) if is_today else None   # сегодня: линия + таймер + грузовик
+               frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
+                          title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
+                          live=is_today), ship_h)
         if sd in dates:
             tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
         elif frame:
