@@ -2440,7 +2440,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
     var card = document.getElementById('dl-card'), lb = document.getElementById('dl-lb'),
         box = document.getElementById('dl-time');
     var s = nowSec(), left = TARGET - s, cls = '';
-    if (DONE) { cls = 'done'; lb.textContent = 'Статус'; box.textContent = 'Все отгружены'; }
+    if (DONE) { cls = 'done'; lb.textContent = 'Статус'; box.textContent = 'Все заказы отгружены'; }
     else if (!LIVE) { lb.textContent = 'Выполнено'; box.textContent = '$pct%'; }
     else {
       cls = s < 12 * 3600 ? '' : (s < 16 * 3600 ? 'y' : 'r');
