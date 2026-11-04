@@ -126,7 +126,6 @@ CHAT_MAX = 500                          # максимальная длина с
 CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
 CHAT_FRESH_SEC = 9                      # сколько секунд висит всплывающее уведомление у колокольчика
 CHAT_POLL_MS = 2500                     # как часто обновляется только список сообщений в окне чата, мс
-TRUCK_ANIMATE = True                    # False — машинка стоит без какой-либо анимации (колёса, покачивание)
 
 # Палитра «M Cosmetic Dark»: тёмно-синий фон, малиново-фиолетовый неоновый градиент
 LIGHT = dict(scheme="light", ink="#1B1B22", paper="#F4F4F6", card="#FFFFFF", line="#ECE7EA",
@@ -256,86 +255,6 @@ def status_breakdown(frame) -> list:
     if other:
         out.append(("ДРУГИЕ", other, "#8C93B5"))
     return out
-
-
-# ───────────────────────── Грузовик на линии отгрузки ─────────────────────────
-# CSS общий: подключается и в основную страницу, и в карточку-«iframe» с таймером.
-# Анимации линии убраны (линия статичная). Машинка остаётся; TRUCK_ANIMATE=False останавливает и её.
-# При 0% и 100% машинки на линии нет (truck_html возвращает пустую строку), отступ над линией тогда сжимается.
-TRUCK_CSS = """
-.lane { position:relative; padding-top:26px; margin-top:2px; }
-.lane:not(:has(.truck)) { padding-top:6px; }
-.truck { position:absolute; top:0; left:clamp(62px, var(--p, 0%), 100%); width:58px; height:28px;
-         transform:translateX(-100%); z-index:3; pointer-events:none; }
-.truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .5s ease-in-out infinite; }
-.truck .wh { animation:wspin .55s linear infinite; }
-.truck .sp { animation:tspeed .6s linear infinite; }
-.truck .bm { opacity:.9; }
-.truck.stop svg, .truck.stop .wh { animation:none; }
-.truck.stop .sp, .truck.stop .bm { display:none; }
-@keyframes tbob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-.7px); } }
-@keyframes wspin { to { transform:rotate(360deg); } }
-@keyframes tspeed { 0% { opacity:0; transform:translateX(5px); } 40% { opacity:.8; } 100% { opacity:0; transform:translateX(-8px); } }
-"""
-if not TRUCK_ANIMATE:
-    TRUCK_CSS += ".truck, .truck svg, .truck .wh, .truck .sp { animation:none !important; }\n"
-
-
-def truck_svg() -> str:
-    """Грузовик (фургон): плоский стиль без толстых контуров — фургон с полосой, кабина со стеклом и зеркалом,
-    фары, бампер, колёса в арках и тень. Колёса крутятся, спереди свет фар, сзади «ветер»."""
-    g1, g2 = P["g1"], P["g2"]
-
-    def wheel(cx):
-        return (f"<path d='M{cx - 6.6} 27 a6.6 6.6 0 0 1 13.2 0z' fill='#0E1016'/>"
-                f"<g class='wh' style='transform-origin:{cx}px 27.6px'>"
-                f"<circle cx='{cx}' cy='27.6' r='5' fill='#16181F'/>"
-                f"<circle cx='{cx}' cy='27.6' r='2.8' fill='#C9CEDA'/>"
-                f"<circle cx='{cx}' cy='27.6' r='1' fill='#5C6270'/>"
-                f"<path d='M{cx} 24.8v5.6M{cx - 2.8} 27.6h5.6' stroke='#8D93A3' stroke-width='.7'/></g>")
-
-    defs = ("<defs>"
-            f"<linearGradient id='tg1' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='{g1}'/>"
-            f"<stop offset='1' stop-color='{g2}'/></linearGradient>"
-            f"<linearGradient id='tg2' x1='0' y1='0' x2='1' y2='0'><stop offset='0' stop-color='{g1}'/>"
-            f"<stop offset='1' stop-color='{g2}'/></linearGradient>"
-            "<linearGradient id='tg3' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#FFFFFF'/>"
-            "<stop offset='1' stop-color='#CDD3DF'/></linearGradient>"
-            "<linearGradient id='tg4' x1='0' y1='0' x2='1' y2='0'><stop offset='0' stop-color='#FFF1B0' "
-            "stop-opacity='.55'/><stop offset='1' stop-color='#FFF1B0' stop-opacity='0'/></linearGradient>"
-            "</defs>")
-    return ("<svg viewBox='0 0 72 34' xmlns='http://www.w3.org/2000/svg'>" + defs +
-            f"<g class='sp' stroke='{g1}' stroke-width='1.2' stroke-linecap='round'>"
-            "<path d='M-3 9h-9'/><path d='M-1 15h-11'/><path d='M-4 21h-8'/></g>"
-            "<ellipse cx='36' cy='33' rx='33' ry='1.6' fill='rgba(0,0,0,.28)'/>"
-            "<path class='bm' d='M68 20.2 L76 16.6 V25.4 L68 22.6Z' fill='url(#tg4)'/>"
-            # фургон
-            "<rect x='2' y='3' width='41' height='22' rx='2' fill='url(#tg3)'/>"
-            "<rect x='2' y='3' width='41' height='1.3' rx='.6' fill='#FFFFFF' opacity='.7'/>"
-            "<rect x='2' y='15' width='41' height='3.2' fill='url(#tg2)'/>"
-            f"<rect x='2' y='18.6' width='41' height='1.1' fill='{g2}' opacity='.7'/>"
-            "<path d='M4.6 4.5V24' stroke='rgba(0,0,0,.14)' stroke-width='.7'/>"
-            "<rect x='1.6' y='21' width='1.3' height='2.6' rx='.5' fill='#E5384F'/>"
-            # рама
-            "<rect x='2' y='25' width='66' height='2.5' rx='1' fill='#2A2E39'/>"
-            # кабина
-            "<path d='M45 8H56Q58 8 59.2 9.8L64.5 17.2Q66.2 18.8 67.2 21V25H45Z' fill='url(#tg1)'/>"
-            "<path d='M47.5 10.4H55.4L60.4 17.2H47.5Z' fill='#9FD3F5'/>"
-            "<path d='M47.5 10.4H51L47.5 15Z' fill='#FFFFFF' opacity='.35'/>"
-            "<path d='M53 18.6V25' stroke='rgba(0,0,0,.28)' stroke-width='.7'/>"
-            "<rect x='54' y='19.6' width='2.4' height='.8' rx='.4' fill='#FFFFFF' opacity='.6'/>"
-            "<rect x='44.2' y='11.5' width='1.8' height='4.6' rx='.9' fill='#1F2330'/>"
-            "<rect x='66' y='20' width='2' height='2.6' rx='.8' fill='#FFF1B0'/>"
-            "<rect x='64.6' y='23.6' width='4.2' height='2' rx='1' fill='#3A3F4D'/>"
-            + wheel(13) + wheel(54) + "</svg>")
-
-
-def truck_html(pct, stop: bool) -> str:
-    """Машинка на линии: pct — на каком проценте стоит нос машины, stop — отгрузка закончилась (машина стоит).
-    При 0% и 100% машинки нет."""
-    if int(pct) <= 0 or int(pct) >= 100:
-        return ""
-    return f"<div class='truck{' stop' if stop else ''}' style='--p:{int(pct)}%'>{truck_svg()}</div>"
 
 
 CSS = Template("""
@@ -616,12 +535,12 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
   100% { opacity:0; visibility:hidden; }
 }
 
-/* комментарий внутри виджета: мелкие буквы, слабо мигает (только прозрачность — не нагружает страницу) */
-.kpi .cmt { margin-top:5px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
-            color:$mute; font-style:italic; word-break:break-word; }
-.day .dcmt { margin-top:5px; font-size:.62rem; line-height:1.35; color:$mute; font-style:italic; word-break:break-word; }
-.kpi .cmt, .day .dcmt, .ship .cmt { animation:cmblink 3.2s ease-in-out infinite; }
-@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.38; } }
+/* комментарий внутри виджета: мелкие буквы, заметно, но мягко мигает (только прозрачность — не нагружает страницу) */
+.kpi .cmt { margin-top:5px; padding-top:4px; border-top:1px dashed $line; font-size:.66rem; line-height:1.35;
+            color:$accent_ink; font-style:italic; word-break:break-word; }
+.day .dcmt { margin-top:5px; font-size:.66rem; line-height:1.35; color:$accent_ink; font-style:italic; word-break:break-word; }
+.kpi .cmt, .day .dcmt, .ship .cmt { animation:cmblink 2.6s ease-in-out infinite; }
+@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.35; } }
 .stApp [data-testid="stPopover"] button { min-height:30px; padding:.1rem .7rem; font-size:.74rem; border-radius:10px;
                                           background:$head; color:$mute; border:1px solid $line; }
 .stApp [data-testid="stPopover"] button:hover { color:$accent; border-color:$accent; }
@@ -772,7 +691,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .hubt .hr b.r { color:#F2A23D; }
 .hubt .none { font-size:.7rem; color:$mute; }
 
-/* ── карточка отгрузки (компактная) ── */
+/* ── карточка отгрузки на главной (компактная; основная карточка рисуется в iframe, см. SHIP_DOC) ── */
 .ship { border-radius:16px; border:1px solid rgba(139,61,255,.45); border-left:1px solid rgba(139,61,255,.45);
         background:linear-gradient(135deg, $head, $card); box-shadow:0 0 0 1px rgba(139,61,255,.12), 0 10px 30px $glow;
         padding:10px 14px; margin-bottom:8px; }
@@ -780,7 +699,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .ship .sh-p { font-size:1.4rem; }
 .ship .sh-m { font-size:.78rem; margin-bottom:0; margin-top:6px; }
 .ship .bar { height:12px; margin:0; }
-.ship .cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; color:$mute; font-style:italic; }
+.ship .cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.66rem; color:$accent_ink; font-style:italic; }
 .pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; display:inline-block; }
 
 /* ── линия прогресса: красивая, статичная (без анимации) ── */
@@ -866,14 +785,12 @@ header[data-testid="stHeader"] * { pointer-events:none; }
 .stApp[data-test-script-state="running"] .st-key-gsearch::before {
   opacity:1; animation:boltspin 2.8s linear infinite; }
 @keyframes boltspin { to { --bolt:360deg; } }
-$truck_css
 </style>
 """)
 _vals = dict(P)
 _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "#FFFFFF"),
              u_download_s=icon_uri("download", P["mute"]),
-             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""),
-             truck_css=TRUCK_CSS)
+             u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
 # иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате, закрытие окна
@@ -2446,74 +2363,68 @@ def routing_table(g: pd.DataFrame) -> str:
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
-# ── карточка «Отгрузка сегодня» с живым таймером и машинкой (отдельный документ со своими стилями и скриптом) ──
-# Линия прогресса статичная: без бегущих полос и анимации при обновлении. Машинка на линии — только между 1% и 99%.
+# ── карточка «Отгрузка сегодня»: строгий деловой стиль, живой таймер до 17:00 (отдельный документ со своим скриптом) ──
+# Без иконок-машинок и мигающих точек: заголовок, крупный процент, тонкая линия и четыре ячейки с цифрами.
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:linear-gradient(135deg, $head, $card); border:1px solid rgba(139,61,255,.55); border-radius:18px;
-        box-shadow:0 0 0 1px rgba(224,51,143,.18), 0 12px 34px $glow;
-        padding:12px 16px; margin:0 0 8px; box-sizing:border-box; }
-.sh-top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
-.sh-t { display:flex; align-items:center; gap:12px; min-width:0; }
-.sh-t .tr { display:flex; flex:none; }
-.sh-t b { font-weight:800; font-size:1.08rem; color:$ink; white-space:nowrap; }
-.pdot { width:9px; height:9px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; flex:none; }
-.sh-t small { font-weight:500; color:$mute; font-size:.88rem; }
-.sh-t .ci { display:flex; color:$mute; }
-.sync { display:inline-flex; width:18px; height:18px; border-radius:50%; align-items:center; justify-content:center;
-        font-size:.7rem; font-weight:800; box-sizing:border-box; }
+.ship { background:$card; border:1px solid $line; border-radius:14px; padding:14px 18px 12px; margin:0 0 8px;
+        box-sizing:border-box; }
+.sh-top { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
+.sh-l { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.eyebrow { font-size:.66rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:$mute; }
+.sh-d { display:flex; align-items:center; gap:8px; font-size:1.05rem; font-weight:700; color:$ink; }
+.sh-p { font-size:2rem; font-weight:800; letter-spacing:-0.03em; color:$ink; line-height:1;
+        font-variant-numeric:tabular-nums; }
+.sh-p small { font-size:1rem; font-weight:700; color:$mute; margin-left:1px; }
+.sync { display:inline-flex; width:16px; height:16px; border-radius:50%; align-items:center; justify-content:center;
+        font-size:.62rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
-.sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
+.sync.spin { border:2px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
-.sh-p { font-weight:800; font-size:1.5rem; letter-spacing:-0.02em; color:$ink; line-height:1; }
 
-/* линия: статичная, градиент розовый -> фиолетовый -> синий, текст по центру */
-.bar { height:28px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
-       box-shadow:inset 0 1px 4px rgba(0,0,0,.35); }
-.bar > i { display:block; height:100%; border-radius:99px;
-  background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
-                   linear-gradient(90deg, #E0338F, #8B3DFF, #3B82F6);
-  box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
-.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
-                              linear-gradient(90deg, #F2B705, #FFD24D); }
-.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
-                              linear-gradient(90deg, #D32F2F, #FF5A5A); }
-.bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
-  gap:8px; color:#fff; font-weight:700; font-size:.92rem; font-variant-numeric:tabular-nums;
-  text-shadow:0 1px 3px rgba(0,0,0,.55); }
-.bar-t small { font-size:.74rem; font-weight:700; }
-.bar-t svg { flex:none; }
+.bar { height:6px; border-radius:99px; background:$track; overflow:hidden; margin:12px 0; }
+.bar > i { display:block; height:100%; border-radius:99px; background:$accent; }
+.ship.y .bar > i { background:#F2B705; }
+.ship.r .bar > i { background:#E5384F; }
+.ship.done .bar > i { background:#34C27A; }
 
-/* нижняя строка: три блока с разделителями */
-.stats { display:flex; flex-wrap:wrap; align-items:center; row-gap:6px; margin-top:12px; font-size:.86rem; color:$mute; }
-.stt { display:flex; align-items:center; gap:8px; padding:0 18px; border-left:1px solid $line; white-space:nowrap; }
-.stt:first-child { padding-left:2px; border-left:none; }
-.stt b { color:$ink; font-weight:800; font-size:1.02rem; }
-.stt .ico { display:flex; flex:none; }
-.cmt { margin-top:8px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
-       color:$mute; font-style:italic; word-break:break-word; animation:cmblink 3.2s ease-in-out infinite; }
-@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.38; } }
-$truck_css
+.stats { display:grid; grid-template-columns:repeat(4, 1fr); }
+.cell { padding:0 14px; border-left:1px solid $line; display:flex; flex-direction:column; gap:3px; min-width:0; }
+.cell:first-child { padding-left:0; border-left:none; }
+.lb { font-size:.62rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:$mute; }
+.vl { font-size:.84rem; color:$mute; white-space:nowrap; }
+.vl b { font-size:1.05rem; color:$ink; font-weight:800; font-variant-numeric:tabular-nums; }
+.vl.tm { font-size:1.05rem; font-weight:800; color:$ink; font-variant-numeric:tabular-nums; }
+.ship.y .vl.tm { color:#F2B705; }
+.ship.r .vl.tm { color:#FF6B6B; }
+.ship.done .vl.tm { color:#34C27A; }
+@media (max-width:560px) {
+  .stats { grid-template-columns:1fr 1fr; row-gap:10px; }
+  .cell:nth-child(3) { padding-left:0; border-left:none; }
+}
+.cmt { margin-top:10px; padding-top:5px; border-top:1px dashed $line; font-size:.66rem; line-height:1.35;
+       color:$accent_ink; font-style:italic; word-break:break-word; animation:cmblink 2.6s ease-in-out infinite; }
+@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.35; } }
 </style></head><body>
-<div class="ship">
+<div class="ship" id="dl-card">
   <div class="sh-top">
-    <div class="sh-t"><span class="tr">$truck_mini</span><b>$title</b><span class="pdot"></span>
-      <small>$date</small><span class="ci">$clock</span>$sync</div>
-    <div class="sh-p">$pct%</div>
+    <div class="sh-l"><span class="eyebrow">$title</span><span class="sh-d">$date$sync</span></div>
+    <div class="sh-p">$pct<small>%</small></div>
   </div>
-  <div class="lane">$truck<div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div></div>
+  <div class="bar"><i style="width:$pct%"></i></div>
   <div class="stats">
-    <div class="stt"><span class="ico">$i_box</span><span>Отгружено <b>$done</b> из $total заказов</span></div>
-    <div class="stt"><span class="ico">$i_ok</span><span><b>$pcs_done</b> из $pcs шт</span></div>
-    <div class="stt"><span class="ico">$i_clk</span><span>осталось <b>$left</b> зак. ($pcs_left шт)</span></div>
+    <div class="cell"><span class="lb">Заказов</span><span class="vl"><b>$done</b> из $total</span></div>
+    <div class="cell"><span class="lb">Штук</span><span class="vl"><b>$pcs_done</b> из $pcs</span></div>
+    <div class="cell"><span class="lb">Осталось</span><span class="vl"><b>$left</b> зак. · $pcs_left шт</span></div>
+    <div class="cell"><span class="lb" id="dl-lb">До 17:00</span><span class="vl tm" id="dl-time">--:--:--</span></div>
   </div>
   $note
 </div>
 <script>
 (function () {
-  var DONE = $all_done, LIVE = $live, TARGET = 17 * 3600, CHK = "$check_ico";
+  var DONE = $all_done, LIVE = $live, TARGET = 17 * 3600;
   var fmt = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit',
                                                second: '2-digit', hour12: false});
   function pad(x) { return (x < 10 ? '0' : '') + x; }
@@ -2521,38 +2432,31 @@ $truck_css
     var v = {}; fmt.formatToParts(new Date()).forEach(function (x) { v[x.type] = +x.value; });
     return (v.hour % 24) * 3600 + v.minute * 60 + v.second;
   }
-  function tick() {
-    var bar = document.getElementById('dl-bar'), box = document.getElementById('dl-time');
-    var s = nowSec(), left = TARGET - s, cls = 'g', h;
-    if (DONE) { h = CHK + 'Все заказы отгружены'; }
-    else if (!LIVE) { h = 'Отгружено $pct%'; }
-    else {
-      cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
-      var a = Math.abs(left);
-      var t = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
-      h = '<small>' + (left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл') + '</small>' + t;
-    }
-    bar.className = 'bar ' + cls;
-    box.innerHTML = h;
+  function fit() {
+    try { var f = window.frameElement; if (f) { f.style.height = (document.documentElement.scrollHeight + 2) + 'px'; } }
+    catch (e) {}
   }
-  tick();
+  function tick() {
+    var card = document.getElementById('dl-card'), lb = document.getElementById('dl-lb'),
+        box = document.getElementById('dl-time');
+    var s = nowSec(), left = TARGET - s, cls = '';
+    if (DONE) { cls = 'done'; lb.textContent = 'Статус'; box.textContent = 'Все отгружены'; }
+    else if (!LIVE) { lb.textContent = 'Выполнено'; box.textContent = '$pct%'; }
+    else {
+      cls = s < 12 * 3600 ? '' : (s < 16 * 3600 ? 'y' : 'r');
+      var a = Math.abs(left);
+      lb.textContent = left >= 0 ? 'До 17:00 осталось' : 'Срок 17:00 прошёл';
+      box.textContent = (left < 0 ? '+' : '') + pad(Math.floor(a / 3600)) + ':' + pad(Math.floor(a % 3600 / 60)) + ':' + pad(a % 60);
+    }
+    card.className = 'ship ' + cls;
+  }
+  tick(); fit();
+  window.addEventListener('resize', fit);
   if (LIVE && !DONE) { setInterval(tick, 1000); }
 })();
 </script></body></html>""")
 
-SHIP_IFRAME_H = 156   # высота карточки, px
-
-
-def truck_mini() -> str:
-    """Маленький грузовик с «линиями скорости» слева от заголовка карточки."""
-    g1, g2 = P["g1"], P["g2"]
-    return ("<svg width='42' height='26' viewBox='0 0 42 26' fill='none' xmlns='http://www.w3.org/2000/svg'>"
-            f"<g stroke='{g1}' stroke-width='1.7' stroke-linecap='round'>"
-            "<path d='M1 8h8'/><path d='M3 13h6'/><path d='M1 18h8'/></g>"
-            f"<rect x='12' y='5' width='16' height='13' rx='2' fill='{g1}'/>"
-            f"<path d='M29 9h5.5l4.5 4.5V18H29z' fill='{g2}'/>"
-            f"<circle cx='18' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/>"
-            f"<circle cx='34' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/></svg>")
+SHIP_IFRAME_H = 134   # высота карточки без комментария, px
 
 
 def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
@@ -2561,13 +2465,9 @@ def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
     note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     vals = dict(P)
     vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, title=title,
-                clock=ic("clock", P["mute"], 16), truck_mini=truck_mini(),
-                i_box=ic("box", "#A66BFF", 18), i_ok=ic("check", "#A66BFF", 18), i_clk=ic("clock", "#5B8DEF", 18),
-                check_ico=ic("check", "#FFFFFF", 18),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
-                all_done="true" if done_all else "false", live="true" if live else "false",
-                truck=truck_html(pct, done_all or not live), truck_css=TRUCK_CSS, note=note_html)
+                all_done="true" if done_all else "false", live="true" if live else "false", note=note_html)
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -3854,8 +3754,7 @@ if page == PAGES[0] and not hub_open:
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
         ship_note = comment_get("w_ship")
-        no_truck = pct_ship <= 0 or pct_ship >= 100          # на 0% и 100% машинки нет — карточка ниже
-        ship_h = SHIP_IFRAME_H - (22 if no_truck else 0) + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
+        ship_h = SHIP_IFRAME_H + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
         frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
                           title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
                           live=is_today), ship_h)
@@ -4462,22 +4361,64 @@ if page == PAGES[4]:
         dl_button("Скачать Magnit Stock (Excel)", mg_res["data"], mg_res["name"], "dl_magnit")
 
 # ───────────────────────── 6. Аналитика ─────────────────────────
+ANALYTICS_UNITS = ["Штуки", "Заказы", "На 1 магазин"]
+
+
+def _week_start(dates_: pd.Series) -> pd.Series:
+    """Понедельник недели для каждой даты (Timestamp без времени)."""
+    dd = pd.to_datetime(dates_)
+    return (dd - pd.to_timedelta(dd.dt.weekday, unit="D")).dt.normalize()
+
+
+def _period_label(p, weekly: bool) -> str:
+    p = pd.Timestamp(p)
+    if weekly:
+        return f"{p:%d.%m}–{p + pd.Timedelta(days=6):%d.%m}"
+    return f"{p:%d.%m}, {WEEKDAYS[p.weekday()]}"
+
+
+def store_dynamics(frame: pd.DataFrame, weekly: bool) -> pd.DataFrame:
+    """Динамика «заказов на один магазин»: по каждому дню (или неделе) считаем заказы и УНИКАЛЬНЫЕ магазины.
+    Один магазин считается один раз, даже если у него несколько заказов. avg = заказы / уникальные магазины.
+    mx — максимум заказов у одного магазина, top — какой это магазин."""
+    f = frame[frame["Ключ"] != ""].copy()
+    if f.empty:
+        return pd.DataFrame(columns=["p", "label", "orders", "stores", "avg", "mx", "top"])
+    f["p"] = _week_start(f["Дата"]) if weekly else pd.to_datetime(f["Дата"])
+    per = f.groupby(["p", "Ключ"]).agg(orders=("Заказ", "nunique"), shop=("Магазин", "first")).reset_index()
+    g = per.groupby("p").agg(orders=("orders", "sum"), stores=("Ключ", "nunique"), mx=("orders", "max")).reset_index()
+    top = (per.sort_values(["p", "orders", "shop"], ascending=[True, False, True])
+           .groupby("p").first()["shop"])
+    g["top"] = g["p"].map(top)
+    g["avg"] = g["orders"] / g["stores"]
+    g["label"] = g["p"].map(lambda p: _period_label(p, weekly))
+    return g.sort_values("p").reset_index(drop=True)
+
+
 if page == PAGES[5]:
     import altair as alt
     st.markdown("<div class='sec'>Аналитика</div>", unsafe_allow_html=True)
+
+    def show_chart(ch):
+        try:
+            st.altair_chart(ch, width="stretch")
+        except TypeError:
+            st.altair_chart(ch, use_container_width=True)
 
     # один и тот же заказ считаем один раз (повторы строк в таблицах не раздувают числа)
     src = df_all.dropna(subset=["Дата"]).drop_duplicates("Заказ")
     if src.empty:
         st.info("Нет данных для графика.")
     else:
-        st.session_state.setdefault("an_unit", "Штуки")
+        if st.session_state.get("an_unit") not in ANALYTICS_UNITS:
+            st.session_state.an_unit = "Штуки"
         ca, cb = st.columns(2)
         with ca:
             by = st.segmented_control("Группировка", ["По дням", "По неделям"], key="an_by") or "По дням"
         with cb:
-            unit = st.segmented_control("Что считать на графике", ["Штуки", "Заказы"], key="an_unit") or "Штуки"
+            unit = st.segmented_control("Что считать на графике", ANALYTICS_UNITS, key="an_unit") or "Штуки"
         weekly = by == "По неделям"
+        per_store = unit == "На 1 магазин"
         orders_mode = unit == "Заказы"
         UW = "заказов" if orders_mode else "шт"          # единица в подписях
         UT = "Заказов" if orders_mode else "Штук"        # название оси
@@ -4493,16 +4434,19 @@ if page == PAGES[5]:
                 st.info("За выбранный период заказов нет.")
             else:
                 part["Статус"] = np.where(part["Собран"], "Собрано", "Не собрано")
-                part["Вел"] = 1 if orders_mode else part["Штук"]       # что суммируем: заказы или штуки
+                part["Ключ"] = part["Магазин"].astype(str).map(norm_store)    # один магазин = один ключ (регистр, пробелы)
+                part["Вел"] = 1 if orders_mode else part["Штук"]              # что суммируем: заказы или штуки
+                part["Собр_вел"] = part["Вел"].where(part["Собран"], 0)
                 tot = int(part["Вел"].sum())
-                done_ = int(part.loc[part["Собран"], "Вел"].sum())
+                done_ = int(part["Собр_вел"].sum())
                 pcs_tot = int(part["Штук"].sum())
                 colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#1E9E5C", "#E8A33D"])
 
                 def an_store_stats():
-                    """Второй ряд виджетов: заказы на один магазин (мин / среднее / макс) и среднее шт в одном заказе."""
-                    sp = part[part["Магазин"].astype(str).str.strip() != ""]
-                    cnt = sp.groupby("Магазин")["Заказ"].nunique() if not sp.empty else pd.Series(dtype=int)
+                    """Ряд виджетов: заказы на один магазин за весь период (мин / среднее / макс) и среднее шт в заказе."""
+                    sp = part[part["Ключ"] != ""]
+                    cnt = sp.groupby("Ключ")["Заказ"].nunique() if not sp.empty else pd.Series(dtype=int)
+                    names_ = sp.groupby("Ключ")["Магазин"].first() if not sp.empty else pd.Series(dtype=str)
                     s1, s2, s3, s4 = st.columns(4)
                     if cnt.empty:
                         with s1:
@@ -4513,10 +4457,11 @@ if page == PAGES[5]:
                             an_widget("an_max", "—", "макс. заказов на магазин", "нет данных по магазинам", "all")
                     else:
                         mn_v, mx_v = int(cnt.min()), int(cnt.max())
-                        mn_names, mx_names = cnt[cnt == mn_v].index.tolist(), cnt[cnt == mx_v].index.tolist()
+                        mn_names = [names_[k] for k in cnt[cnt == mn_v].index]
+                        mx_names = [names_[k] for k in cnt[cnt == mx_v].index]
 
-                        def who(names):
-                            return esc(names[0]) + (f" и ещё {len(names) - 1}" if len(names) > 1 else "")
+                        def who(nm_):
+                            return esc(nm_[0]) + (f" и ещё {len(nm_) - 1}" if len(nm_) > 1 else "")
 
                         with s1:
                             an_widget("an_min", n(mn_v), "мин. заказов на магазин", who(mn_names), "blue", "box")
@@ -4529,9 +4474,72 @@ if page == PAGES[5]:
                         an_widget("an_pcs", n(round(pcs_tot / len(part))) if len(part) else "—",
                                   "среднее шт в одном заказе", f"{n(pcs_tot)} шт · {n(len(part))} заказов", "ok", "box")
 
-                if not weekly:
+                # ═════════ режим «На 1 магазин»: динамика заказов на один уникальный магазин ═════════
+                if per_store:
+                    sd = store_dynamics(part, weekly)
+                    if sd.empty:
+                        st.info("За выбранный период нет заказов с названием магазина.")
+                    else:
+                        uniq = int(part.loc[part["Ключ"] != "", "Ключ"].nunique())
+                        orders_all = int(part["Заказ"].nunique())
+                        peak = sd.loc[sd["avg"].idxmax()]
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            an_widget("an_ps_total", n(orders_all), "всего заказов за период", f"{a1:%d.%m} — {a2:%d.%m}", "all")
+                        with c2:
+                            an_widget("an_ps_uniq", n(uniq), "уникальных магазинов", "каждый магазин считается один раз", "blue", "box")
+                        with c3:
+                            an_widget("an_ps_peak", f1(peak["avg"]), "пик: заказов на 1 магазин",
+                                      f"{peak['label']} · {n(peak['orders'])} зак. / {n(peak['stores'])} маг.", "left", "box")
+                        an_store_stats()
+
+                        order = sd["label"].tolist()
+                        xenc = alt.X("label:N", sort=order, title=None, axis=alt.Axis(labelAngle=-45))
+                        tips = [alt.Tooltip("label:N", title="Неделя" if weekly else "День"),
+                                alt.Tooltip("avg:Q", title="Заказов на 1 магазин", format=".2f"),
+                                alt.Tooltip("orders:Q", title="Заказов", format=",.0f"),
+                                alt.Tooltip("stores:Q", title="Уникальных магазинов", format=",.0f"),
+                                alt.Tooltip("mx:Q", title="Макс. у одного магазина", format=",.0f"),
+                                alt.Tooltip("top:N", title="Магазин с макс.")]
+                        bars = (alt.Chart(sd).mark_bar(size=34, color="#C2308B")
+                                .encode(x=xenc, y=alt.Y("avg:Q", title="Заказов на 1 магазин", axis=alt.Axis(format=".1f")),
+                                        tooltip=tips))
+                        labels = (alt.Chart(sd).mark_text(dy=-8, fontWeight="bold")
+                                  .encode(x=xenc, y="avg:Q", text=alt.Text("avg:Q", format=".1f")))
+                        show_chart((bars + labels).properties(height=400))
+
+                        st.markdown("<div class='sec'>" + ("По неделям" if weekly else "По дням") + "</div>",
+                                    unsafe_allow_html=True)
+                        rows = [[f"<b>{esc(r.label)}</b>", n(r.orders), n(r.stores), f"<b>{f1(r.avg)}</b>",
+                                 n(r.mx), esc(r.top)] for r in sd.iloc[::-1].itertuples(index=False)]
+                        st.markdown(simple_table(["Неделя" if weekly else "День", "Заказов", "Уникальных магазинов",
+                                                  "Заказов на 1 магазин", "Макс. у одного", "Магазин с макс."],
+                                                 rows, num_cols={1, 2, 3, 4}), unsafe_allow_html=True)
+
+                        # магазины, которые повторяются в периоде: именно из-за них путаница
+                        rep_ = (part[part["Ключ"] != ""].groupby("Ключ")
+                                .agg(Магазин=("Магазин", "first"), Заказов=("Заказ", "nunique"),
+                                     Дней=("Дата", "nunique"), Штук=("Штук", "sum"))
+                                .sort_values(["Заказов", "Штук"], ascending=False))
+                        rep_ = rep_[rep_["Заказов"] > 1].head(50)
+                        with st.expander(f"Магазины с повторными заказами за период: {len(rep_)}"):
+                            if rep_.empty:
+                                st.info("Повторных заказов у магазинов в этом периоде нет.")
+                            else:
+                                rows = [[f"<b>{esc(r.Магазин)}</b>", n(r.Заказов), n(r.Дней), n(r.Штук)]
+                                        for r in rep_.itertuples(index=False)]
+                                st.markdown(simple_table(["Магазин", "Заказов", "В разные дни", "Штук"], rows,
+                                                         num_cols={1, 2, 3}), unsafe_allow_html=True)
+                        st.caption("Заказов на 1 магазин = заказы за день ÷ число уникальных магазинов в этот день. "
+                                   "Магазин с несколькими заказами считается один раз. В режиме «По неделям» уникальные "
+                                   "магазины считаются за всю неделю, поэтому повторы в разные дни не раздувают число. "
+                                   "Заказы без названия магазина в этом расчёте не участвуют.")
+
+                # ═════════ режимы «Штуки» / «Заказы» ═════════
+                elif not weekly:
                     g = part.groupby(["Дата", "Статус"], as_index=False)["Вел"].sum()
                     g["Дата"] = pd.to_datetime(g["Дата"])
+                    tt = g.groupby("Дата", as_index=False)["Вел"].sum()
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         an_widget("an_total", n(tot), f"всего {UW} за период", f"{a1:%d.%m} — {a2:%d.%m}", "all")
@@ -4540,26 +4548,27 @@ if page == PAGES[5]:
                     with c3:
                         an_widget("an_left", n(tot - done_), f"не собрано, {UW}", "", "left")
                     an_store_stats()
-                    chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
-                             .encode(x=alt.X("yearmonthdate(Дата):T", title=None,
-                                             axis=alt.Axis(format="%d.%m", labelAngle=-45)),
-                                     y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
-                                     color=alt.Color("Статус:N", title=None, scale=colors,
-                                                     legend=alt.Legend(orient="top")),
-                                     tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
-                                              alt.Tooltip("Статус:N"),
-                                              alt.Tooltip("Вел:Q", title=UT, format=",.0f")])
-                             .properties(height=400))
+                    xenc = alt.X("yearmonthdate(Дата):T", title=None, axis=alt.Axis(format="%d.%m", labelAngle=-45))
+                    bars = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
+                            .encode(x=xenc,
+                                    y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
+                                    color=alt.Color("Статус:N", title=None, scale=colors,
+                                                    legend=alt.Legend(orient="top")),
+                                    tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
+                                             alt.Tooltip("Статус:N"),
+                                             alt.Tooltip("Вел:Q", title=UT, format=",.0f")]))
+                    labels = (alt.Chart(tt).mark_text(dy=-8, fontWeight="bold")
+                              .encode(x=xenc, y="Вел:Q", text=alt.Text("Вел:Q", format=",.0f")))
+                    show_chart((bars + labels).properties(height=400))
+                    st.caption("Столбец = один день, цифра над столбиком — итог за день. Зелёная часть — собранное, "
+                               "оранжевая — не собранное (включая новые не маршрутизированные заказы). "
+                               "Наведите курсор на столбец, чтобы увидеть детали.")
                 else:
-                    dd = pd.to_datetime(part["Дата"])
-                    part["W"] = (dd - pd.to_timedelta(dd.dt.weekday, unit="D")).dt.normalize()
-                    wk = (part.groupby("W")
-                          .agg(Итого=("Вел", "sum"),
-                               Собрано=("Вел", lambda s: int(s[part.loc[s.index, "Собран"]].sum())))
+                    part["W"] = _week_start(part["Дата"])
+                    wk = (part.groupby("W").agg(Итого=("Вел", "sum"), Собрано=("Собр_вел", "sum"))
                           .reset_index().sort_values("W"))
                     wk["Не собрано"] = wk["Итого"] - wk["Собрано"]
-                    wk["Неделя"] = (wk["W"].dt.strftime("%d.%m") + "–" +
-                                    (wk["W"] + pd.Timedelta(days=6)).dt.strftime("%d.%m"))
+                    wk["Неделя"] = wk["W"].map(lambda p: _period_label(p, True))
                     wk["Δ"] = wk["Итого"].diff()
                     wk["Δ%"] = wk["Итого"].pct_change() * 100
                     order = wk["Неделя"].tolist()
@@ -4574,51 +4583,44 @@ if page == PAGES[5]:
                     with c1:
                         an_widget("an_wk_total", n(tot), f"всего {UW} за период", f"недель: {len(wk)}", "all")
                     with c2:
-                        an_widget("an_wk_avg", n(wk["Штук"].mean()), "в среднем за неделю, шт", "", "ok")
+                        an_widget("an_wk_avg", n(wk["Итого"].mean()), f"в среднем за неделю, {UW}", "", "ok")
                     with c3:
-                        an_widget("an_wk_last", n(last_w["Штук"]), f"последняя неделя ({last_w['Неделя']})", sub3,
+                        an_widget("an_wk_last", n(last_w["Итого"]), f"последняя неделя ({last_w['Неделя']})", sub3,
                                   "left" if len(wk) > 1 and last_w["Δ"] < 0 else "ok")
                     an_store_stats()
 
-                    g = (part.groupby(["W", "Статус"], as_index=False)["Штук"].sum())
-                    g["Неделя"] = (g["W"].dt.strftime("%d.%m") + "–" +
-                                   (g["W"] + pd.Timedelta(days=6)).dt.strftime("%d.%m"))
+                    g = part.groupby(["W", "Статус"], as_index=False)["Вел"].sum()
+                    g["Неделя"] = g["W"].map(lambda p: _period_label(p, True))
                     xenc = alt.X("Неделя:N", sort=order, title=None, axis=alt.Axis(labelAngle=-30))
                     bars = (alt.Chart(g).mark_bar(size=38)
                             .encode(x=xenc,
-                                    y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
+                                    y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
                                     color=alt.Color("Статус:N", title=None, scale=colors,
                                                     legend=alt.Legend(orient="top")),
                                     tooltip=[alt.Tooltip("Неделя:N"), alt.Tooltip("Статус:N"),
-                                             alt.Tooltip("Штук:Q", title="Штук", format=",.0f")]))
+                                             alt.Tooltip("Вел:Q", title=UT, format=",.0f")]))
                     labels = (alt.Chart(wk).mark_text(dy=-8, fontWeight="bold")
-                              .encode(x=xenc, y=alt.Y("Штук:Q"), text=alt.Text("Штук:Q", format=",.0f")))
-                    chart = (bars + labels).properties(height=400)
+                              .encode(x=xenc, y=alt.Y("Итого:Q"), text=alt.Text("Итого:Q", format=",.0f")))
+                    show_chart((bars + labels).properties(height=400))
 
-                try:
-                    st.altair_chart(chart, width="stretch")
-                except TypeError:
-                    st.altair_chart(chart, use_container_width=True)
-
-                if weekly:
                     def _chg(r):
                         if pd.isna(r["Δ"]):
                             return "—"
                         arrow = "▲" if r["Δ"] > 0 else ("▼" if r["Δ"] < 0 else "■")
                         pct = f" ({r['Δ%']:+.0f}%)" if pd.notna(r["Δ%"]) else ""
                         return f"{arrow} {r['Δ']:+,.0f}{pct}".replace(",", " ")
-                    rows = [[f"<b>{r.Неделя}</b>", n(r.Штук), n(r.Собрано),
-                             f"{(r.Собрано / r.Штук * 100 if r.Штук else 0):.0f}%", _chg(wk.loc[i])]
+
+                    rows = [[f"<b>{r.Неделя}</b>", n(r.Итого), n(r.Собрано),
+                             f"{(r.Собрано / r.Итого * 100 if r.Итого else 0):.0f}%", _chg(wk.loc[i])]
                             for i, r in wk.iterrows()]
-                    st.markdown(simple_table(["Неделя", "Штук", "Собрано", "Доля собранного", "К прошлой неделе"],
+                    st.markdown(simple_table(["Неделя", UT, "Собрано", "Доля собранного", "К прошлой неделе"],
                                              rows[::-1], num_cols={1, 2, 3}), unsafe_allow_html=True)
-                    st.caption("Неделя считается с понедельника по воскресенье. Первая и последняя недели периода "
-                               "могут быть неполными: для честного сравнения выбирайте период от понедельника до воскресенья.")
-                else:
-                    st.caption("Столбец = один день. Зелёная часть — собранные штуки, оранжевая — не собранные "
-                               "(включая новые не маршрутизированные заказы). Наведите курсор на столбец, чтобы увидеть число.")
-                st.caption("Заказы на магазин считаются по уникальным номерам заказов за выбранный период. "
-                           "Комментарии к виджетам общие для всех и видны в колокольчике сверху.")
+                    st.caption("Неделя считается с понедельника по воскресенье, цифра над столбиком — итог за неделю. "
+                               "Первая и последняя недели периода могут быть неполными: для честного сравнения "
+                               "выбирайте период от понедельника до воскресенья.")
+                if not per_store:
+                    st.caption("Заказы на магазин считаются по уникальным номерам заказов за выбранный период. "
+                               "Комментарии к виджетам общие для всех и видны в колокольчике сверху.")
 
 # ───────────────────────── Переход к виджету по клику на комментарий в колокольчике ─────────────────────────
 if st.session_state.get("cm_focus"):
