@@ -8,7 +8,7 @@ requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, a
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
 Файлы на сервере (необязательные): change_history.json (сводка в колокольчике), visitors.json (окно «Посетители»),
 comments.json (комментарии к виджетам), chat.json (сообщения чата).
-Чат работает в Streamlit 1.37 и новее (окно st.dialog).
+Чат и «Посетители» — плавающие окна с размытым фоном (работают в любой версии Streamlit с st.fragment, 1.37+).
 """
 import hashlib
 import threading
@@ -180,6 +180,7 @@ _ICONS = {
     "smartphone": "<rect width='14' height='20' x='5' y='2' rx='2' ry='2'/><path d='M12 18h.01'/>",
     "globe": "<circle cx='12' cy='12' r='10'/><path d='M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20'/><path d='M2 12h20'/>",
     "history": "<path d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/><path d='M3 3v5h5'/><path d='M12 7v5l4 2'/>",
+    "close": "<path d='M18 6 6 18M6 6l12 12'/>",
 }
 NAV_ICON_NAMES = ["home", "list", "search", "box", "swap", "chart"]
 
@@ -260,8 +261,10 @@ def status_breakdown(frame) -> list:
 # ───────────────────────── Грузовик на линии отгрузки ─────────────────────────
 # CSS общий: подключается и в основную страницу, и в карточку-«iframe» с таймером.
 # Анимации линии убраны (линия статичная). Машинка остаётся; TRUCK_ANIMATE=False останавливает и её.
+# При 0% и 100% машинки на линии нет (truck_html возвращает пустую строку), отступ над линией тогда сжимается.
 TRUCK_CSS = """
 .lane { position:relative; padding-top:26px; margin-top:2px; }
+.lane:not(:has(.truck)) { padding-top:6px; }
 .truck { position:absolute; top:0; left:clamp(62px, var(--p, 0%), 100%); width:58px; height:28px;
          transform:translateX(-100%); z-index:3; pointer-events:none; }
 .truck svg { display:block; width:100%; height:100%; overflow:visible; animation:tbob .5s ease-in-out infinite; }
@@ -328,7 +331,10 @@ def truck_svg() -> str:
 
 
 def truck_html(pct, stop: bool) -> str:
-    """Машинка на линии: pct — на каком проценте стоит нос машины, stop — отгрузка закончилась (машина стоит)."""
+    """Машинка на линии: pct — на каком проценте стоит нос машины, stop — отгрузка закончилась (машина стоит).
+    При 0% и 100% машинки нет."""
+    if int(pct) <= 0 or int(pct) >= 100:
+        return ""
     return f"<div class='truck{' stop' if stop else ''}' style='--p:{int(pct)}%'>{truck_svg()}</div>"
 
 
@@ -440,6 +446,11 @@ table.tbl { border-collapse:collapse; width:100%; font-size:.85rem; color:$ink; 
 .hit { background:$card; border:1px solid $line; border-radius:16px; padding:12px 14px; margin-bottom:8px; color:$ink; }
 .hit .n { font-weight:800; font-size:1.05rem; }
 .hit .s { color:$mute; font-size:.85rem; margin:2px 0 8px; }
+.hit .dsec { margin:10px 0 4px; font-size:.68rem; font-weight:800; letter-spacing:.07em; text-transform:uppercase; color:$accent; }
+.hit .dg { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:8px 12px; }
+.hit .df { padding:7px 10px; border-radius:10px; background:$head; border:1px solid $line; min-width:0; }
+.hit .df span { display:block; font-size:.6rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:$mute; }
+.hit .df b { display:block; margin-top:1px; font-size:.86rem; font-weight:700; color:$ink; word-break:break-word; }
 .note { background:$note_bg; border-left:5px solid $left; border-radius:10px; padding:10px 14px; margin:4px 0 10px; font-size:.9rem; color:$ink; }
 .cars-wrap { overflow-x:auto; border:1px solid $line; border-radius:16px; background:$card; }
 table.cars { border-collapse:collapse; width:100%; font-size:.88rem; color:$ink; }
@@ -605,21 +616,29 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
   100% { opacity:0; visibility:hidden; }
 }
 
-/* комментарий внутри виджета: мелкие буквы */
+/* комментарий внутри виджета: мелкие буквы, слабо мигает (только прозрачность — не нагружает страницу) */
 .kpi .cmt { margin-top:5px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
             color:$mute; font-style:italic; word-break:break-word; }
 .day .dcmt { margin-top:5px; font-size:.62rem; line-height:1.35; color:$mute; font-style:italic; word-break:break-word; }
+.kpi .cmt, .day .dcmt, .ship .cmt { animation:cmblink 3.2s ease-in-out infinite; }
+@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.38; } }
 .stApp [data-testid="stPopover"] button { min-height:30px; padding:.1rem .7rem; font-size:.74rem; border-radius:10px;
                                           background:$head; color:$mute; border:1px solid $line; }
 .stApp [data-testid="stPopover"] button:hover { color:$accent; border-color:$accent; }
 .stApp [data-testid="stPopover"] button p { font-size:.74rem; color:inherit; }
 
-/* ── окна (чат, посетители): размытый фон под окном ── */
-div[data-testid="stDialog"] { background:rgba(5,7,20,.5) !important;
-                              backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
-div[data-testid="stDialog"]:has(.st-key-chat_panel) div[role="dialog"] {
-  border-radius:22px; border:1px solid rgba(139,61,255,.35);
-  box-shadow:0 28px 90px rgba(0,0,0,.6), 0 0 0 1px rgba(224,51,143,.12); }
+/* ── плавающие окна (чат, посетители) с размытым фоном ── */
+.mc-backdrop { position:fixed; inset:0; z-index:99990; background:rgba(5,7,20,.55);
+               backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+[class*="st-key-win_"] { position:fixed !important; inset:0; margin:auto; height:fit-content; max-height:92vh;
+  overflow-y:auto; z-index:99995; background:$card; border:1px solid rgba(139,61,255,.4); border-radius:22px;
+  padding:16px 18px 14px; box-shadow:0 28px 90px rgba(0,0,0,.6), 0 0 0 1px rgba(224,51,143,.14); }
+.st-key-win_chat { width:min(440px, 94vw); }
+.st-key-win_onl { width:min(1000px, 96vw); }
+.win-t { font-weight:800; font-size:1.1rem; color:$ink; }
+.st-key-winclose button { width:34px; height:34px; min-height:34px; padding:0; border-radius:50%; gap:0;
+                          background:$head; }
+.st-key-winclose button p { display:none; }
 
 /* ── окно чата ── */
 .chat-hi { font-size:.85rem; color:$mute; margin-bottom:6px; }
@@ -629,7 +648,7 @@ div[data-testid="stDialog"]:has(.st-key-chat_panel) div[role="dialog"] {
 .chat-head .ct { display:flex; flex-direction:column; line-height:1.2; min-width:0; }
 .chat-head .ct b { color:$ink; font-size:.92rem; }
 .chat-head .ct span { color:$mute; font-size:.72rem; }
-.chatbox { display:flex; flex-direction:column-reverse; gap:3px; height:390px; overflow-y:auto; padding:12px;
+.chatbox { display:flex; flex-direction:column-reverse; gap:3px; height:min(390px, 46vh); overflow-y:auto; padding:12px;
            border:1px solid $line; border-radius:18px; background:$head; overscroll-behavior:contain; }
 .chatbox .mrow { display:flex; align-items:flex-end; gap:8px; }
 .chatbox .mrow.me { justify-content:flex-end; }
@@ -662,9 +681,6 @@ div[data-testid="stDialog"]:has(.st-key-chat_panel) div[role="dialog"] {
 .st-key-theme_btn button p { display:none; }
 
 /* ── окно «Посетители» (открывается по клику на «N онлайн») ── */
-div[data-testid="stDialog"] div[role="dialog"] { background:$card !important; border:1px solid $line;
-                                                 border-radius:18px; color:$ink; }
-div[data-testid="stDialog"] h2, div[data-testid="stDialog"] button[aria-label="Close"] { color:$ink !important; }
 .vk-wrap { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin:6px 0 14px; }
 .vk { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px;
       border-radius:14px; background:$head; border:1px solid $line; }
@@ -860,7 +876,7 @@ _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "
              truck_css=TRUCK_CSS)
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
-# иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате
+# иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате, закрытие окна
 _ir = []
 for _i, _nm in enumerate(NAV_ICON_NAMES):
     _ir.append(_icon_rule(f".st-key-nav_{_i} button", _nm, 18))
@@ -870,6 +886,7 @@ _ir.append(_icon_rule(".st-key-theme_btn button", _theme_ic, 18))
 _ir.append(_icon_rule(".st-key-btn_theme2 button", _theme_ic, 17))
 _ir.append(_icon_rule(".st-key-btn_refresh button", "refresh", 17))
 _ir.append(_icon_rule(".st-key-chat_send button", "send", 18))
+_ir.append(_icon_rule(".st-key-winclose button", "close", 16))
 st.markdown("<style>" + "".join(_ir) + "</style>", unsafe_allow_html=True)
 
 
@@ -2348,6 +2365,15 @@ def toggle_theme():
     st.session_state.dark = not st.session_state.dark
 
 
+def open_win(w: str):
+    """Открыть плавающее окно: 'chat' или 'onl'."""
+    st.session_state.win = w
+
+
+def close_win():
+    st.session_state.win = None
+
+
 def go_comment(key: str):
     """Клик по комментарию в колокольчике: открыть страницу, где стоит виджет, и запомнить, к какому прокрутить."""
     ss = st.session_state
@@ -2421,55 +2447,73 @@ def routing_table(g: pd.DataFrame) -> str:
 
 
 # ── карточка «Отгрузка сегодня» с живым таймером и машинкой (отдельный документ со своими стилями и скриптом) ──
-# Линия прогресса статичная: без бегущих полос и анимации при обновлении.
+# Линия прогресса статичная: без бегущих полос и анимации при обновлении. Машинка на линии — только между 1% и 99%.
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:linear-gradient(135deg, $head, $card); border:1px solid $line; border-radius:16px;
-        box-shadow:0 0 0 1px rgba(139,61,255,.15), 0 10px 30px $glow;
-        padding:10px 14px; margin:0 0 8px; box-sizing:border-box; }
-.sh-top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
-.sh-t { font-weight:800; font-size:.98rem; color:$ink; display:flex; align-items:center; gap:8px; }
-.pdot { width:8px; height:8px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; }
-.sh-t small { font-weight:500; color:$mute; font-size:.76rem; margin-left:6px; }
-.sh-p { font-weight:800; font-size:1.4rem; letter-spacing:-0.02em; color:$ink; }
+.ship { background:linear-gradient(135deg, $head, $card); border:1px solid rgba(139,61,255,.55); border-radius:18px;
+        box-shadow:0 0 0 1px rgba(224,51,143,.18), 0 12px 34px $glow;
+        padding:12px 16px; margin:0 0 8px; box-sizing:border-box; }
+.sh-top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.sh-t { display:flex; align-items:center; gap:12px; min-width:0; }
+.sh-t .tr { display:flex; flex:none; }
+.sh-t b { font-weight:800; font-size:1.08rem; color:$ink; white-space:nowrap; }
+.pdot { width:9px; height:9px; border-radius:50%; background:$g1; box-shadow:0 0 8px $g1; flex:none; }
+.sh-t small { font-weight:500; color:$mute; font-size:.88rem; }
+.sh-t .ci { display:flex; color:$mute; }
 .sync { display:inline-flex; width:18px; height:18px; border-radius:50%; align-items:center; justify-content:center;
-        margin-left:8px; vertical-align:middle; font-size:.7rem; font-weight:800; box-sizing:border-box; }
+        font-size:.7rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
 .sync.spin { border:3px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
-.bar { height:26px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
+.sh-p { font-weight:800; font-size:1.5rem; letter-spacing:-0.02em; color:$ink; line-height:1; }
+
+/* линия: статичная, градиент розовый -> фиолетовый -> синий, текст по центру */
+.bar { height:28px; border-radius:99px; background:$track; overflow:hidden; position:relative; margin:0;
        box-shadow:inset 0 1px 4px rgba(0,0,0,.35); }
 .bar > i { display:block; height:100%; border-radius:99px;
-  background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
-                   linear-gradient(90deg, #1E9E5C, #34C27A);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35); }
-.bar.g > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
-                              linear-gradient(90deg, $g1, $g2, #3B82F6); box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
-.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+  background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
+                   linear-gradient(90deg, #E0338F, #8B3DFF, #3B82F6);
+  box-shadow:0 0 18px $glow, inset 0 1px 0 rgba(255,255,255,.35); }
+.bar.y > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
                               linear-gradient(90deg, #F2B705, #FFD24D); }
-.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,0) 55%),
+.bar.r > i { background-image:linear-gradient(180deg, rgba(255,255,255,.28), rgba(255,255,255,0) 55%),
                               linear-gradient(90deg, #D32F2F, #FF5A5A); }
 .bar-t { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
-  gap:10px; color:#fff; font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; letter-spacing:.02em;
-  text-shadow:0 1px 3px rgba(0,0,0,.6); }
+  gap:8px; color:#fff; font-weight:700; font-size:.92rem; font-variant-numeric:tabular-nums;
+  text-shadow:0 1px 3px rgba(0,0,0,.55); }
 .bar-t small { font-size:.74rem; font-weight:700; }
-.sh-m { font-size:.78rem; color:$mute; margin-top:7px; }
-.sh-m b { color:$ink; }
-.cmt { margin-top:6px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
-       color:$mute; font-style:italic; word-break:break-word; }
+.bar-t svg { flex:none; }
+
+/* нижняя строка: три блока с разделителями */
+.stats { display:flex; flex-wrap:wrap; align-items:center; row-gap:6px; margin-top:12px; font-size:.86rem; color:$mute; }
+.stt { display:flex; align-items:center; gap:8px; padding:0 18px; border-left:1px solid $line; white-space:nowrap; }
+.stt:first-child { padding-left:2px; border-left:none; }
+.stt b { color:$ink; font-weight:800; font-size:1.02rem; }
+.stt .ico { display:flex; flex:none; }
+.cmt { margin-top:8px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
+       color:$mute; font-style:italic; word-break:break-word; animation:cmblink 3.2s ease-in-out infinite; }
+@keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.38; } }
 $truck_css
 </style></head><body>
 <div class="ship">
-  <div class="sh-top"><div class="sh-t">Отгрузка сегодня <span class="pdot"></span><small>$date</small>$clock$sync</div><div class="sh-p">$pct%</div></div>
+  <div class="sh-top">
+    <div class="sh-t"><span class="tr">$truck_mini</span><b>$title</b><span class="pdot"></span>
+      <small>$date</small><span class="ci">$clock</span>$sync</div>
+    <div class="sh-p">$pct%</div>
+  </div>
   <div class="lane">$truck<div class="bar g" id="dl-bar"><i style="width:$pct%"></i><span class="bar-t" id="dl-time">--:--:--</span></div></div>
-  <div class="sh-m">Отгружено <b>$done</b> из $total заказов · <b>$pcs_done</b> из $pcs шт · осталось <b>$left</b> зак. ($pcs_left шт)</div>
+  <div class="stats">
+    <div class="stt"><span class="ico">$i_box</span><span>Отгружено <b>$done</b> из $total заказов</span></div>
+    <div class="stt"><span class="ico">$i_ok</span><span><b>$pcs_done</b> из $pcs шт</span></div>
+    <div class="stt"><span class="ico">$i_clk</span><span>осталось <b>$left</b> зак. ($pcs_left шт)</span></div>
+  </div>
   $note
 </div>
 <script>
 (function () {
-  var DONE = $all_done, TARGET = 17 * 3600;
+  var DONE = $all_done, LIVE = $live, TARGET = 17 * 3600, CHK = "$check_ico";
   var fmt = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit',
                                                second: '2-digit', hour12: false});
   function pad(x) { return (x < 10 ? '0' : '') + x; }
@@ -2479,8 +2523,9 @@ $truck_css
   }
   function tick() {
     var bar = document.getElementById('dl-bar'), box = document.getElementById('dl-time');
-    var s = nowSec(), left = TARGET - s, cls, h;
-    if (DONE) { cls = 'g'; h = '✓ Все заказы отгружены'; }
+    var s = nowSec(), left = TARGET - s, cls = 'g', h;
+    if (DONE) { h = CHK + 'Все заказы отгружены'; }
+    else if (!LIVE) { h = 'Отгружено $pct%'; }
     else {
       cls = s < 12 * 3600 ? 'g' : (s < 16 * 3600 ? 'y' : 'r');
       var a = Math.abs(left);
@@ -2491,22 +2536,38 @@ $truck_css
     box.innerHTML = h;
   }
   tick();
-  setInterval(tick, 1000);
+  if (LIVE && !DONE) { setInterval(tick, 1000); }
 })();
 </script></body></html>""")
 
-SHIP_IFRAME_H = 140   # высота карточки с таймером и машинкой, px
+SHIP_IFRAME_H = 156   # высота карточки, px
 
 
-def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "") -> str:
+def truck_mini() -> str:
+    """Маленький грузовик с «линиями скорости» слева от заголовка карточки."""
+    g1, g2 = P["g1"], P["g2"]
+    return ("<svg width='42' height='26' viewBox='0 0 42 26' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+            f"<g stroke='{g1}' stroke-width='1.7' stroke-linecap='round'>"
+            "<path d='M1 8h8'/><path d='M3 13h6'/><path d='M1 18h8'/></g>"
+            f"<rect x='12' y='5' width='16' height='13' rx='2' fill='{g1}'/>"
+            f"<path d='M29 9h5.5l4.5 4.5V18H29z' fill='{g2}'/>"
+            f"<circle cx='18' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/>"
+            f"<circle cx='34' cy='20' r='3' fill='#16181F' stroke='{P['ink']}' stroke-width='1.2'/></svg>")
+
+
+def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
+             title: str = "Отгрузка сегодня", live: bool = True) -> str:
     done_all = sm["total"] > 0 and sm["done"] >= sm["total"]
     note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
     vals = dict(P)
-    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, clock=ic("clock", P["mute"], 15),
+    vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, title=title,
+                clock=ic("clock", P["mute"], 16), truck_mini=truck_mini(),
+                i_box=ic("box", "#A66BFF", 18), i_ok=ic("check", "#A66BFF", 18), i_clk=ic("clock", "#5B8DEF", 18),
+                check_ico=ic("check", "#FFFFFF", 18),
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
-                all_done="true" if sm["done"] >= sm["total"] else "false",
-                truck=truck_html(pct, done_all), truck_css=TRUCK_CSS, note=note_html)
+                all_done="true" if done_all else "false", live="true" if live else "false",
+                truck=truck_html(pct, done_all or not live), truck_css=TRUCK_CSS, note=note_html)
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -3126,17 +3187,6 @@ def _online_body():
     st.button("Обновить", key="vis_refresh")
 
 
-_dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
-
-
-def online_dialog():
-    """Открывает окно «Посетители» (вызывается после клика на «N онлайн»)."""
-    if _dlg is None:
-        st.info("Окно посетителей работает в Streamlit 1.37 и новее.")
-        return
-    _dlg("Посетители", width="large")(_online_body)()
-
-
 # ───────────────────────── Чат ─────────────────────────
 @st.cache_resource
 def _chat() -> dict:
@@ -3280,7 +3330,7 @@ def _cookie_js(js: str):
 
 
 def _chat_body():
-    """Окно чата. Имя запоминается в cookie браузера: при следующем входе чат открывается сразу."""
+    """Содержимое окна чата. Имя запоминается в cookie браузера: при следующем входе чат открывается сразу."""
     ss = st.session_state
     me = ss.get("chat_name", "")
 
@@ -3322,14 +3372,6 @@ def _chat_body():
         with cB:
             st.button("Отправить", key="chat_send", on_click=_chat_send, type="primary")
         st.caption("Чат общий для всех, кто зашёл по имени. Новое сообщение приходит в колокольчик красным уведомлением.")
-
-
-def chat_dialog():
-    """Открывает окно чата (вызывается после клика на значок чата)."""
-    if _dlg is None:
-        st.info("Чат работает в Streamlit 1.37 и новее.")
-        return
-    _dlg("Чат", width="small")(_chat_body)()
 
 
 # ── сводка для колокольчика: что добавилось, собрано, отгружено ──
@@ -3596,48 +3638,50 @@ with st.container(key="topbar"):
     with tb3:
         st.button("Тема", key="theme_btn", on_click=toggle_theme, help="Переключить день / ночь")
 
-# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на «N онлайн», логотип, значок чата
-# или на комментарий в колокольчике
+# невидимые кнопки: скрипт ниже «нажимает» их, когда кликают на логотип или на комментарий в колокольчике
 st.button("На главную", key="go_home", on_click=set_page, args=(PAGES[0],))
 for _ck in [k for k, _ in _cm_recent(30)]:
     st.button("к виджету", key=f"cmgo_{zlib.crc32(_ck.encode())}", on_click=go_comment, args=(_ck,))
 
 
 @st.fragment
-def _launchers():
-    """Окна открываются из отдельного небольшого блока: нажатие перерисовывает только его, а не всю страницу —
-    поэтому чат и «Посетители» открываются быстро."""
-    if st.button("Онлайн", key="onl_open"):
-        try:
-            online_dialog()
-        except Exception:
-            st.session_state.open_dlg = "onl"
-            st.rerun()
-    if st.button("Чат", key="chat_open"):
-        try:
-            chat_dialog()
-        except Exception:
-            st.session_state.open_dlg = "chat"
-            st.rerun()
+def _wins():
+    """Плавающие окна «Чат» и «Посетители» с размытым фоном. Это обычные блоки на странице (а не st.dialog),
+    поэтому окно открывается каждый раз, а не только после перезагрузки. Перерисовывается только этот блок.
+    Закрыть: крестик, клик по размытому фону или Esc."""
+    st.button("Онлайн", key="onl_open", on_click=open_win, args=("onl",))
+    st.button("Чат", key="chat_open", on_click=open_win, args=("chat",))
+    w = st.session_state.get("win")
+    if w not in ("chat", "onl"):
+        return
+    st.markdown("<div class='mc-backdrop'></div>", unsafe_allow_html=True)
+    with st.container(key=f"win_{w}"):
+        c1, c2 = st.columns([8, 1], vertical_alignment="center")
+        with c1:
+            st.markdown(f"<div class='win-t'>{'Чат' if w == 'chat' else 'Посетители'}</div>", unsafe_allow_html=True)
+        with c2:
+            st.button("Закрыть", key="winclose", on_click=close_win)
+        if w == "chat":
+            _chat_body()
+        else:
+            _online_body()
 
 
-_launchers()
-_od = st.session_state.pop("open_dlg", None)      # запасной путь, если окно нельзя открыть из блока
-if _od == "onl":
-    online_dialog()
-elif _od == "chat":
-    chat_dialog()
+_wins()
 
-# скрипт в родительской странице: Ctrl+K, клики на «онлайн»/логотип/чат/комментарий в колокольчике,
+# скрипт в родительской странице: Ctrl+K, Esc, клики на «онлайн»/логотип/чат/фон окна/комментарий в колокольчике,
 # «печатает», cookie посетителя, имя из Telegram и имя в чате
 _chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
 if(!d.__ck){d.__ck=1;
-d.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
-e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}});
+d.addEventListener('keydown',function(e){
+if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){
+e.preventDefault();var i=d.querySelector('.st-key-gsearch input');if(i){i.focus();i.select();}}
+if(e.key==='Escape'){var x=d.querySelector('.st-key-winclose button');if(x){x.click();}}});
 d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
 var c=t.closest('.cm[data-cm]');
 if(c){var bc=d.querySelector('.st-key-cmgo_'+c.getAttribute('data-cm')+' button');if(bc){bc.click();}return;}
+if(t.closest('.mc-backdrop')){var x2=d.querySelector('.st-key-winclose button');if(x2){x2.click();}return;}
 var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
 if(q){var b=d.querySelector(q);if(b){b.click();}}});
 d.addEventListener('input',function(e){var t=e.target;if(!t||!t.closest||!t.closest('.st-key-chat_msg'))return;
@@ -3809,24 +3853,16 @@ if page == PAGES[0] and not hub_open:
         sync_html = sync_icon(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
-        all_done = sm["total"] > 0 and sm["done"] >= sm["total"]
-        truck_stop = (not is_today) or all_done          # прошлый день или всё отгружено — машина стоит
         ship_note = comment_get("w_ship")
-        ship_html = f"""<div class="ship"><div class="sh-top">
-          <div class="sh-t">{'Отгрузка сегодня' if sd == now.date() else 'Последняя отгрузка'}
-          <span class="pdot"></span><small>{fmt_date(sd)}, {WEEKDAYS[sd.weekday()]}</small>{ic('clock', P['mute'], 15)}{sync_html}</div><div class="sh-p">{pct_ship}%</div></div>
-          <div class="lane">{truck_html(pct_ship, truck_stop)}<div class="bar"><i style="width:{pct_ship}%"></i></div></div>
-          <div class="sh-m">Отгружено <b>{n(sm['done'])}</b> из {n(sm['total'])} заказов ·
-          <b>{n(sm['pcs_done'])}</b> из {n(sm['pcs'])} шт · осталось <b>{n(sm['total'] - sm['done'])}</b> зак.
-          ({n(sm['pcs'] - sm['pcs_done'])} шт)</div>{cm_line('w_ship', 'cmt')}</div>"""
-        ship_h = SHIP_IFRAME_H + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
-        frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note), ship_h) if is_today else None   # сегодня: линия + таймер + грузовик
+        no_truck = pct_ship <= 0 or pct_ship >= 100          # на 0% и 100% машинки нет — карточка ниже
+        ship_h = SHIP_IFRAME_H - (22 if no_truck else 0) + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
+        frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
+                          title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
+                          live=is_today), ship_h)
         if sd in dates:
-            tap("ship", ship_html, go_orders, ("Все", sd), iframe=frame)
-        elif frame:
-            components.html(frame[0], height=frame[1])
+            tap("ship", "", go_orders, ("Все", sd), iframe=frame)
         else:
-            st.markdown(ship_html, unsafe_allow_html=True)
+            components.html(frame[0], height=frame[1])
         comment_ui("w_ship", "Отгрузка сегодня")
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
@@ -4067,20 +4103,86 @@ if page == PAGES[1]:
 
 # ───────────────────────── 3. Поиск ─────────────────────────
 if page == PAGES[2]:
-    q = st.text_input("Номер заказа", key="q_order", placeholder="например, 1M-0024629 или 0024629").strip()
+    q = st.text_input("Номер заказа или магазин", key="q_order",
+                      placeholder="например, 1M-0024629, 0024629 или Узуммаркет").strip()
     if q:
-        hits = df[df["Заказ"].str.contains(q, case=False, regex=False)]
+        hits = df_all[df_all["Заказ"].str.contains(q, case=False, regex=False)]
+        by_store = False
+        if hits.empty:                                   # не нашли по номеру — ищем по названию магазина
+            kq = norm_store(q)
+            if kq:
+                hits = df_all[df_all["Магазин"].map(lambda s: kq in norm_store(s))]
+                by_store = not hits.empty
         if hits.empty:
-            st.warning(f"Заказ «{q}» не найден. Можно вводить только последние цифры номера.")
+            st.warning(f"«{q}» не найдено. Можно вводить последние цифры номера заказа или название магазина.")
         else:
-            st.caption(f"Найдено: {len(hits)}")
+            hits = (hits.assign(_d=hits["Дата"].map(lambda x: x if pd.notna(x) else date.min))
+                    .sort_values(["_d", "Заказ"], ascending=[False, True]).drop(columns="_d"))
+            if by_store:
+                st.caption(f"Заказы магазина: {len(hits)} · {n(hits['Штук'].sum())} шт "
+                           f"(показаны последние {min(len(hits), 30)})")
+            else:
+                st.caption(f"Найдено: {len(hits)}")
+
+            # дополнительные данные: отгрузка (вместе с исключёнными магазинами), Лист1 (категория, приоритет, D / I / O)
+            ship_map = {}
+            try:
+                tabs = load_ship_tabs()
+                ship_all = (pd.concat([parse_ship(tabs.get("new")), parse_ship(tabs.get("archive"))], ignore_index=True)
+                            .drop_duplicates("Заказ", keep="first"))
+                ship_map = {str(r["Заказ"]).strip().upper(): r for r in ship_all.to_dict("records")}
+            except Exception:
+                pass
+            cp_map, cp_heads = {}, [t for _, t in UX_COLS]
+            try:
+                cp_map, cp_heads = load_cat_prio()
+            except Exception:
+                pass
+            have_status = None
+            try:
+                have_status = load_status_orders()
+            except Exception:
+                pass
+
+            def order_card(r: dict) -> str:
+                key = str(r["Заказ"]).strip().upper()
+                new = bool(r.get("Новый", False))
+                d_ = r.get("Дата")
+                date_txt = f"{d_:%d.%m.%Y}, {WEEKDAYS[d_.weekday()]}" if pd.notna(d_) else ""
+                sections = [("Заказ", [
+                    ("Магазин", r.get("Магазин")), ("Город", r.get("Город")), ("Адрес", r.get("Адрес")),
+                    ("Дата отгрузки", date_txt), ("Штук", n(r["Штук"])),
+                    ("Статус WMS", r.get("Статус WMS")),
+                    ("Сборка", r.get("Сборка") or ("не маршрутизирован" if new else
+                                                  ("собран" if r["Собран"] else "не собран")))])]
+                sh = ship_map.get(key)
+                if sh:
+                    fact = sh.get("Факт")
+                    fields = [("Рейс", sh.get("Рейс")),
+                              ("Статус отгрузки", "Отгружен" if sh.get("Отгружен") else "Не отгружен"),
+                              ("Факт отгрузки", f"{fact:%d.%m.%Y %H:%M}" if pd.notna(fact) else ""),
+                              ("План отгрузки", f"{sh['Дата']:%d.%m.%Y}" if pd.notna(sh.get("Дата")) else "")]
+                    if sh.get("Отгружен") and have_status is not None:
+                        fields.append(("В «Статус по отгрузкам»", "да" if key in have_status else "нет, обновляется"))
+                    sections.append(("Отгрузка", fields))
+                cp = cp_map.get(key)
+                if cp:
+                    sections.append(("Категория, приоритет и данные Лист1", [
+                        ("Категория", cp[0]), ("Приоритет", cp[1]),
+                        (cp_heads[0], cp[2]), (cp_heads[1], cp[3]), (cp_heads[2], cp[4])]))
+                body = ""
+                for title, fields in sections:
+                    cells = "".join(f"<div class='df'><span>{esc(k)}</span>"
+                                    f"<b>{esc(v) if str(v if v is not None else '').strip() else '—'}</b></div>"
+                                    for k, v in fields)
+                    body += f"<div class='dsec'>{esc(title)}</div><div class='dg'>{cells}</div>"
+                return (f"<div class='hit'><div class='n'>{esc(r['Заказ'])} &nbsp;{badge(r['Собран'], new)}</div>"
+                        f"<div class='s'>{esc(r.get('Магазин') or '')} · {esc(r.get('Город') or '—')}</div>{body}</div>")
+
             for r in hits.head(30).to_dict("records"):
-                st.markdown(f"""<div class="hit"><div class="n">{esc(r['Заказ'])} &nbsp;{badge(r['Собран'])}</div>
-                <div class="s">{esc(r['Магазин'])} · {esc(r['Город'])}</div>
-                Отгрузка: <b>{fmt_date(r['Дата'])}</b> · {n(r['Штук'])} шт · WMS: <b>{esc(r['Статус WMS'] or '—')}</b></div>""",
-                            unsafe_allow_html=True)
+                st.markdown(order_card(r), unsafe_allow_html=True)
     else:
-        st.info("Введите номер заказа или его часть.")
+        st.info("Введите номер заказа (или его часть) либо название магазина, например «Узуммаркет».")
 
 # ───────────────────────── 4. Пустые короба ─────────────────────────
 if page == PAGES[3]:
@@ -4362,14 +4464,24 @@ if page == PAGES[4]:
 # ───────────────────────── 6. Аналитика ─────────────────────────
 if page == PAGES[5]:
     import altair as alt
-    st.markdown("<div class='sec'>Аналитика: количество штук</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sec'>Аналитика</div>", unsafe_allow_html=True)
 
-    src = df_all.dropna(subset=["Дата"])
+    # один и тот же заказ считаем один раз (повторы строк в таблицах не раздувают числа)
+    src = df_all.dropna(subset=["Дата"]).drop_duplicates("Заказ")
     if src.empty:
         st.info("Нет данных для графика.")
     else:
-        by = st.segmented_control("Группировка", ["По дням", "По неделям"], key="an_by") or "По дням"
+        st.session_state.setdefault("an_unit", "Штуки")
+        ca, cb = st.columns(2)
+        with ca:
+            by = st.segmented_control("Группировка", ["По дням", "По неделям"], key="an_by") or "По дням"
+        with cb:
+            unit = st.segmented_control("Что считать на графике", ["Штуки", "Заказы"], key="an_unit") or "Штуки"
         weekly = by == "По неделям"
+        orders_mode = unit == "Заказы"
+        UW = "заказов" if orders_mode else "шт"          # единица в подписях
+        UT = "Заказов" if orders_mode else "Штук"        # название оси
+
         dmin_a, dmax_a = min(src["Дата"]), max(src["Дата"])
         start = max(dmin_a, dmax_a - timedelta(days=55 if weekly else 13))
         per = st.date_input("Период", value=(start, dmax_a), min_value=dmin_a, max_value=dmax_a,
@@ -4381,8 +4493,10 @@ if page == PAGES[5]:
                 st.info("За выбранный период заказов нет.")
             else:
                 part["Статус"] = np.where(part["Собран"], "Собрано", "Не собрано")
-                tot = int(part["Штук"].sum())
-                done_ = int(part.loc[part["Собран"], "Штук"].sum())
+                part["Вел"] = 1 if orders_mode else part["Штук"]       # что суммируем: заказы или штуки
+                tot = int(part["Вел"].sum())
+                done_ = int(part.loc[part["Собран"], "Вел"].sum())
+                pcs_tot = int(part["Штук"].sum())
                 colors = alt.Scale(domain=["Собрано", "Не собрано"], range=["#1E9E5C", "#E8A33D"])
 
                 def an_store_stats():
@@ -4412,53 +4526,53 @@ if page == PAGES[5]:
                         with s3:
                             an_widget("an_max", n(mx_v), "макс. заказов на магазин", who(mx_names), "left", "box")
                     with s4:
-                        an_widget("an_pcs", n(round(tot / len(part))) if len(part) else "—",
-                                  "среднее шт в одном заказе", f"{n(tot)} шт · {n(len(part))} заказов", "ok", "box")
+                        an_widget("an_pcs", n(round(pcs_tot / len(part))) if len(part) else "—",
+                                  "среднее шт в одном заказе", f"{n(pcs_tot)} шт · {n(len(part))} заказов", "ok", "box")
 
                 if not weekly:
-                    g = part.groupby(["Дата", "Статус"], as_index=False)["Штук"].sum()
+                    g = part.groupby(["Дата", "Статус"], as_index=False)["Вел"].sum()
                     g["Дата"] = pd.to_datetime(g["Дата"])
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        an_widget("an_total", n(tot), "всего штук за период", f"{a1:%d.%m} — {a2:%d.%m}", "all")
+                        an_widget("an_total", n(tot), f"всего {UW} за период", f"{a1:%d.%m} — {a2:%d.%m}", "all")
                     with c2:
-                        an_widget("an_done", n(done_), "собрано, шт", "", "ok")
+                        an_widget("an_done", n(done_), f"собрано, {UW}", "", "ok")
                     with c3:
-                        an_widget("an_left", n(tot - done_), "не собрано, шт", "", "left")
+                        an_widget("an_left", n(tot - done_), f"не собрано, {UW}", "", "left")
                     an_store_stats()
                     chart = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
                              .encode(x=alt.X("yearmonthdate(Дата):T", title=None,
                                              axis=alt.Axis(format="%d.%m", labelAngle=-45)),
-                                     y=alt.Y("Штук:Q", title="Штук", axis=alt.Axis(format=",.0f")),
+                                     y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
                                      color=alt.Color("Статус:N", title=None, scale=colors,
                                                      legend=alt.Legend(orient="top")),
                                      tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
                                               alt.Tooltip("Статус:N"),
-                                              alt.Tooltip("Штук:Q", title="Штук", format=",.0f")])
+                                              alt.Tooltip("Вел:Q", title=UT, format=",.0f")])
                              .properties(height=400))
                 else:
                     dd = pd.to_datetime(part["Дата"])
                     part["W"] = (dd - pd.to_timedelta(dd.dt.weekday, unit="D")).dt.normalize()
                     wk = (part.groupby("W")
-                          .agg(Штук=("Штук", "sum"),
-                               Собрано=("Штук", lambda s: int(s[part.loc[s.index, "Собран"]].sum())))
+                          .agg(Итого=("Вел", "sum"),
+                               Собрано=("Вел", lambda s: int(s[part.loc[s.index, "Собран"]].sum())))
                           .reset_index().sort_values("W"))
-                    wk["Не собрано"] = wk["Штук"] - wk["Собрано"]
+                    wk["Не собрано"] = wk["Итого"] - wk["Собрано"]
                     wk["Неделя"] = (wk["W"].dt.strftime("%d.%m") + "–" +
                                     (wk["W"] + pd.Timedelta(days=6)).dt.strftime("%d.%m"))
-                    wk["Δ"] = wk["Штук"].diff()
-                    wk["Δ%"] = wk["Штук"].pct_change() * 100
+                    wk["Δ"] = wk["Итого"].diff()
+                    wk["Δ%"] = wk["Итого"].pct_change() * 100
                     order = wk["Неделя"].tolist()
 
                     last_w = wk.iloc[-1]
                     if len(wk) > 1 and pd.notna(last_w["Δ%"]):
                         arrow = "▲" if last_w["Δ"] > 0 else ("▼" if last_w["Δ"] < 0 else "■")
-                        sub3 = f"{arrow} {last_w['Δ']:+,.0f} шт ({last_w['Δ%']:+.0f}%) к прошлой неделе".replace(",", " ")
+                        sub3 = f"{arrow} {last_w['Δ']:+,.0f} {UW} ({last_w['Δ%']:+.0f}%) к прошлой неделе".replace(",", " ")
                     else:
                         sub3 = "нет предыдущей недели для сравнения"
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        an_widget("an_wk_total", n(tot), "всего штук за период", f"недель: {len(wk)}", "all")
+                        an_widget("an_wk_total", n(tot), f"всего {UW} за период", f"недель: {len(wk)}", "all")
                     with c2:
                         an_widget("an_wk_avg", n(wk["Штук"].mean()), "в среднем за неделю, шт", "", "ok")
                     with c3:
