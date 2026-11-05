@@ -66,7 +66,9 @@ ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
 # Координаты магазинов (вкладка «Кординаты» в той же таблице)
 COORDS_GID = "1482916811"
-ACTS_SHEET_ID = "1eSYVyNQ89damF7zedSgJ0WERfBDDisxB5laqMzmmKDw"   # таблица «Акты на отгрузку»
+
+# Акты на отгрузку (для Узуммаркет: по клику на номер заказа показываем номера актов)
+ACTS_SHEET_ID = "1eSYVyNQ89damF7zedSgJ0WERfBDDisxB5laqMzmmKDw"
 ACTS_GID = "0"
 ORDER_RE = re.compile(r"\b[A-Za-z0-9]{1,3}-\d{4,}\b")
 
@@ -795,6 +797,8 @@ _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "
              u_download_s=icon_uri("download", P["mute"]),
              u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
+
+# дополнительные стили: ссылки на акты, скрытые кнопки актов, компактная кнопка комментария
 st.markdown(Template("""<style>
 .ordlink { cursor:pointer; color:$accent; border-bottom:1px dashed $accent; }
 .ordlink:hover { color:$accent_ink; border-bottom-style:solid; }
@@ -808,6 +812,7 @@ st.markdown(Template("""<style>
                                           font-size:.66rem !important; border-radius:8px; }
 .stApp [data-testid="stPopover"] button p { font-size:.66rem !important; }
 </style>""").safe_substitute(P), unsafe_allow_html=True)
+
 # иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате, закрытие окна
 _ir = []
 for _i, _nm in enumerate(NAV_ICON_NAMES):
@@ -1009,7 +1014,10 @@ def load_cat_prio():
         out[r[i_o].strip().upper()] = (cell(r, i_c), cell(r, i_p), cell(r, UX_COLS[0][0]),
                                        cell(r, UX_COLS[1][0]), cell(r, UX_COLS[2][0]))
     return out, heads
-    ACT_COLS = ["Заказ", "Клиент", "Акт", "Тип", "Дата отгрузки", "Паллет", "Коробов", "Статус",
+
+
+# ───────────────────────── Акты на отгрузку (для Узуммаркет) ─────────────────────────
+ACT_COLS = ["Заказ", "Клиент", "Акт", "Тип", "Дата отгрузки", "Паллет", "Коробов", "Статус",
             "Комментарий", "Приезд транспорта"]
 
 
@@ -2325,54 +2333,6 @@ def set_oth(name):
     st.session_state.act_order = None
 
 
-def set_act(order):
-    st.session_state.act_order = order
-    st.session_state.act_scroll = True
-
-
-def close_act():
-    st.session_state.act_order = None
-
-
-def acts_panel(part: pd.DataFrame, acts_df: pd.DataFrame):
-    """Панель актов: скрытые кнопки для ссылок в таблице, акты выбранного заказа, Excel."""
-    for o in part["Заказ"].str.strip().drop_duplicates():          # кнопки, которые «нажимает» клик по номеру
-        st.button("акты", key=f"actgo_{zlib.crc32(o.upper().encode())}", on_click=set_act, args=(o,))
-    cur = st.session_state.get("act_order")
-    with st.container(key="actpanel"):
-        if cur:
-            a = acts_df[acts_df["Заказ"] == cur.strip().upper()]
-            c1, c2 = st.columns([6, 1], vertical_alignment="center")
-            with c1:
-                st.markdown(f"<div class='sec' style='margin:6px 0'>Акты заказа {esc(cur)} · {len(a)}</div>",
-                            unsafe_allow_html=True)
-            with c2:
-                st.button("Закрыть", key="act_close", on_click=close_act, width="stretch")
-            if a.empty:
-                st.info("Для этого заказа в таблице актов записей нет (или номер заказа в ней не указан).")
-            else:
-                rows = [[f"<b>{esc(r.Акт)}</b>", esc(r.Тип or "—"), esc(r.Клиент or "—"),
-                         esc(r._4 or "—"), esc(r.Паллет or "—"), esc(r.Коробов or "—"),
-                         esc(r.Статус or "—"), esc(r.Комментарий or "—"), esc(r._9 or "—")]
-                        for r in a.rename(columns={"Дата отгрузки": "_4", "Приезд транспорта": "_9"})
-                        .itertuples(index=False)]
-                st.markdown(simple_table(["Номер акта", "Тип", "Клиент", "Дата отгрузки", "Паллет", "Коробов",
-                                          "Статус", "Комментарий", "Приезд транспорта"], rows),
-                            unsafe_allow_html=True)
-                bx = int(pd.to_numeric(a["Коробов"], errors="coerce").fillna(0).sum())
-                st.caption(f"Актов: {len(a)} · коробов: {n(bx)}")
-                xl_button("Акты заказа в Excel", lambda: acts_excel(a), f"akty_{cur.strip()}.xlsx", "dl_act_one")
-        keys = {o.strip().upper() for o in part["Заказ"]}
-        a_all = acts_df[acts_df["Заказ"].isin(keys)]
-        if a_all.empty:
-            st.caption("Актов по заказам Узуммаркет в таблице актов пока нет.")
-        else:
-            xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
-                      f"akty_uzummarket_{now:%Y%m%d}.xlsx", "dl_act_all")
-            if not cur:
-                st.caption("Нажмите на номер заказа в таблице ниже, чтобы увидеть его акты.")
-
-
 def set_page(p):
     st.session_state.page = p
     st.session_state.hub_open = False
@@ -2424,6 +2384,55 @@ def go_comment(key: str):
         ss.page = PAGES[0]
         if key.startswith("w_day_"):
             ss.show_all_days = True          # день мог быть скрыт (готовность выше порога)
+
+
+def set_act(order):
+    """Клик по номеру заказа в таблице Узуммаркет: показать акты этого заказа."""
+    st.session_state.act_order = order
+    st.session_state.act_scroll = True
+
+
+def close_act():
+    st.session_state.act_order = None
+
+
+def acts_panel(part: pd.DataFrame, acts_df: pd.DataFrame):
+    """Панель актов: скрытые кнопки для ссылок в таблице, акты выбранного заказа, Excel."""
+    for o in part["Заказ"].str.strip().drop_duplicates():          # кнопки, которые «нажимает» клик по номеру
+        st.button("акты", key=f"actgo_{zlib.crc32(o.upper().encode())}", on_click=set_act, args=(o,))
+    cur = st.session_state.get("act_order")
+    with st.container(key="actpanel"):
+        if cur:
+            a = acts_df[acts_df["Заказ"] == cur.strip().upper()]
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            with c1:
+                st.markdown(f"<div class='sec' style='margin:6px 0'>Акты заказа {esc(cur)} · {len(a)}</div>",
+                            unsafe_allow_html=True)
+            with c2:
+                st.button("Закрыть", key="act_close", on_click=close_act, width="stretch")
+            if a.empty:
+                st.info("Для этого заказа в таблице актов записей нет (или номер заказа в ней не указан).")
+            else:
+                rows = [[f"<b>{esc(r['Акт'])}</b>", esc(r["Тип"] or "—"), esc(r["Клиент"] or "—"),
+                         esc(r["Дата отгрузки"] or "—"), esc(r["Паллет"] or "—"), esc(r["Коробов"] or "—"),
+                         esc(r["Статус"] or "—"), esc(r["Комментарий"] or "—"),
+                         esc(r["Приезд транспорта"] or "—")]
+                        for r in a.to_dict("records")]
+                st.markdown(simple_table(["Номер акта", "Тип", "Клиент", "Дата отгрузки", "Паллет", "Коробов",
+                                          "Статус", "Комментарий", "Приезд транспорта"], rows),
+                            unsafe_allow_html=True)
+                bx = int(pd.to_numeric(a["Коробов"], errors="coerce").fillna(0).sum())
+                st.caption(f"Актов: {len(a)} · коробов: {n(bx)}")
+                xl_button("Акты заказа в Excel", lambda: acts_excel(a), f"akty_{cur.strip()}.xlsx", "dl_act_one")
+        keys = {o.strip().upper() for o in part["Заказ"]}
+        a_all = acts_df[acts_df["Заказ"].isin(keys)]
+        if a_all.empty:
+            st.caption("Актов по заказам Узуммаркет в таблице актов пока нет.")
+        else:
+            xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
+                      f"akty_uzummarket_{datetime.now(TZ):%Y%m%d}.xlsx", "dl_act_all")
+            if not cur:
+                st.caption("Нажмите на номер заказа в таблице ниже, чтобы увидеть его акты.")
 
 
 def badge(collected: bool, new: bool = False) -> str:
@@ -2480,47 +2489,47 @@ def routing_table(g: pd.DataFrame) -> str:
 
 
 # ── карточка «Отгрузка сегодня»: строгий деловой стиль, живой таймер до 17:00 (отдельный документ со своим скриптом) ──
-# Без иконок-машинок и мигающих точек: заголовок, крупный процент, тонкая линия и четыре ячейки с цифрами.
+# Без иконок-машинок и мигающих точек: заголовок, процент, тонкая линия и четыре ячейки с цифрами. Компактный размер.
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body { margin:0; padding:0; background:transparent; font-family:'Inter', sans-serif; color:$ink; }
-.ship { background:$card; border:1px solid $line; border-radius:14px; padding:14px 18px 12px; margin:0 0 8px;
+.ship { background:$card; border:1px solid $line; border-radius:12px; padding:9px 14px 8px; margin:0 0 6px;
         box-sizing:border-box; }
 .sh-top { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
-.sh-l { display:flex; flex-direction:column; gap:3px; min-width:0; }
-.eyebrow { font-size:.66rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:$mute; }
-.sh-d { display:flex; align-items:center; gap:8px; font-size:1.05rem; font-weight:700; color:$ink; }
-.sh-p { font-size:2rem; font-weight:800; letter-spacing:-0.03em; color:$ink; line-height:1;
+.sh-l { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.eyebrow { font-size:.6rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:$mute; }
+.sh-d { display:flex; align-items:center; gap:8px; font-size:.9rem; font-weight:700; color:$ink; }
+.sh-p { font-size:1.5rem; font-weight:800; letter-spacing:-0.03em; color:$ink; line-height:1;
         font-variant-numeric:tabular-nums; }
-.sh-p small { font-size:1rem; font-weight:700; color:$mute; margin-left:1px; }
-.sync { display:inline-flex; width:16px; height:16px; border-radius:50%; align-items:center; justify-content:center;
-        font-size:.62rem; font-weight:800; box-sizing:border-box; }
+.sh-p small { font-size:.85rem; font-weight:700; color:$mute; margin-left:1px; }
+.sync { display:inline-flex; width:14px; height:14px; border-radius:50%; align-items:center; justify-content:center;
+        font-size:.56rem; font-weight:800; box-sizing:border-box; }
 .sync.ok { background:#1E9E5C; color:#fff; }
 .sync.spin { border:2px solid $track; border-top-color:$left; animation:syncspin .9s linear infinite; }
 @keyframes syncspin { to { transform:rotate(360deg); } }
 
-.bar { height:6px; border-radius:99px; background:$track; overflow:hidden; margin:12px 0; }
+.bar { height:5px; border-radius:99px; background:$track; overflow:hidden; margin:8px 0; }
 .bar > i { display:block; height:100%; border-radius:99px; background:$accent; }
 .ship.y .bar > i { background:#F2B705; }
 .ship.r .bar > i { background:#E5384F; }
 .ship.done .bar > i { background:#34C27A; }
 
 .stats { display:grid; grid-template-columns:repeat(4, 1fr); }
-.cell { padding:0 14px; border-left:1px solid $line; display:flex; flex-direction:column; gap:3px; min-width:0; }
+.cell { padding:0 12px; border-left:1px solid $line; display:flex; flex-direction:column; gap:2px; min-width:0; }
 .cell:first-child { padding-left:0; border-left:none; }
-.lb { font-size:.62rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:$mute; }
-.vl { font-size:.84rem; color:$mute; white-space:nowrap; }
-.vl b { font-size:1.05rem; color:$ink; font-weight:800; font-variant-numeric:tabular-nums; }
-.vl.tm { font-size:1.05rem; font-weight:800; color:$ink; font-variant-numeric:tabular-nums; }
+.lb { font-size:.56rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:$mute; }
+.vl { font-size:.76rem; color:$mute; white-space:nowrap; }
+.vl b { font-size:.95rem; color:$ink; font-weight:800; font-variant-numeric:tabular-nums; }
+.vl.tm { font-size:.95rem; font-weight:800; color:$ink; font-variant-numeric:tabular-nums; }
 .ship.y .vl.tm { color:#F2B705; }
 .ship.r .vl.tm { color:#FF6B6B; }
 .ship.done .vl.tm { color:#34C27A; }
 @media (max-width:560px) {
-  .stats { grid-template-columns:1fr 1fr; row-gap:10px; }
+  .stats { grid-template-columns:1fr 1fr; row-gap:8px; }
   .cell:nth-child(3) { padding-left:0; border-left:none; }
 }
-.cmt { margin-top:10px; padding-top:5px; border-top:1px dashed $line; font-size:.66rem; line-height:1.35;
+.cmt { margin-top:7px; padding-top:4px; border-top:1px dashed $line; font-size:.62rem; line-height:1.35;
        color:$accent_ink; font-style:italic; word-break:break-word; animation:cmblink 2.6s ease-in-out infinite; }
 @keyframes cmblink { 0%, 100% { opacity:1; } 50% { opacity:.35; } }
 </style></head><body>
@@ -2572,7 +2581,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 })();
 </script></body></html>""")
 
-SHIP_IFRAME_H = 134   # высота карточки без комментария, px
+SHIP_IFRAME_H = 106   # высота карточки без комментария, px
 
 
 def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
@@ -2873,6 +2882,10 @@ def _cm_save(key: str, label: str):
 
 
 def comment_ui(key: str, label: str):
+    """Маленькая кнопка «💬 Комментарий» под виджетом: открывается окошко с полем и кнопкой «Сохранить».
+    Название кнопки постоянное, а поле инициализируется один раз — иначе Streamlit считал кнопку
+    «новым элементом» после сохранения и окно не открывалось второй раз.
+    Контейнер cmu_<key> — «якорь»: к нему и к виджету над ним прокручивает клик по комментарию в колокольчике."""
     cur = comment_get(key)
     wk = f"cm_t_{key}"
     if wk not in st.session_state:
@@ -3577,7 +3590,7 @@ def bell_html() -> str:
                        f"<small>{stamp}{by} · открыть виджет ›</small></div>")
     if not cm_rows:
         cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под любым виджетом кнопкой "
-                       "«Добавить комментарий».</div>")
+                       "«Комментарий».</div>")
 
     pop = (f"<div class='bell-pop'><div class='bp-h'>Уведомления</div>"
            f"<div class='bp-box'>{chat_line}{now_box}<br>{td}</div>"
@@ -3686,8 +3699,8 @@ def _wins():
 
 _wins()
 
-# скрипт в родительской странице: Ctrl+K, Esc, клики на «онлайн»/логотип/чат/фон окна/комментарий в колокольчике,
-# «печатает», cookie посетителя, имя из Telegram и имя в чате
+# скрипт в родительской странице: Ctrl+K, Esc, клики на «онлайн»/логотип/чат/фон окна/комментарий в колокольчике/
+# номер заказа Узуммаркет, «печатает», cookie посетителя, имя из Telegram и имя в чате
 _chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
 if(!d.__ck){d.__ck=1;
@@ -3698,6 +3711,8 @@ if(e.key==='Escape'){var x=d.querySelector('.st-key-winclose button');if(x){x.cl
 d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
 var c=t.closest('.cm[data-cm]');
 if(c){var bc=d.querySelector('.st-key-cmgo_'+c.getAttribute('data-cm')+' button');if(bc){bc.click();}return;}
+var a=t.closest('.ordlink[data-act]');
+if(a){var ba=d.querySelector('.st-key-actgo_'+a.getAttribute('data-act')+' button');if(ba){ba.click();}return;}
 if(t.closest('.mc-backdrop')){var x2=d.querySelector('.st-key-winclose button');if(x2){x2.click();}return;}
 var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
 if(q){var b=d.querySelector(q);if(b){b.click();}}});
@@ -3871,7 +3886,7 @@ if page == PAGES[0] and not hub_open:
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
         ship_note = comment_get("w_ship")
-        ship_h = SHIP_IFRAME_H + ((22 + 12 * (len(ship_note) // 80)) if ship_note else 0)
+        ship_h = SHIP_IFRAME_H + ((20 + 12 * (len(ship_note) // 80)) if ship_note else 0)
         frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
                           title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
                           live=is_today), ship_h)
@@ -4000,7 +4015,7 @@ if page == PAGES[1]:
             oi = EXCLUDE_STORES.index(sel)
             part = oth[oth["_k"] == norm_store(sel)]
             is_uz = norm_store(sel) == norm_store("Узуммаркет")
-            ux_heads = None
+            ux_heads, acts_df, acts_cnt = None, None, None
             if is_uz:
                 try:
                     cpmap, ux_heads = load_cat_prio()
@@ -4018,6 +4033,13 @@ if page == PAGES[1]:
                     "Дата Uzum": key_.map(lambda k: cpmap.get(k, empty5)[3]),         # колонка I
                     "Статус заказа": key_.map(lambda k: cpmap.get(k, empty5)[4]),     # колонка O
                 })
+                try:
+                    acts_df = load_acts()
+                    acts_cnt = acts_df.groupby("Заказ").size().to_dict()
+                except Exception as e:
+                    st.warning("Не удалось прочитать таблицу актов. Откройте её для почты сервисного аккаунта "
+                               "(роль «Читатель»).")
+                    st.caption(str(e))
             nc, dn = part[~part["Собран"]], part[part["Собран"]]
             st.button("← Все прочие заказы", on_click=set_oth, args=(None,), key="oth_back")
             st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
@@ -4031,6 +4053,9 @@ if page == PAGES[1]:
             with o4:
                 an_widget(f"oth{oi}_dnp", n(dn["Штук"].sum()), f"{sel}: собрано, шт", "", "ok")
 
+            if is_uz and acts_df is not None and not part.empty:
+                acts_panel(part, acts_df)
+
             if part.empty:
                 st.info("Заказов этого магазина нет.")
             else:
@@ -4038,12 +4063,12 @@ if page == PAGES[1]:
                 if nc.empty:
                     st.success("Не собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads, acts=acts_cnt), unsafe_allow_html=True)
                 st.markdown("<div class='sec'>Собранные заказы</div>", unsafe_allow_html=True)
                 if dn.empty:
                     st.info("Собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads), unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads, acts=acts_cnt), unsafe_allow_html=True)
     elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
@@ -4749,3 +4774,11 @@ var el=c.previousElementSibling||c;
 el.scrollIntoView({behavior:'smooth',block:'center'});
 el.classList.add('cm-flash');setTimeout(function(){el.classList.remove('cm-flash');},2600);}
 go();})();</script>""".replace("__K__", _focus), height=0)
+
+# ───────────────────────── Прокрутка к актам после клика на номер заказа ─────────────────────────
+if st.session_state.pop("act_scroll", False):
+    components.html("""<script>(function(){var t=0,d=window.parent.document;
+function go(){var c=d.querySelector('.st-key-actpanel');
+if(!c){if(t++<30){setTimeout(go,150);}return;}
+c.scrollIntoView({behavior:'smooth',block:'start'});}
+go();})();</script>""", height=0)
