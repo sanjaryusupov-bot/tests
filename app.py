@@ -66,6 +66,9 @@ ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
 # Координаты магазинов (вкладка «Кординаты» в той же таблице)
 COORDS_GID = "1482916811"
+ACTS_SHEET_ID = "1eSYVyNQ89damF7zedSgJ0WERfBDDisxB5laqMzmmKDw"   # таблица «Акты на отгрузку»
+ACTS_GID = "0"
+ORDER_RE = re.compile(r"\b[A-Za-z0-9]{1,3}-\d{4,}\b")
 
 # Сохранение ручных рейсов: вкладка в основной таблице (нужен доступ «Редактор» для сервисного аккаунта)
 PLAN_TAB = "Рейсы_план"
@@ -792,7 +795,19 @@ _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "
              u_download_s=icon_uri("download", P["mute"]),
              u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
-
+st.markdown(Template("""<style>
+.ordlink { cursor:pointer; color:$accent; border-bottom:1px dashed $accent; }
+.ordlink:hover { color:$accent_ink; border-bottom-style:solid; }
+.acnt { display:inline-block; margin-left:6px; padding:0 7px; border-radius:99px; font-size:.64rem;
+        font-weight:700; background:$ok_bg; color:$ok_fg; white-space:nowrap; }
+.acnt.z { background:$track; color:$mute; }
+[class*="st-key-actgo_"] { position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
+                           overflow:hidden; opacity:0; pointer-events:none; }
+/* маленькая кнопка комментария */
+.stApp [data-testid="stPopover"] button { min-height:24px !important; padding:0 .55rem !important;
+                                          font-size:.66rem !important; border-radius:8px; }
+.stApp [data-testid="stPopover"] button p { font-size:.66rem !important; }
+</style>""").safe_substitute(P), unsafe_allow_html=True)
 # иконки на кнопках: меню слева, вкладки разделов, тема, «Обновить», отправка в чате, закрытие окна
 _ir = []
 for _i, _nm in enumerate(NAV_ICON_NAMES):
@@ -994,6 +1009,51 @@ def load_cat_prio():
         out[r[i_o].strip().upper()] = (cell(r, i_c), cell(r, i_p), cell(r, UX_COLS[0][0]),
                                        cell(r, UX_COLS[1][0]), cell(r, UX_COLS[2][0]))
     return out, heads
+    ACT_COLS = ["Заказ", "Клиент", "Акт", "Тип", "Дата отгрузки", "Паллет", "Коробов", "Статус",
+            "Комментарий", "Приезд транспорта"]
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
+def load_acts() -> pd.DataFrame:
+    """Таблица «Акты на отгрузку»: одна строка результата = один акт одного заказа.
+    Колонки ищутся по заголовкам, запасной вариант — A..J. Строки без номера заказа пропускаются."""
+    sheet = _client().open_by_key(ACTS_SHEET_ID)
+    ws = next((w for w in sheet.worksheets() if str(w.id) == ACTS_GID), None) or sheet.sheet1
+    rows = ws.get_all_values()
+    norm = lambda s: " ".join(str(s).lower().split())
+    hi = next((i for i, r in enumerate(rows[:15]) if any("номера актов" in norm(c) for c in r)), 1)
+    head = [norm(h) for h in rows[hi]]
+
+    def col(keys, default):
+        for i, h in enumerate(head):
+            if any(k in h for k in keys):
+                return i
+        return default
+
+    i_cl, i_act, i_tp = col(["юр", "название"], 0), col(["номера актов"], 1), col(["тип"], 2)
+    i_dt, i_pl, i_or = col(["дата отгрузки"], 3), col(["паллет"], 4), col(["заказ"], 5)
+    i_bx, i_st, i_cm, i_ar = col(["короб"], 6), col(["статус"], 7), col(["комментар"], 8), col(["приезд"], 9)
+
+    def cell(r, i):
+        return r[i].strip() if len(r) > i else ""
+
+    out = []
+    for r in rows[hi + 1:]:
+        act = cell(r, i_act)
+        orders = ORDER_RE.findall(cell(r, i_or).upper())
+        if not act or not orders:
+            continue
+        for o in orders:
+            out.append([o, cell(r, i_cl), act, cell(r, i_tp), cell(r, i_dt), cell(r, i_pl), cell(r, i_bx),
+                        cell(r, i_st), cell(r, i_cm), cell(r, i_ar)])
+    d = pd.DataFrame(out, columns=ACT_COLS)
+    return d.drop_duplicates(["Заказ", "Акт"]).reset_index(drop=True)
+
+
+def acts_excel(frame: pd.DataFrame) -> bytes:
+    f = frame.copy()
+    f["Коробов"] = pd.to_numeric(f["Коробов"], errors="coerce").fillna(0).astype(int)
+    return to_xlsx({"Акты": f[ACT_COLS]})
 
 
 # ───────────────────────── Metabase: остатки ─────────────────────────
@@ -2262,6 +2322,55 @@ def go_orders(mode: str, d):
 def set_oth(name):
     """«Прочие заказы»: открыть магазин (name) или вернуться к общему списку (None)."""
     st.session_state.oth_store = name
+    st.session_state.act_order = None
+
+
+def set_act(order):
+    st.session_state.act_order = order
+    st.session_state.act_scroll = True
+
+
+def close_act():
+    st.session_state.act_order = None
+
+
+def acts_panel(part: pd.DataFrame, acts_df: pd.DataFrame):
+    """Панель актов: скрытые кнопки для ссылок в таблице, акты выбранного заказа, Excel."""
+    for o in part["Заказ"].str.strip().drop_duplicates():          # кнопки, которые «нажимает» клик по номеру
+        st.button("акты", key=f"actgo_{zlib.crc32(o.upper().encode())}", on_click=set_act, args=(o,))
+    cur = st.session_state.get("act_order")
+    with st.container(key="actpanel"):
+        if cur:
+            a = acts_df[acts_df["Заказ"] == cur.strip().upper()]
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            with c1:
+                st.markdown(f"<div class='sec' style='margin:6px 0'>Акты заказа {esc(cur)} · {len(a)}</div>",
+                            unsafe_allow_html=True)
+            with c2:
+                st.button("Закрыть", key="act_close", on_click=close_act, width="stretch")
+            if a.empty:
+                st.info("Для этого заказа в таблице актов записей нет (или номер заказа в ней не указан).")
+            else:
+                rows = [[f"<b>{esc(r.Акт)}</b>", esc(r.Тип or "—"), esc(r.Клиент or "—"),
+                         esc(r._4 or "—"), esc(r.Паллет or "—"), esc(r.Коробов or "—"),
+                         esc(r.Статус or "—"), esc(r.Комментарий or "—"), esc(r._9 or "—")]
+                        for r in a.rename(columns={"Дата отгрузки": "_4", "Приезд транспорта": "_9"})
+                        .itertuples(index=False)]
+                st.markdown(simple_table(["Номер акта", "Тип", "Клиент", "Дата отгрузки", "Паллет", "Коробов",
+                                          "Статус", "Комментарий", "Приезд транспорта"], rows),
+                            unsafe_allow_html=True)
+                bx = int(pd.to_numeric(a["Коробов"], errors="coerce").fillna(0).sum())
+                st.caption(f"Актов: {len(a)} · коробов: {n(bx)}")
+                xl_button("Акты заказа в Excel", lambda: acts_excel(a), f"akty_{cur.strip()}.xlsx", "dl_act_one")
+        keys = {o.strip().upper() for o in part["Заказ"]}
+        a_all = acts_df[acts_df["Заказ"].isin(keys)]
+        if a_all.empty:
+            st.caption("Актов по заказам Узуммаркет в таблице актов пока нет.")
+        else:
+            xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
+                      f"akty_uzummarket_{now:%Y%m%d}.xlsx", "dl_act_all")
+            if not cur:
+                st.caption("Нажмите на номер заказа в таблице ниже, чтобы увидеть его акты.")
 
 
 def set_page(p):
@@ -2323,8 +2432,9 @@ def badge(collected: bool, new: bool = False) -> str:
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
 
 
-def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=None) -> str:
-    """cp — колонки «Категория» и «Приоритет»; ux — три заголовка колонок D / I / O из Лист1 (для Узуммаркет)."""
+def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=None, acts=None) -> str:
+    """cp — «Категория» и «Приоритет»; ux — заголовки колонок D / I / O из Лист1;
+    acts — {номер заказа: число актов}: номер заказа становится ссылкой на акты."""
     head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
             + ("<th>Категория</th><th>Приоритет</th>" if cp else "")
             + (f"<th>{esc(ux[0])}</th><th>{esc(ux[1])}</th><th>{esc(ux[2])}</th>" if ux else "")
@@ -2342,8 +2452,14 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=No
                        if stt else "—")
             extra += (f"<td>{esc(r.get('Отгрузка') or '—')}</td><td>{esc(r.get('Дата Uzum') or '—')}</td>"
                       f"<td>{st_html}</td>")
+        oid = f"<b>{esc(r['Заказ'])}</b>"
+        if acts is not None:
+            k = str(r["Заказ"]).strip().upper()
+            cnt = int(acts.get(k, 0))
+            oid = (f"<b class='ordlink' data-act='{zlib.crc32(k.encode())}' title='Показать акты'>{esc(r['Заказ'])}</b>"
+                   f"<span class='acnt{'' if cnt else ' z'}'>{cnt} акт.</span>")
         body.append(
-            f"<tr><td>{fmt_date(r['Дата'])}</td><td><b>{esc(r['Заказ'])}</b></td><td>{esc(r['Магазин'])}</td>"
+            f"<tr><td>{fmt_date(r['Дата'])}</td><td>{oid}</td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'] or '—')}</td>{extra}<td class='num'>{n(r['Штук'])}</td>"
             f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
@@ -2757,13 +2873,14 @@ def _cm_save(key: str, label: str):
 
 
 def comment_ui(key: str, label: str):
-    """Кнопка «Добавить комментарий» под виджетом: открывается окошко с полем и кнопкой «Сохранить».
-    Контейнер cmu_<key> — «якорь»: к нему и к виджету над ним прокручивает клик по комментарию в колокольчике."""
     cur = comment_get(key)
+    wk = f"cm_t_{key}"
+    if wk not in st.session_state:
+        st.session_state[wk] = cur
     box = st.popover if hasattr(st, "popover") else st.expander
     with st.container(key=f"cmu_{key}"):
-        with box("Изменить комментарий" if cur else "Добавить комментарий"):
-            st.text_area("Комментарий", value=cur, key=f"cm_t_{key}", max_chars=COMMENT_MAX, height=90,
+        with box("💬 Комментарий"):
+            st.text_area("Комментарий", key=wk, max_chars=COMMENT_MAX, height=90,
                          label_visibility="collapsed", placeholder="Комментарий к виджету… (пусто — удалить)")
             st.button("Сохранить", key=f"cm_s_{key}", on_click=_cm_save, args=(key, label))
 
