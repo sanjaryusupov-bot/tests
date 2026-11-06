@@ -58,6 +58,9 @@ EXCLUDE_STORES = [
     "Импортные поставки",
     "Вайлдберриз МСА",
 ]
+# Магазины с расширенной таблицей (категория, приоритет, колонки D / I / O из «Лист1», акты)
+UZ_STORE = "Узуммаркет"           # акты раскрываются кликом по номеру заказа
+WB_STORE = "Вайлдберриз МСА"      # то же самое, но вместо раскрывающегося списка — кнопка выгрузки актов в Excel
 
 ALL = "all"   # «все даты» в выпадающем списке
 # Архив отгрузок: по нему считаем, сколько штук в среднем уезжало на каждой машине
@@ -843,7 +846,7 @@ st.markdown(Template("""<style>
 .ordlink.open::after { content:" ▴"; }
 .acnt { display:inline-block; margin-left:6px; padding:0 7px; border-radius:99px; font-size:.64rem;
         font-weight:700; background:$ok_bg; color:$ok_fg; white-space:nowrap; }
-/* номер заказа Узуммаркета: всегда в одну строку, одинаковой длины */
+/* номер заказа Узуммаркета / Вайлдберриз МСА: всегда в одну строку, одинаковой длины */
 .tbl td.ordc { white-space:nowrap; min-width:150px; }
 .tbl td.ordc b { white-space:nowrap; }
 /* строка с актами под заказом (раскрывается кликом по номеру) */
@@ -1069,7 +1072,7 @@ def load_cat_prio():
     return out, heads
 
 
-# ───────────────────────── Акты на отгрузку (для Узуммаркет) ─────────────────────────
+# ───────────────────────── Акты на отгрузку (для Узуммаркет и Вайлдберриз МСА) ─────────────────────────
 ACT_COLS = ["Заказ", "Клиент", "Акт", "Тип", "Дата отгрузки", "Паллет", "Коробов", "Статус",
             "Комментарий", "Приезд транспорта"]
 
@@ -1772,6 +1775,8 @@ def norm_store(x: str) -> str:
 
 
 EXCLUDED_KEYS = {norm_store(x) for x in EXCLUDE_STORES}
+UZ_KEY = norm_store(UZ_STORE)
+WB_KEY = norm_store(WB_STORE)
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
@@ -2473,19 +2478,21 @@ def go_comment(key: str):
             ss.show_all_days = True          # день мог быть скрыт (готовность выше порога)
 
 
-def acts_downloads(part: pd.DataFrame, acts_df: pd.DataFrame):
-    """Выгрузка в Excel всех актов по заказам Узуммаркет. Сами акты раскрываются в таблице кликом по номеру заказа
-    (на стороне браузера, без перезагрузки страницы)."""
+def acts_downloads(part: pd.DataFrame, acts_df: pd.DataFrame, store: str = UZ_STORE, expand: bool = True):
+    """Выгрузка в Excel всех актов по заказам магазина (маленькая кнопка).
+    expand=True (Узуммаркет): акты ещё и раскрываются в таблице кликом по номеру заказа (на стороне браузера).
+    expand=False (Вайлдберриз МСА): раскрывающегося списка нет, только кнопка выгрузки."""
     keys = {odig(o) for o in part["Заказ"].str.strip()}
     a_all = acts_df[acts_df["Ключ"].isin(keys)]
     if a_all.empty:
-        st.caption(f"Актов по заказам Узуммаркет в таблице актов пока нет "
+        st.caption(f"Актов по заказам «{store}» в таблице актов пока нет "
                    f"(в таблице актов: {n(len(acts_df))} актов по {n(acts_df['Ключ'].nunique())} заказам).")
         return
-    xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
-              f"akty_uzummarket_{datetime.now(TZ):%Y%m%d}.xlsx", "dl_act_all")
-    st.caption(f"Актов в таблице: {n(len(acts_df))} · заказов Узуммаркет с актами: {n(a_all['Ключ'].nunique())}. "
-               "Нажмите на номер заказа в таблице ниже, чтобы раскрыть его акты.")
+    slug = "uzummarket" if expand else "wildberries"
+    xl_button(f"Акты {store} в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
+              f"akty_{slug}_{datetime.now(TZ):%Y%m%d}.xlsx", f"dl_act_all_{slug}")
+    st.caption(f"Актов в таблице: {n(len(acts_df))} · заказов «{store}» с актами: {n(a_all['Ключ'].nunique())}."
+               + (" Нажмите на номер заказа в таблице ниже, чтобы раскрыть его акты." if expand else ""))
 
 
 def badge(collected: bool, new: bool = False) -> str:
@@ -2495,11 +2502,12 @@ def badge(collected: bool, new: bool = False) -> str:
 
 
 def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=None, acts=None,
-                 wide: bool = False) -> str:
+                 wide: bool = False, expand: bool = True) -> str:
     """cp — «Категория» и «Приоритет»; ux — заголовки колонок D / I / O из Лист1;
-    acts — {ключ заказа: [записи актов]}: номер заказа с актами становится ссылкой, по клику под строкой
-    раскрывается компактная таблица актов (скриптом в браузере, без запроса к серверу);
-    wide — номер заказа в одну строку (Узуммаркет)."""
+    acts — {ключ заказа: [записи актов]}: у заказа с актами показывается метка «N акт.»;
+    expand=True — номер заказа становится ссылкой, по клику под строкой раскрывается таблица актов
+    (скриптом в браузере, без запроса к серверу); expand=False — метка без раскрытия (Вайлдберриз МСА);
+    wide — номер заказа в одну строку."""
     head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
             + ("<th>Категория</th><th>Приоритет</th>" if cp else "")
             + (f"<th>{esc(ux[0])}</th><th>{esc(ux[1])}</th><th>{esc(ux[2])}</th>" if ux else "")
@@ -2523,16 +2531,19 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=No
         if acts is not None:
             k = odig(r["Заказ"])
             recs = acts.get(k, [])
-            if recs:                                         # акты есть: ссылка + метка; нет — просто номер, без «0»
-                oid = (f"<b class='ordlink' data-act='{zlib.crc32(k.encode())}' title='Показать акты'>"
-                       f"{esc(r['Заказ'])}</b><span class='acnt'>{len(recs)} акт.</span>")
+            if recs:                                         # акты есть: метка; нет — просто номер, без «0»
+                if expand:
+                    oid = (f"<b class='ordlink' data-act='{zlib.crc32(k.encode())}' title='Показать акты'>"
+                           f"{esc(r['Заказ'])}</b><span class='acnt'>{len(recs)} акт.</span>")
+                else:
+                    oid = f"<b>{esc(r['Заказ'])}</b><span class='acnt'>{len(recs)} акт.</span>"
         oc = " class='ordc'" if (wide or acts is not None) else ""
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td{oc}>{oid}</td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'] or '—')}</td>{extra}<td class='num'>{n(r['Штук'])}</td>"
             f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
-        if recs:                                             # скрытая строка с актами (раскрывается кликом по номеру)
+        if recs and expand:                                  # скрытая строка с актами (раскрывается кликом по номеру)
             body.append(f"<tr class='actrow' style='display:none'><td colspan='{ncol}'>"
                         f"<div class='actbox'>{acts_mini(recs)}</div></td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
@@ -3777,7 +3788,7 @@ def _wins():
 _wins()
 
 # скрипт в родительской странице: Ctrl+K, Esc, клики на «онлайн»/логотип/чат/фон окна/комментарий в колокольчике/
-# номер заказа Узуммаркет (раскрыть/свернуть акты прямо в таблице — без запроса к серверу), «печатает»,
+# номер заказа Узуммаркета (раскрыть/свернуть акты прямо в таблице — без запроса к серверу), «печатает»,
 # cookie посетителя, имя из Telegram и имя в чате
 _chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
@@ -4094,9 +4105,11 @@ if page == PAGES[1]:
         else:
             oi = EXCLUDE_STORES.index(sel)
             part = oth[oth["_k"] == norm_store(sel)]
-            is_uz = norm_store(sel) == norm_store("Узуммаркет")
+            is_uz = norm_store(sel) == UZ_KEY             # Узуммаркет: акты раскрываются кликом по номеру заказа
+            is_wb = norm_store(sel) == WB_KEY             # Вайлдберриз МСА: то же, но вместо раскрытия — кнопка Excel
+            is_ux = is_uz or is_wb                        # расширенная таблица (категория, приоритет, D / I / O, акты)
             ux_heads, acts_df, acts_by_order = None, None, None
-            if is_uz:
+            if is_ux:
                 try:
                     cpmap, ux_heads = load_cat_prio()
                 except Exception as e:
@@ -4133,8 +4146,8 @@ if page == PAGES[1]:
             with o4:
                 an_widget(f"oth{oi}_dnp", n(dn["Штук"].sum()), f"{sel}: собрано, шт", "", "ok")
 
-            if is_uz and acts_df is not None and not part.empty:
-                acts_downloads(part, acts_df)
+            if is_ux and acts_df is not None and not part.empty:
+                acts_downloads(part, acts_df, sel, expand=is_uz)
 
             if part.empty:
                 st.info("Заказов этого магазина нет.")
@@ -4143,14 +4156,14 @@ if page == PAGES[1]:
                 if nc.empty:
                     st.success("Не собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads, acts=acts_by_order, wide=is_uz),
-                                unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(nc), cp=is_ux, ux=ux_heads, acts=acts_by_order,
+                                             wide=is_ux, expand=is_uz), unsafe_allow_html=True)
                 st.markdown("<div class='sec'>Собранные заказы</div>", unsafe_allow_html=True)
                 if dn.empty:
                     st.info("Собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads, acts=acts_by_order, wide=is_uz),
-                                unsafe_allow_html=True)
+                    st.markdown(orders_table(_sorted(dn), cp=is_ux, ux=ux_heads, acts=acts_by_order,
+                                             wide=is_ux, expand=is_uz), unsafe_allow_html=True)
     elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
         if pivot.empty:
@@ -4865,10 +4878,10 @@ if page == PAGES[5]:
 # ───────────────────────── Переход к виджету по клику на комментарий в колокольчике ─────────────────────────
 if st.session_state.get("cm_focus"):
     _focus = json.dumps(str(st.session_state.pop("cm_focus")))
-    components.html("""<script>(function(){var k=__K__,tries=0,d=window.parent.document;
+    components.html("""<script>(function(){var k=K,tries=0,d=window.parent.document;
 function go(){var c=d.querySelector('.st-key-cmu_'+k);
 if(!c){if(tries++<40){setTimeout(go,150);}return;}
 var el=c.previousElementSibling||c;
 el.scrollIntoView({behavior:'smooth',block:'center'});
 el.classList.add('cm-flash');setTimeout(function(){el.classList.remove('cm-flash');},2600);}
-go();})();</script>""".replace("__K__", _focus), height=0)
+go();})();</script>""".replace("K", _focus), height=0)
