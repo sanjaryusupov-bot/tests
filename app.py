@@ -4,8 +4,9 @@
 Один файл. Запуск локально:  streamlit run app.py
 Секреты (Streamlit Cloud -> Settings -> Secrets): блоки [gcp_service_account] и [metabase]
 (в [metabase] можно добавить hub_table = 61, stock_table, magnit_table).
-requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair
+requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, altair, pillow
 Логотипы: положите logo.png (M Cosmetic) и logo2.png (партнёр) рядом с app.py.
+Логотип logo.png также ставится как иконка вкладки браузера.
 Файлы на сервере (необязательные): change_history.json (сводка в колокольчике), visitors.json (окно «Посетители»),
 comments.json (комментарии к виджетам), chat.json (сообщения чата).
 Чат и «Посетители» — плавающие окна с размытым фоном (работают в любой версии Streamlit с st.fragment, 1.37+).
@@ -168,7 +169,27 @@ DARK = dict(scheme="dark", ink="#EEF0FA", paper="#070A1A", card="#0D1126", line=
             side="#090C1E", g1="#E0338F", g2="#8B3DFF", glow="rgba(224,51,143,.35)",
             kpi_a="#3A1255", kpi_b="#3A260F", kpi_c="#0F2A55", row="#10142B")
 
-st.set_page_config(page_title="M Cosmetic · Сборка заказов", page_icon="📦", layout="wide",
+
+def _page_icon():
+    """Иконка вкладки браузера: логотип M Cosmetic (logo.png / logo.jpg рядом с app.py), квадратом с прозрачными полями.
+    Нет файла или не картинка (svg) — эмодзи."""
+    for base in (Path(__file__).resolve().parent, Path.cwd()):
+        for name in LOGO_FILES:
+            p = base / name
+            if p.exists() and p.suffix.lower() != ".svg":
+                try:
+                    from PIL import Image
+                    im = Image.open(p).convert("RGBA")
+                    side = max(im.size)
+                    sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+                    sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+                    return sq.resize((128, 128))
+                except Exception:
+                    return "📦"
+    return "📦"
+
+
+st.set_page_config(page_title="M Cosmetic · Сборка заказов", page_icon=_page_icon(), layout="wide",
                    initial_sidebar_state="expanded")
 
 # ───────────────────────── Тема (день / ночь) ─────────────────────────
@@ -814,17 +835,30 @@ _vals.update(u_search_s=icon_uri("search", P["mute"]), u_box_w=icon_uri("box", "
              u_excel="data:image/svg+xml;utf8," + quote(_EXCEL_SVG, safe=""))
 st.markdown(CSS.safe_substitute(_vals), unsafe_allow_html=True)
 
-# дополнительные стили: ссылки на акты, скрытые кнопки актов, компактная кнопка комментария
+# дополнительные стили: акты (раскрываются прямо в таблице, без перезагрузки страницы), компактная кнопка комментария
 st.markdown(Template("""<style>
 .ordlink { cursor:pointer; color:$accent; border-bottom:1px dashed $accent; white-space:nowrap; }
 .ordlink:hover { color:$accent_ink; border-bottom-style:solid; }
+.ordlink::after { content:" ▾"; font-size:.7em; }
+.ordlink.open::after { content:" ▴"; }
 .acnt { display:inline-block; margin-left:6px; padding:0 7px; border-radius:99px; font-size:.64rem;
         font-weight:700; background:$ok_bg; color:$ok_fg; white-space:nowrap; }
 /* номер заказа Узуммаркета: всегда в одну строку, одинаковой длины */
 .tbl td.ordc { white-space:nowrap; min-width:150px; }
 .tbl td.ordc b { white-space:nowrap; }
-[class*="st-key-actgo_"] { position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
-                           overflow:hidden; opacity:0; pointer-events:none; }
+/* строка с актами под заказом (раскрывается кликом по номеру) */
+.tbl tr.actrow td { padding:0; background:$head; border-top:none; }
+.actbox { padding:8px 14px 10px 28px; max-height:300px; overflow:auto; }
+.actsum { font-size:.68rem; color:$mute; margin:0 0 5px; }
+.actsum b { color:$ink; }
+table.actmini { border-collapse:collapse; width:100%; font-size:.68rem; }
+table.actmini th { position:sticky; top:0; background:$head; text-align:left; padding:3px 8px; font-size:.56rem;
+                   font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:$mute; white-space:nowrap; }
+table.actmini td { padding:3px 8px; border-top:1px solid $line; font-size:.68rem; color:$ink; white-space:nowrap; }
+table.actmini td.num { text-align:right; }
+table.actmini td.dim { color:$mute; }
+.hit .actbox { padding:2px 0 4px; max-height:320px; border:1px solid $line; border-radius:10px;
+               background:$head; padding:8px 10px; }
 /* маленькая кнопка комментария (открывается и закрывается сервером, поэтому работает каждый раз) */
 [class*="st-key-cm_b_"] button { min-height:24px !important; padding:0 .55rem !important; font-size:.66rem !important;
                                  border-radius:8px; background:$head; color:$mute; border:1px solid $line; }
@@ -1089,6 +1123,33 @@ def acts_excel(frame: pd.DataFrame) -> bytes:
     f = frame.copy()
     f["Коробов"] = pd.to_numeric(f["Коробов"], errors="coerce").fillna(0).astype(int)
     return to_xlsx({"Акты": f[ACT_COLS]})
+
+
+def _box_int(v) -> int:
+    """Число коробов из ячейки («1», «12 коробов» -> 12)."""
+    m = re.search(r"\d+", str(v))
+    return int(m.group()) if m else 0
+
+
+def acts_mini(recs: list) -> str:
+    """Компактная таблица актов мелким шрифтом (для строки заказа и карточки поиска).
+    recs — список записей из load_acts (поля: Акт, Тип, Клиент, Дата отгрузки, Паллет, Коробов, Статус, Комментарий,
+    Приезд транспорта). Пустые значения — «—»."""
+    if not recs:
+        return ""
+    dash = lambda v: esc(v) if str(v or "").strip() else "—"
+    bx = sum(_box_int(r.get("Коробов")) for r in recs)
+    rows = "".join(
+        f"<tr><td><b>{esc(r.get('Акт', ''))}</b></td><td class='dim'>{dash(r.get('Тип'))}</td>"
+        f"<td class='dim'>{dash(r.get('Клиент'))}</td><td class='dim'>{dash(r.get('Дата отгрузки'))}</td>"
+        f"<td class='dim'>{dash(r.get('Паллет'))}</td><td class='num'>{dash(r.get('Коробов'))}</td>"
+        f"<td>{dash(r.get('Статус'))}</td><td class='dim'>{dash(r.get('Комментарий'))}</td>"
+        f"<td class='dim'>{dash(r.get('Приезд транспорта'))}</td></tr>"
+        for r in recs)
+    return (f"<div class='actsum'>Актов: <b>{len(recs)}</b> · коробов: <b>{n(bx)}</b></div>"
+            "<table class='actmini'><tr><th>Номер акта</th><th>Тип</th><th>Клиент</th><th>Дата отгрузки</th>"
+            "<th>Паллет</th><th class='num'>Коробов</th><th>Статус</th><th>Комментарий</th>"
+            f"<th>Приезд транспорта</th></tr>{rows}</table>")
 
 
 # ───────────────────────── Metabase: остатки ─────────────────────────
@@ -2357,7 +2418,6 @@ def go_orders(mode: str, d):
 def set_oth(name):
     """«Прочие заказы»: открыть магазин (name) или вернуться к общему списку (None)."""
     st.session_state.oth_store = name
-    st.session_state.act_order = None
 
 
 def set_page(p):
@@ -2413,60 +2473,19 @@ def go_comment(key: str):
             ss.show_all_days = True          # день мог быть скрыт (готовность выше порога)
 
 
-def set_act(order):
-    """Клик по номеру заказа в таблице Узуммаркет: показать акты этого заказа."""
-    st.session_state.act_order = order
-    st.session_state.act_scroll = True
-
-
-def close_act():
-    st.session_state.act_order = None
-
-
-def acts_panel(part: pd.DataFrame, acts_df: pd.DataFrame):
-    """Панель актов: скрытые кнопки для ссылок в таблице, акты выбранного заказа, Excel.
-    Заказы сопоставляются с актами по цифрам номера (колонка «Ключ»)."""
-    keys = {}
-    for o in part["Заказ"].str.strip().drop_duplicates():
-        keys.setdefault(odig(o), o)
-    have = set(acts_df["Ключ"])
-    for k, o in keys.items():                                      # кнопки, которые «нажимает» клик по номеру
-        if k and k in have:
-            st.button("акты", key=f"actgo_{zlib.crc32(k.encode())}", on_click=set_act, args=(o,))
-    cur = st.session_state.get("act_order")
-    with st.container(key="actpanel"):
-        if cur:
-            a = acts_df[acts_df["Ключ"] == odig(cur)]
-            c1, c2 = st.columns([6, 1], vertical_alignment="center")
-            with c1:
-                st.markdown(f"<div class='sec' style='margin:6px 0'>Акты заказа {esc(cur)} · {len(a)}</div>",
-                            unsafe_allow_html=True)
-            with c2:
-                st.button("Закрыть", key="act_close", on_click=close_act, width="stretch")
-            if a.empty:
-                st.info("Для этого заказа в таблице актов записей нет.")
-            else:
-                rows = [[f"<b>{esc(r['Акт'])}</b>", esc(r["Тип"] or "—"), esc(r["Клиент"] or "—"),
-                         esc(r["Дата отгрузки"] or "—"), esc(r["Паллет"] or "—"), esc(r["Коробов"] or "—"),
-                         esc(r["Статус"] or "—"), esc(r["Комментарий"] or "—"),
-                         esc(r["Приезд транспорта"] or "—")]
-                        for r in a.to_dict("records")]
-                st.markdown(simple_table(["Номер акта", "Тип", "Клиент", "Дата отгрузки", "Паллет", "Коробов",
-                                          "Статус", "Комментарий", "Приезд транспорта"], rows),
-                            unsafe_allow_html=True)
-                bx = int(pd.to_numeric(a["Коробов"], errors="coerce").fillna(0).sum())
-                st.caption(f"Актов: {len(a)} · коробов: {n(bx)}")
-                xl_button("Акты заказа в Excel", lambda: acts_excel(a), f"akty_{cur.strip()}.xlsx", "dl_act_one")
-        a_all = acts_df[acts_df["Ключ"].isin(set(keys))]
-        if a_all.empty:
-            st.caption(f"Актов по заказам Узуммаркет в таблице актов пока нет "
-                       f"(в таблице актов: {n(len(acts_df))} актов по {n(acts_df['Ключ'].nunique())} заказам).")
-        else:
-            xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
-                      f"akty_uzummarket_{datetime.now(TZ):%Y%m%d}.xlsx", "dl_act_all")
-            st.caption(f"Актов в таблице: {n(len(acts_df))} · заказов Узуммаркет с актами: "
-                       f"{n(a_all['Ключ'].nunique())}"
-                       + ("" if cur else ". Нажмите на номер заказа в таблице ниже, чтобы увидеть его акты."))
+def acts_downloads(part: pd.DataFrame, acts_df: pd.DataFrame):
+    """Выгрузка в Excel всех актов по заказам Узуммаркет. Сами акты раскрываются в таблице кликом по номеру заказа
+    (на стороне браузера, без перезагрузки страницы)."""
+    keys = {odig(o) for o in part["Заказ"].str.strip()}
+    a_all = acts_df[acts_df["Ключ"].isin(keys)]
+    if a_all.empty:
+        st.caption(f"Актов по заказам Узуммаркет в таблице актов пока нет "
+                   f"(в таблице актов: {n(len(acts_df))} актов по {n(acts_df['Ключ'].nunique())} заказам).")
+        return
+    xl_button(f"Все акты Узуммаркет в Excel ({n(len(a_all))})", lambda: acts_excel(a_all),
+              f"akty_uzummarket_{datetime.now(TZ):%Y%m%d}.xlsx", "dl_act_all")
+    st.caption(f"Актов в таблице: {n(len(acts_df))} · заказов Узуммаркет с актами: {n(a_all['Ключ'].nunique())}. "
+               "Нажмите на номер заказа в таблице ниже, чтобы раскрыть его акты.")
 
 
 def badge(collected: bool, new: bool = False) -> str:
@@ -2478,12 +2497,14 @@ def badge(collected: bool, new: bool = False) -> str:
 def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=None, acts=None,
                  wide: bool = False) -> str:
     """cp — «Категория» и «Приоритет»; ux — заголовки колонок D / I / O из Лист1;
-    acts — {ключ заказа: число актов}: номер заказа с актами становится ссылкой, метка «N акт.» только если акты есть;
+    acts — {ключ заказа: [записи актов]}: номер заказа с актами становится ссылкой, по клику под строкой
+    раскрывается компактная таблица актов (скриптом в браузере, без запроса к серверу);
     wide — номер заказа в одну строку (Узуммаркет)."""
     head = ("<tr><th>Дата</th><th>Заказ</th><th>Магазин</th><th>Город</th>"
             + ("<th>Категория</th><th>Приоритет</th>" if cp else "")
             + (f"<th>{esc(ux[0])}</th><th>{esc(ux[1])}</th><th>{esc(ux[2])}</th>" if ux else "")
             + "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
+    ncol = head.count("<th")
     body = []
     for r in frame.head(limit).to_dict("records"):
         extra = ""
@@ -2498,18 +2519,22 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=No
             extra += (f"<td>{esc(r.get('Отгрузка') or '—')}</td><td>{esc(r.get('Дата Uzum') or '—')}</td>"
                       f"<td>{st_html}</td>")
         oid = f"<b>{esc(r['Заказ'])}</b>"
+        recs, k = [], ""
         if acts is not None:
             k = odig(r["Заказ"])
-            cnt = int(acts.get(k, 0))
-            if cnt:                                          # акты есть: ссылка + метка; нет — просто номер, без «0»
-                oid = (f"<b class='ordlink' data-act='{zlib.crc32(k.encode())}' title='Показать акты'>{esc(r['Заказ'])}</b>"
-                       f"<span class='acnt'>{cnt} акт.</span>")
+            recs = acts.get(k, [])
+            if recs:                                         # акты есть: ссылка + метка; нет — просто номер, без «0»
+                oid = (f"<b class='ordlink' data-act='{zlib.crc32(k.encode())}' title='Показать акты'>"
+                       f"{esc(r['Заказ'])}</b><span class='acnt'>{len(recs)} акт.</span>")
         oc = " class='ordc'" if (wide or acts is not None) else ""
         body.append(
             f"<tr><td>{fmt_date(r['Дата'])}</td><td{oc}>{oid}</td><td>{esc(r['Магазин'])}</td>"
             f"<td>{esc(r['Город'] or '—')}</td>{extra}<td class='num'>{n(r['Штук'])}</td>"
             f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
+        if recs:                                             # скрытая строка с актами (раскрывается кликом по номеру)
+            body.append(f"<tr class='actrow' style='display:none'><td colspan='{ncol}'>"
+                        f"<div class='actbox'>{acts_mini(recs)}</div></td></tr>")
     return f"<div class='tbl-wrap'><table class='tbl'>{head}{''.join(body)}</table></div>"
 
 
@@ -3752,7 +3777,8 @@ def _wins():
 _wins()
 
 # скрипт в родительской странице: Ctrl+K, Esc, клики на «онлайн»/логотип/чат/фон окна/комментарий в колокольчике/
-# номер заказа Узуммаркет, «печатает», cookie посетителя, имя из Telegram и имя в чате
+# номер заказа Узуммаркет (раскрыть/свернуть акты прямо в таблице — без запроса к серверу), «печатает»,
+# cookie посетителя, имя из Telegram и имя в чате
 _chat_js = json.dumps(st.session_state.get("chat_name", "")).replace("</", "<\\/")
 components.html("""<script>try{var w=window.parent,d=w.document;
 if(!d.__ck){d.__ck=1;
@@ -3764,7 +3790,9 @@ d.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
 var c=t.closest('.cm[data-cm]');
 if(c){var bc=d.querySelector('.st-key-cmgo_'+c.getAttribute('data-cm')+' button');if(bc){bc.click();}return;}
 var a=t.closest('.ordlink[data-act]');
-if(a){var ba=d.querySelector('.st-key-actgo_'+a.getAttribute('data-act')+' button');if(ba){ba.click();}return;}
+if(a){var tr=a.closest('tr'),nx=tr&&tr.nextElementSibling;
+if(nx&&nx.classList.contains('actrow')){var op=nx.style.display!=='none';
+nx.style.display=op?'none':'table-row';a.classList.toggle('open',!op);}return;}
 if(t.closest('.mc-backdrop')){var x2=d.querySelector('.st-key-winclose button');if(x2){x2.click();}return;}
 var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
 if(q){var b=d.querySelector(q);if(b){b.click();}}});
@@ -4067,7 +4095,7 @@ if page == PAGES[1]:
             oi = EXCLUDE_STORES.index(sel)
             part = oth[oth["_k"] == norm_store(sel)]
             is_uz = norm_store(sel) == norm_store("Узуммаркет")
-            ux_heads, acts_df, acts_cnt = None, None, None
+            ux_heads, acts_df, acts_by_order = None, None, None
             if is_uz:
                 try:
                     cpmap, ux_heads = load_cat_prio()
@@ -4087,7 +4115,7 @@ if page == PAGES[1]:
                 })
                 try:
                     acts_df = load_acts()
-                    acts_cnt = acts_df.groupby("Ключ").size().to_dict()
+                    acts_by_order = {k: g.to_dict("records") for k, g in acts_df.groupby("Ключ")}
                 except Exception as e:
                     st.warning("Не удалось прочитать таблицу актов. Откройте её для почты сервисного аккаунта "
                                "(роль «Читатель»).")
@@ -4106,7 +4134,7 @@ if page == PAGES[1]:
                 an_widget(f"oth{oi}_dnp", n(dn["Штук"].sum()), f"{sel}: собрано, шт", "", "ok")
 
             if is_uz and acts_df is not None and not part.empty:
-                acts_panel(part, acts_df)
+                acts_downloads(part, acts_df)
 
             if part.empty:
                 st.info("Заказов этого магазина нет.")
@@ -4115,13 +4143,13 @@ if page == PAGES[1]:
                 if nc.empty:
                     st.success("Не собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads, acts=acts_cnt, wide=is_uz),
+                    st.markdown(orders_table(_sorted(nc), cp=is_uz, ux=ux_heads, acts=acts_by_order, wide=is_uz),
                                 unsafe_allow_html=True)
                 st.markdown("<div class='sec'>Собранные заказы</div>", unsafe_allow_html=True)
                 if dn.empty:
                     st.info("Собранных заказов нет.")
                 else:
-                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads, acts=acts_cnt, wide=is_uz),
+                    st.markdown(orders_table(_sorted(dn), cp=is_uz, ux=ux_heads, acts=acts_by_order, wide=is_uz),
                                 unsafe_allow_html=True)
     elif mode == "Маршрутизация":
         pivot, dropped = split_routing(sub_main)
@@ -4271,24 +4299,27 @@ if page == PAGES[2]:
                     sections.append(("Категория, приоритет и данные Лист1", [
                         ("Категория", cp[0]), ("Приоритет", cp[1]),
                         (cp_heads[0], cp[2]), (cp_heads[1], cp[3]), (cp_heads[2], cp[4])]))
-                # акты заказа: по одному блоку на каждый акт (если актов нет — блока нет)
-                for a in acts_map.get(odig(key), []):
-                    sections.append((f"Акт {a['Акт']}", [
-                        ("Номер акта", a["Акт"]), ("Тип", a["Тип"]), ("Клиент", a["Клиент"]),
-                        ("Дата отгрузки", a["Дата отгрузки"]), ("Паллет", a["Паллет"]),
-                        ("Коробов", a["Коробов"]), ("Статус", a["Статус"]),
-                        ("Комментарий", a["Комментарий"]), ("Приезд транспорта", a["Приезд транспорта"])]))
                 body = ""
                 for title, fields in sections:
                     cells = "".join(f"<div class='df'><span>{esc(k)}</span>"
                                     f"<b>{esc(v) if str(v if v is not None else '').strip() else '—'}</b></div>"
                                     for k, v in fields)
                     body += f"<div class='dsec'>{esc(title)}</div><div class='dg'>{cells}</div>"
+                # акты заказа: одна компактная таблица мелким шрифтом (если актов нет — блока нет)
+                recs = acts_map.get(odig(key), [])
+                if recs:
+                    body += (f"<div class='dsec'>Акты на отгрузку · {len(recs)}</div>"
+                             f"<div class='actbox'>{acts_mini(recs)}</div>")
                 return (f"<div class='hit'><div class='n'>{esc(r['Заказ'])} &nbsp;{badge(r['Собран'], new)}</div>"
                         f"<div class='s'>{esc(r.get('Магазин') or '')} · {esc(r.get('Город') or '—')}</div>{body}</div>")
 
-            for r in hits.head(30).to_dict("records"):
+            for i_, r in enumerate(hits.head(30).to_dict("records")):
                 st.markdown(order_card(r), unsafe_allow_html=True)
+                recs_ = acts_map.get(odig(r["Заказ"]), [])
+                if recs_:                                  # Excel с актами этого заказа
+                    xl_button(f"Акты заказа в Excel ({len(recs_)})",
+                              lambda rr=recs_: acts_excel(pd.DataFrame(rr)),
+                              f"akty_{str(r['Заказ']).strip()}.xlsx", f"dl_act_{i_}_{zlib.crc32(str(r['Заказ']).encode())}")
     else:
         st.info("Введите номер заказа (или его часть) либо название магазина, например «Узуммаркет».")
 
@@ -4841,11 +4872,3 @@ var el=c.previousElementSibling||c;
 el.scrollIntoView({behavior:'smooth',block:'center'});
 el.classList.add('cm-flash');setTimeout(function(){el.classList.remove('cm-flash');},2600);}
 go();})();</script>""".replace("__K__", _focus), height=0)
-
-# ───────────────────────── Прокрутка к актам после клика на номер заказа ─────────────────────────
-if st.session_state.pop("act_scroll", False):
-    components.html("""<script>(function(){var t=0,d=window.parent.document;
-function go(){var c=d.querySelector('.st-key-actpanel');
-if(!c){if(t++<30){setTimeout(go,150);}return;}
-c.scrollIntoView({behavior:'smooth',block:'start'});}
-go();})();</script>""", height=0)
