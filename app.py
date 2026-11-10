@@ -2513,7 +2513,7 @@ def open_ship():
 
 
 def open_ship_od():
-    """Карточка «Не отгружено ранее»: открыть сводную сразу по неотгруженным магазинам прошлых дней."""
+    """Карточка «Перенос заказов»: открыть сводную сразу по неотгруженным магазинам прошлых дней."""
     st.session_state.ship_open = True
     st.session_state.hub_open = False
     st.session_state.ship_sel = OD
