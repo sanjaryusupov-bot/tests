@@ -10,6 +10,8 @@ requirements.txt: streamlit, gspread, pandas, google-auth, openpyxl, requests, a
 Файлы на сервере (необязательные): change_history.json (сводка в колокольчике), visitors.json (окно «Посетители»),
 comments.json (комментарии к виджетам), chat.json (сообщения чата).
 Чат и «Посетители» — плавающие окна с размытым фоном (работают в любой версии Streamlit с st.fragment, 1.37+).
+Карточка «Отгрузка сегодня»: показывает «Не отгружено ранее», по клику открывается сводная по магазинам
+(Дата / Магазин / Город / Заказов / Штук / Статус отгрузки / Комментарий).
 """
 import hashlib
 import threading
@@ -42,6 +44,8 @@ NEW_GID = "750257398"        # вкладка «Новые заказы» (не 
 CACHE_SECONDS = 120          # как часто перечитывать таблицу
 TZ = ZoneInfo("Asia/Tashkent")
 HIDE_FROM_DAYS_PCT = 95      # в сводке по умолчанию прячем дни с готовностью от этого процента
+OVERDUE_DAYS = 14            # за сколько последних дней искать неотгруженные заказы (до сегодняшнего дня)
+OD = "od"                    # служебное значение в списке дат: «Не отгружено ранее»
 
 # Логотипы: файлы рядом с app.py (PNG / SVG / JPG)
 LOGO_FILES = ["logo.png", "logo.svg", "logo.jpg"]        # M Cosmetic
@@ -1887,11 +1891,11 @@ def get_archive_stats() -> dict:
     return archive_stats(load_ship_tabs()["archive"])
 
 
-_SHIP_COLS = ["Заказ", "Магазин", "Штук", "Дата", "Рейс", "Отгружен", "Факт"]
+_SHIP_COLS = ["Заказ", "Магазин", "Город", "Штук", "Дата", "Рейс", "Статус", "Отгружен", "Факт"]
 
 
 def parse_ship(raw) -> pd.DataFrame:
-    """Строки вкладки отгрузок -> Заказ, Магазин, Штук, Дата (план), Рейс, Отгружен, Факт."""
+    """Строки вкладки отгрузок -> Заказ, Магазин, Город, Штук, Дата (план), Рейс, Статус (текст), Отгружен, Факт."""
     if raw is None or raw.empty:
         return pd.DataFrame(columns=_SHIP_COLS)
     raw = raw.copy()
@@ -1901,16 +1905,21 @@ def parse_ship(raw) -> pd.DataFrame:
         return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
 
     c_order, c_shop, c_qty = find("№"), find("название"), find("кол-во")
-    c_plan, c_trip, c_stat, c_fact = find("дата", "план"), find("рейс"), find("статус"), find("факт")
+    c_plan, c_trip, c_fact = find("дата", "план"), find("рейс"), find("факт")
+    c_stat = find("статус", "отгруз") or find("статус")        # колонка «Статус отгрузки» (J)
+    c_city = find("город")
     if not all([c_order, c_shop, c_qty, c_plan]):
         return pd.DataFrame(columns=_SHIP_COLS)
+    stat = raw[c_stat].str.strip() if c_stat else pd.Series("", index=raw.index)
     d = pd.DataFrame({
         "Заказ": raw[c_order].str.strip(),
         "Магазин": raw[c_shop].str.strip(),
+        "Город": raw[c_city].str.strip() if c_city else "",
         "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
         "Дата": pd.to_datetime(raw[c_plan], dayfirst=True, errors="coerce").dt.date,
         "Рейс": raw[c_trip].str.strip() if c_trip else "",
-        "Отгружен": (raw[c_stat].str.strip().str.upper() == "ОТГРУЖЕН") if c_stat else False,
+        "Статус": stat,
+        "Отгружен": stat.str.upper() == "ОТГРУЖЕН",
         "Факт": (pd.to_datetime(raw[c_fact].str.strip(), format="%d.%m.%Y %H:%M", errors="coerce")
                  if c_fact else pd.NaT),
     })
@@ -1943,6 +1952,51 @@ def ship_summary(ship: pd.DataFrame, d: date) -> dict:
     return dict(total=len(s_), done=int(s_["Отгружен"].sum()),
                 pcs=int(s_["Штук"].sum()), pcs_done=int(s_.loc[s_["Отгружен"], "Штук"].sum()),
                 trips=tr.to_dict("records"))
+
+
+def ship_overdue(ship: pd.DataFrame, today: date) -> pd.DataFrame:
+    """Заказы с плановой датой раньше сегодня (за последние OVERDUE_DAYS дней), которые не отгружены."""
+    lo = today - timedelta(days=OVERDUE_DAYS)
+    return ship[(ship["Дата"] < today) & (ship["Дата"] >= lo) & (~ship["Отгружен"])]
+
+
+def ship_pivot(frame: pd.DataFrame) -> list:
+    """Сводная: дата × магазин -> город, заказов, штук, статус отгрузки (из колонки «Статус отгрузки»)."""
+    if frame.empty:
+        return []
+    f = frame.copy()
+    f["_k"] = f["Магазин"].map(norm_store)
+    rows = []
+    for (d, k), g in f.groupby(["Дата", "_k"]):
+        rows.append(dict(
+            date=d, shop=g["Магазин"].iloc[0], city=next((c for c in g["Город"] if c), ""),
+            orders=int(g["Заказ"].nunique()), pcs=int(g["Штук"].sum()),
+            done=int(g["Отгружен"].sum()), tot=len(g),
+            raw=", ".join(dict.fromkeys(s for s in g["Статус"] if s)),
+            ckey=f"shp_{d:%Y%m%d}_{zlib.crc32(k.encode())}"))
+    rows.sort(key=lambda r: (r["date"], r["done"] == r["tot"], r["shop"].lower()))
+    return rows
+
+
+def ship_status_text(r: dict) -> str:
+    if r["done"] == r["tot"]:
+        return r["raw"] or "Отгружен"
+    if r["done"] == 0:
+        return r["raw"] or "Не отгружен"
+    return f"Частично: {r['done']} из {r['tot']}"
+
+
+def ship_status_html(r: dict) -> str:
+    cls = "ok" if r["done"] == r["tot"] else "no"
+    return f"<span class='badge {cls}'>{esc(ship_status_text(r))}</span>"
+
+
+def ship_excel(rows: list) -> bytes:
+    d = pd.DataFrame([{"Дата": r["date"], "Магазин": r["shop"], "Город": r["city"],
+                       "Кол-во заказов": r["orders"], "Кол-во штук": r["pcs"],
+                       "Статус отгрузки": ship_status_text(r), "Комментарий": comment_get(r["ckey"])}
+                      for r in rows])
+    return to_xlsx({"Отгрузка": d})
 
 
 def sync_icon(ship: pd.DataFrame, d: date) -> str:
@@ -2428,15 +2482,27 @@ def set_oth(name):
 def set_page(p):
     st.session_state.page = p
     st.session_state.hub_open = False
+    st.session_state.ship_open = False
 
 
 def open_hub():
     """Карточка «Хаб ББ»: открыть подробности по маршрутам."""
     st.session_state.hub_open = True
+    st.session_state.ship_open = False
 
 
 def close_hub():
     st.session_state.hub_open = False
+
+
+def open_ship():
+    """Карточка «Отгрузка сегодня»: открыть сводную по магазинам."""
+    st.session_state.ship_open = True
+    st.session_state.hub_open = False
+
+
+def close_ship():
+    st.session_state.ship_open = False
 
 
 def toggle_theme():
@@ -2457,11 +2523,18 @@ def go_comment(key: str):
     ss = st.session_state
     ss.cm_focus = key
     ss.hub_open = False
+    ss.ship_open = False
     m = re.match(r"^oth(\d+)_", key)
     if key.startswith("w_oth_") or m:
         ss.page, ss.f_mode = PAGES[1], "Прочие заказы"
         ss.oth_store = (EXCLUDE_STORES[int(m.group(1))]
                         if m and int(m.group(1)) < len(EXCLUDE_STORES) else None)
+    elif key.startswith(("shp_", "ship_")):
+        ss.page, ss.ship_open = PAGES[0], True
+        m2 = re.match(r"^shp_(\d{8})_", key)
+        if m2:
+            ss.ship_pick = key
+            ss.ship_sel = datetime.strptime(m2.group(1), "%Y%m%d").date()
     elif key.startswith("hub_"):
         ss.page, ss.hub_open = PAGES[0], True
     elif key.startswith("pl_"):
@@ -2563,7 +2636,7 @@ def routing_table(g: pd.DataFrame) -> str:
 
 
 # ── карточка «Отгрузка сегодня»: строгий деловой стиль, живой таймер до 17:00 (отдельный документ со своим скриптом) ──
-# Без иконок-машинок и мигающих точек: заголовок, процент, тонкая линия и четыре ячейки с цифрами. Компактный размер.
+# Заголовок, процент, тонкая линия и пять ячеек с цифрами (в т.ч. «Не отгружено ранее»). Компактный размер.
 SHIP_DOC = Template("""<!doctype html><html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -2589,13 +2662,14 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
 .ship.r .bar > i { background:#E5384F; }
 .ship.done .bar > i { background:#34C27A; }
 
-.stats { display:grid; grid-template-columns:repeat(4, 1fr); }
+.stats { display:grid; grid-template-columns:repeat(5, 1fr); }
 .cell { padding:0 12px; border-left:1px solid $line; display:flex; flex-direction:column; gap:2px; min-width:0; }
 .cell:first-child { padding-left:0; border-left:none; }
 .lb { font-size:.56rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:$mute; }
 .vl { font-size:.76rem; color:$mute; white-space:nowrap; }
 .vl b { font-size:.95rem; color:$ink; font-weight:800; font-variant-numeric:tabular-nums; }
 .vl.tm { font-size:.95rem; font-weight:800; color:$ink; font-variant-numeric:tabular-nums; }
+.cell.warn .lb, .cell.warn .vl b { color:#FF6B6B; }
 .ship.y .vl.tm { color:#F2B705; }
 .ship.r .vl.tm { color:#FF6B6B; }
 .ship.done .vl.tm { color:#34C27A; }
@@ -2618,6 +2692,7 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
     <div class="cell"><span class="lb">Штук</span><span class="vl"><b>$pcs_done</b> из $pcs</span></div>
     <div class="cell"><span class="lb">Осталось</span><span class="vl"><b>$left</b> зак. · $pcs_left шт</span></div>
     <div class="cell"><span class="lb" id="dl-lb">До 17:00</span><span class="vl tm" id="dl-time">--:--:--</span></div>
+    <div class="cell od $od_cls"><span class="lb">Не отгружено ранее</span><span class="vl"><b>$od_orders</b> зак. · $od_pcs шт</span></div>
   </div>
   $note
 </div>
@@ -2659,14 +2734,16 @@ SHIP_IFRAME_H = 106   # высота карточки без комментар�
 
 
 def ship_doc(d: date, pct: int, sm: dict, sync: str = "", note: str = "",
-             title: str = "Отгрузка сегодня", live: bool = True) -> str:
+             title: str = "Отгрузка сегодня", live: bool = True, od: dict = None) -> str:
     done_all = sm["total"] > 0 and sm["done"] >= sm["total"]
     note_html = f"<div class='cmt'>💬 {esc(' '.join(str(note).split()))}</div>" if note else ""
+    od = od or dict(orders=0, pcs=0)
     vals = dict(P)
     vals.update(date=f"{fmt_date(d)}, {WEEKDAYS[d.weekday()]}", pct=pct, sync=sync, title=title,
                 done=n(sm["done"]), total=n(sm["total"]), pcs_done=n(sm["pcs_done"]), pcs=n(sm["pcs"]),
                 left=n(sm["total"] - sm["done"]), pcs_left=n(sm["pcs"] - sm["pcs_done"]),
-                all_done="true" if done_all else "false", live="true" if live else "false", note=note_html)
+                all_done="true" if done_all else "false", live="true" if live else "false", note=note_html,
+                od_orders=n(od["orders"]), od_pcs=n(od["pcs"]), od_cls="warn" if od["orders"] else "")
     return SHIP_DOC.safe_substitute(vals)
 
 
@@ -3714,6 +3791,7 @@ def on_gsearch():
         return
     st.session_state.gsearch = ""
     st.session_state.hub_open = False
+    st.session_state.ship_open = False
     if re.match(r"^\s*(\w{1,3}-\d+|\d{3,9})\s*$", q_):
         st.session_state.page = PAGES[2]
         st.session_state.q_order = q_
@@ -3874,13 +3952,17 @@ st.session_state.setdefault("f_mode", "Все")
 st.session_state.setdefault("page", PAGES[0])
 st.session_state.setdefault("trip_limit", 0)
 st.session_state.setdefault("hub_open", False)
+st.session_state.setdefault("ship_open", False)
 
 page = st.segmented_control("Раздел", PAGES, key="page", label_visibility="collapsed") or PAGES[0]
 date_label = lambda x: "Все даты" if x == ALL else f"{fmt_date(x)}, {WEEKDAYS[x.weekday()]}"
 
-if page != PAGES[0]:                        # ушли со «Сводки» — подробности хаба закрываем
+if page != PAGES[0]:                        # ушли со «Сводки» — подробности закрываем
     st.session_state.hub_open = False
+    st.session_state.ship_open = False
 hub_open = bool(st.session_state.hub_open) and page == PAGES[0]
+ship_open = (bool(st.session_state.get("ship_open")) and page == PAGES[0]
+             and ship is not None and not ship.empty)
 
 
 # ───────────────────────── Хаб ББ: подробности по маршрутам ─────────────────────────
@@ -3961,11 +4043,78 @@ def hub_view():
                "Excel: Маршрут, Не принятые штрих коды ББ, Дата отправки (одна строка = один штрихкод).")
 
 
+# ───────────────────────── Отгрузка: сводная по магазинам ─────────────────────────
+def ship_view():
+    st.button("← Назад к сводке", key="ship_back", on_click=close_ship)
+    st.markdown("<div class='sec'>Отгрузка: сводная по магазинам</div>", unsafe_allow_html=True)
+    today = now.date()
+    od = ship_overdue(ship, today)
+    ds = sorted({d_ for d_ in ship["Дата"] if d_ >= today - timedelta(days=OVERDUE_DAYS)}, reverse=True)
+    options = [OD] + ds
+    default = pick_ship_date(ship, today)
+    if st.session_state.get("ship_sel") not in options:
+        st.session_state.ship_sel = default if default in options else OD
+    st.selectbox("Дата", options, key="ship_sel",
+                 format_func=lambda x: (f"Не отгружено ранее (за {OVERDUE_DAYS} дн.): {n(len(od))} зак."
+                                        if x == OD else date_label(x)))
+    sel = st.session_state.ship_sel
+    sub = od if sel == OD else ship[ship["Дата"] == sel]
+    rows = ship_pivot(sub)
+    if not rows:
+        st.success("Здесь нет заказов." if sel != OD else "Неотгруженных заказов за прошлые дни нет.")
+        return
+
+    ord_n, pcs_n = sum(r["orders"] for r in rows), sum(r["pcs"] for r in rows)
+    done_n = int(sub["Отгружен"].sum())
+    pcs_left = int(sub.loc[~sub["Отгружен"], "Штук"].sum())
+    shops_n = len({norm_store(r["shop"]) for r in rows})
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        an_widget("ship_w_ord", n(ord_n), "заказов", f"магазинов: {shops_n}", "all")
+    with c2:
+        an_widget("ship_w_pcs", n(pcs_n), "штук", "", "blue")
+    with c3:
+        an_widget("ship_w_done", n(done_n), "заказов отгружено", "", "ok")
+    with c4:
+        an_widget("ship_w_left", n(len(sub) - done_n), "заказов не отгружено", f"{n(pcs_left)} шт",
+                  "left" if len(sub) - done_n else "ok")
+
+    head = ["Дата", "Магазин", "Город", "Кол-во заказов", "Кол-во штук", "Статус отгрузки", "Комментарий"]
+    body = []
+    for r in rows:
+        cm = comment_get(r["ckey"])
+        cm_html = f"<i>💬 {esc(' '.join(cm.split()))}</i>" if cm else "—"
+        body.append([f"{fmt_date(r['date'])}, {WEEKDAYS[r['date'].weekday()]}", f"<b>{esc(r['shop'])}</b>",
+                     esc(r["city"] or "—"), n(r["orders"]), n(r["pcs"]), ship_status_html(r), cm_html])
+    body.append(["<b>Итого</b>", "", "", f"<b>{n(ord_n)}</b>", f"<b>{n(pcs_n)}</b>", "", ""])
+    st.markdown(simple_table(head, body, num_cols={3, 4}), unsafe_allow_html=True)
+
+    xl_button("Скачать сводную в Excel", lambda: ship_excel(rows),
+              f"otgruzka_{'ranee' if sel == OD else f'{sel:%Y-%m-%d}'}.xlsx", "dl_ship_pivot")
+
+    # отдельный комментарий к каждому магазину (магазин в каждой дате — свой комментарий)
+    st.markdown("<div class='sec'>Комментарий к магазину</div>", unsafe_allow_html=True)
+    lab = {r["ckey"]: f"{fmt_date(r['date'])} · {r['shop']} · {n(r['pcs'])} шт"
+                      + (" 💬" if comment_get(r["ckey"]) else "") for r in rows}
+    opts = list(lab)
+    if st.session_state.get("ship_pick") not in opts:
+        st.session_state.ship_pick = opts[0]
+    st.selectbox("Магазин", opts, key="ship_pick", format_func=lambda k: lab[k])
+    pk = st.session_state.ship_pick
+    comment_ui(pk, "Отгрузка · " + lab[pk].replace(" 💬", ""))
+    st.caption("Статус берётся из колонки «Статус отгрузки» вкладок «Маршруты New» и «Архив». "
+               "Комментарии общие для всех и видны в колокольчике сверху.")
+    if sel != OD and sel in dates:
+        st.button("Открыть заказы WMS на эту дату", key="ship_to_orders", on_click=go_orders, args=("Все", sel))
+
+
 if hub_open:
     hub_view()
+elif ship_open:
+    ship_view()
 
 # ───────────────────────── 1. Сводка по дням ─────────────────────────
-if page == PAGES[0] and not hub_open:
+if page == PAGES[0] and not hub_open and not ship_open:
     total = len(df)
     pcs_total = int(df["Штук"].sum())
     pcs_left = int(df.loc[~df["Собран"], "Штук"].sum()) + new_pcs      # бэклог = несобранное + новые не маршрутизированные
@@ -3976,15 +4125,14 @@ if page == PAGES[0] and not hub_open:
         sync_html = sync_icon(ship, sd)
         pct_ship = round(sm["pcs_done"] / sm["pcs"] * 100) if sm["pcs"] else 0
         is_today = (sd == now.date()) and sm["total"] > 0
+        od_df = ship_overdue(ship, now.date())                          # не отгружено в прошлые дни
+        od_info = dict(orders=len(od_df), pcs=int(od_df["Штук"].sum()))
         ship_note = comment_get("w_ship")
         ship_h = SHIP_IFRAME_H + ((20 + 12 * (len(ship_note) // 80)) if ship_note else 0)
         frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
                           title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
-                          live=is_today), ship_h)
-        if sd in dates:
-            tap("ship", "", go_orders, ("Все", sd), iframe=frame)
-        else:
-            components.html(frame[0], height=frame[1])
+                          live=is_today, od=od_info), ship_h)
+        tap("ship", "", open_ship, iframe=frame)                        # нажатие -> сводная по магазинам
         comment_ui("w_ship", "Отгрузка сегодня")
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
