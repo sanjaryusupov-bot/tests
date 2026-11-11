@@ -382,7 +382,10 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 [class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$accent; }
 [class*="st-key-tap_"] iframe { display:block; border:0; }
 /* на телефоне карточка «Отгрузка сегодня» выше (ячейки в две колонки): запас по высоте, чтобы следующий виджет не наезжал */
-@media (max-width: 560px) { .st-key-tap_ship iframe { min-height:236px; } .st-key-tap_ship { margin-bottom:10px; } }
+/* блок-обёртка iframe в Streamlit имеет фиксированную высоту (122px) — из-за этого высокая карточка на телефоне
+   вылезала и перекрывалась следующим виджетом. Даём обёрткам расти вместе с iframe. */
+.st-key-tap_ship div:has(iframe) { height:auto !important; min-height:0 !important; }
+@media (max-width: 560px) { .st-key-tap_ship iframe { min-height:240px; } .st-key-tap_ship { margin-bottom:12px; } }
 
 .kpi { background:$card; border:1px solid $line; border-radius:16px; padding:14px 16px; min-height:112px; }
 .kpi .v { font-size:2.1rem; font-weight:800; letter-spacing:-0.02em; line-height:1.1; color:$ink; }
