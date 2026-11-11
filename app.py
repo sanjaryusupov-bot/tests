@@ -159,6 +159,8 @@ VISITORS_FILE = "visitors.json"         # история посетителей 
 VIS_KEEP_DAYS = 30                      # сколько дней хранить посетителей и их сессии
 COMMENTS_FILE = "comments.json"         # комментарии к виджетам (файл на сервере)
 COMMENT_MAX = 300                       # максимальная длина комментария
+COMMENT_BELL_DAYS = 3                   # сколько дней комментарий висит в колокольчике (от момента создания)
+HIDDEN_FILE = "hidden_widgets.json"     # какие виджеты скрыты для всех (файл на сервере)
 CHAT_FILE = "chat.json"                 # сообщения чата (файл на сервере)
 CHAT_KEEP = 300                         # сколько последних сообщений хранить
 CHAT_MAX = 500                          # максимальная длина сообщения
@@ -380,6 +382,8 @@ html, body, .stApp, .stApp button, .stApp input { font-family: 'Inter', sans-ser
 [class*="st-key-tap_"] button { display:block; width:100%; height:100%; min-height:0; opacity:0; cursor:pointer; padding:0; }
 [class*="st-key-tap_"]:hover .kpi, [class*="st-key-tap_"]:hover .day { border-color:$accent; }
 [class*="st-key-tap_"] iframe { display:block; border:0; }
+/* на телефоне карточка «Отгрузка сегодня» выше (ячейки в две колонки): запас по высоте, чтобы следующий виджет не наезжал */
+@media (max-width: 560px) { .st-key-tap_ship iframe { min-height:236px; } .st-key-tap_ship { margin-bottom:10px; } }
 
 .kpi { background:$card; border:1px solid $line; border-radius:16px; padding:14px 16px; min-height:112px; }
 .kpi .v { font-size:2.1rem; font-weight:800; letter-spacing:-0.02em; line-height:1.1; color:$ink; }
@@ -2835,8 +2839,10 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
     return (v.hour % 24) * 3600 + v.minute * 60 + v.second;
   }
   function fit() {
-    try { var f = window.frameElement; if (f) { f.style.height = (document.documentElement.scrollHeight + 2) + 'px'; } }
-    catch (e) {}
+    try {
+      var f = window.frameElement, c = document.getElementById('dl-card');
+      if (f && c) { f.style.height = Math.ceil(c.getBoundingClientRect().height + 8) + 'px'; }
+    } catch (e) {}
   }
   function tick() {
     var card = document.getElementById('dl-card'), lb = document.getElementById('dl-lb'),
@@ -2854,6 +2860,10 @@ html, body { margin:0; padding:0; background:transparent; font-family:'Inter', s
   }
   tick(); fit();
   window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fit); }
+  if (window.ResizeObserver) { new ResizeObserver(fit).observe(document.getElementById('dl-card')); }
+  setTimeout(fit, 300); setTimeout(fit, 1200);
   if (LIVE && !DONE) { setInterval(tick, 1000); }
 })();
 </script></body></html>""")
@@ -3196,6 +3206,37 @@ def comment_ui(key: str, label: str):
                 st.button("Отмена", key=f"cm_x_{key}", on_click=_cm_close, width="stretch")
         else:
             st.button("💬 Комментарий", key=f"cm_b_{key}", on_click=_cm_open, args=(key,))
+
+
+@st.cache_resource
+def _hidden() -> dict:
+    """Общий для всех список скрытых виджетов: {ключ виджета: True}."""
+    h = {"data": {}, "lock": threading.Lock()}
+    try:
+        with open(HIDDEN_FILE, encoding="utf-8") as f:
+            h["data"] = json.load(f).get("data", {})
+    except Exception:
+        pass
+    return h
+
+
+def widget_hidden(key: str) -> bool:
+    return bool(_hidden()["data"].get(key))
+
+
+def _hide_set(key: str, value: bool):
+    """Скрыть / показать виджет сразу для всех, кто открыт дашборд."""
+    h = _hidden()
+    with h["lock"]:
+        if value:
+            h["data"][key] = True
+        else:
+            h["data"].pop(key, None)
+        try:
+            with open(HIDDEN_FILE, "w", encoding="utf-8") as f:
+                json.dump({"data": h["data"]}, f, ensure_ascii=False)
+        except Exception:
+            pass
 
 
 def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None, small: bool = False):
@@ -3822,7 +3863,18 @@ def _cm_recent(limit: int) -> list:
     cm = _cmts()
     with cm["lock"]:
         items = list(cm["data"].items())
-    return sorted(items, key=lambda kv: kv[1].get("t", ""), reverse=True)[:limit]
+    # в колокольчике комментарий живёт COMMENT_BELL_DAYS дней с момента создания, потом пропадает оттуда
+    # (сам комментарий под виджетом остаётся)
+    border = datetime.now(TZ) - timedelta(days=COMMENT_BELL_DAYS)
+    fresh = []
+    for k, c in items:
+        try:
+            ts = datetime.fromisoformat(c.get("t", "")).astimezone(TZ)
+        except Exception:
+            continue
+        if ts >= border:
+            fresh.append((k, c))
+    return sorted(fresh, key=lambda kv: kv[1].get("t", ""), reverse=True)[:limit]
 
 
 def bell_html() -> str:
@@ -4324,12 +4376,15 @@ if page == PAGES[0] and not hub_open and not ship_open:
                           live=is_today, od=od_info), ship_h)
         tap("ship", "", open_ship, iframe=frame)                        # нажатие -> сводная по магазинам
         comment_ui("w_ship", "Отгрузка сегодня")
-        if od_info["orders"]:                                           # отдельная карточка: клик -> какие магазины не отгружены
+        if od_info["orders"] and not widget_hidden("w_od"):             # отдельная карточка: клик -> какие магазины не отгружены
             tap("od", kpi_box(n(od_info["orders"]), "Не отгружено ранее",
                               f"магазинов: {n(od_info['shops'])} · {n(od_info['pcs'])} шт · нажмите, чтобы увидеть магазины",
                               "left", icon="box", note=comment_get("w_od")),
                 open_ship_od)
             comment_ui("w_od", "Не отгружено ранее")
+            st.button("🙈 Скрыть виджет (у всех)", key="hide_w_od", on_click=_hide_set, args=("w_od", True))
+        elif od_info["orders"]:
+            st.button("👁 Показать виджет «Не отгружено ранее»", key="show_w_od", on_click=_hide_set, args=("w_od", False))
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
