@@ -77,8 +77,9 @@ ARCHIVE_FROM = date(2026, 10, 1)
 # Координаты магазинов (вкладка «Кординаты» в той же таблице)
 COORDS_GID = "1482916811"
 ALLREM = "allrem"                                   # пункт списка: «Все неотгруженные»
-MB_BACKLOG_NAME = "Беклог Магнита — магазины"       # вопрос/таблица в Metabase с «Прогноз готовности»
-# (необязательно, в Secrets -> [metabase]: backlog_card = ID сохранённого вопроса  или  backlog_table = ID таблицы)
+MB_BACKLOG_T = 64                                   # таблица Metabase «Беклог Магнита — магазины» (bi.antria.uz/table/64)
+SHIP_FROM = date(2026, 11, 10)                      # в отгрузках показываем только заказы с этой плановой даты и позже
+# (необязательно, в Secrets -> [metabase]: backlog_table = ID таблицы  или  backlog_card = ID сохранённого вопроса)
 
 # Акты на отгрузку (для Узуммаркет: по клику на номер заказа показываем номера актов)
 ACTS_SHEET_ID = "1eSYVyNQ89damF7zedSgJ0WERfBDDisxB5laqMzmmKDw"
@@ -1961,7 +1962,7 @@ def ship_summary(ship: pd.DataFrame, d: date) -> dict:
 
 def ship_overdue(ship: pd.DataFrame, today: date) -> pd.DataFrame:
     """Заказы с плановой датой раньше сегодня (за последние OVERDUE_DAYS дней), которые не отгружены."""
-    lo = today - timedelta(days=OVERDUE_DAYS)
+    lo = max(today - timedelta(days=OVERDUE_DAYS), SHIP_FROM)
     return ship[(ship["Дата"] < today) & (ship["Дата"] >= lo) & (~ship["Отгружен"])]
 
 
@@ -2007,24 +2008,12 @@ def ship_status_html(r: dict) -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_mb_backlog() -> pd.DataFrame:
-    """«Беклог Магнита — магазины» из Metabase. Ищется по названию (или по backlog_card / backlog_table в Secrets)."""
+    """«Беклог Магнита — магазины» из Metabase: таблица MB_BACKLOG_T (по умолчанию 64).
+    В Secrets -> [metabase] можно задать backlog_table (ID таблицы) или backlog_card (ID сохранённого вопроса)."""
     cfg, url, hdr = _mb_cfg()
     card = int(cfg.get("backlog_card", 0) or 0)
-    tid = int(cfg.get("backlog_table", 0) or 0)
-    model, ident = ("card", card) if card else (("table", tid) if tid else ("", 0))
-    if not model:
-        r = requests.get(f"{url}/api/search", headers=hdr, params={"q": "Беклог Магнита"}, timeout=60)
-        r.raise_for_status()
-        items = [x for x in r.json().get("data", []) if x.get("model") in ("card", "dataset", "table")]
-        want = _hk(MB_BACKLOG_NAME)
-        hit = (next((x for x in items if _hk(x.get("name", "")) == want), None)
-               or next((x for x in items if "беклогмагнита" in _hk(x.get("name", ""))), None))
-        if not hit:
-            raise ValueError(f"В Metabase не найден «{MB_BACKLOG_NAME}». Сохраните вопрос (кнопка «Сохранить») "
-                             "и добавьте его ID в Secrets: [metabase] backlog_card = ...")
-        model, ident = ("table" if hit["model"] == "table" else "card"), int(hit["id"])
-    if model == "card":
-        r = requests.post(f"{url}/api/card/{ident}/query/json", headers=hdr,
+    if card:
+        r = requests.post(f"{url}/api/card/{card}/query/json", headers=hdr,
                           data={"format_rows": "false"}, timeout=300)
         r.raise_for_status()
         data = r.json()
@@ -2032,10 +2021,11 @@ def load_mb_backlog() -> pd.DataFrame:
             raise ValueError(str(data.get("error") or data)[:300])
         raw = pd.DataFrame(data)
     else:
-        db, _f = mb_meta(ident)
-        raw = mb_run(db, {"source-table": ident})
+        tid = int(cfg.get("backlog_table", MB_BACKLOG_T) or MB_BACKLOG_T)
+        db, _f = mb_meta(tid)
+        raw = mb_run(db, {"source-table": tid})
     if raw.empty:
-        raise ValueError(f"«{MB_BACKLOG_NAME}» вернул 0 строк.")
+        raise ValueError("«Беклог Магнита — магазины» вернул 0 строк.")
     return raw
 
 
@@ -2052,28 +2042,44 @@ def fmt_fc(v) -> str:
 
 
 def fc_lookup(back: pd.DataFrame):
-    """({магазин: прогноз(ы)}, {(магазин, дата плана): прогноз}) — сопоставление по названию магазина."""
+    """({магазин: прогноз}, {(магазин, дата плана): прогноз}) — сопоставление по названию магазина.
+    Колонка прогноза ищется по названию («Прогноз готовности», иначе любая с «прогноз» / «готовност»)."""
     if back is None or back.empty:
         return {}, {}
     cols = {_hk(c): c for c in back.columns}
     c_shop = cols.get("магазин") or next((c for k, c in cols.items() if "магазин" in k or k == "name"), None)
-    c_fc = next((c for k, c in cols.items() if "прогноз" in k and "готов" in k), None)
+    c_fc = (next((c for k, c in cols.items() if "прогноз" in k and "готов" in k), None)
+            or next((c for k, c in cols.items() if "прогноз" in k), None)
+            or next((c for k, c in cols.items() if "готовност" in k), None)
+            or next((c for k, c in cols.items() if "forecast" in k or "eta" == k), None))
     c_pl = cols.get("датаплана") or next((c for k, c in cols.items() if "датаплан" in k), None)
     if not c_shop or not c_fc:
-        raise ValueError("В «Беклог Магнита — магазины» не найдены колонки «Магазин» и «Прогноз готовности». "
-                         "Есть: " + ", ".join(map(str, back.columns)))
+        raise ValueError("В таблице Metabase «Беклог Магнита — магазины» нет колонки с прогнозом готовности "
+                         "(ищу «Прогноз готовности»). Колонки таблицы: " + ", ".join(map(str, back.columns)))
     plan = _to_date(back[c_pl].fillna("")) if c_pl else pd.Series([None] * len(back), index=back.index)
     by_store, by_sd = {}, {}
     for shop, pl, fc in zip(back[c_shop], plan, back[c_fc]):
         k, v = norm_store(shop), fmt_fc(fc)
         if not k or not v:
             continue
-        lst = by_store.setdefault(k, [])
-        if v not in lst:
-            lst.append(v)
-        if pl is not None and pd.notna(pl):
+        has_pl = pl is not None and pd.notna(pl)
+        by_store.setdefault(k, []).append((pl if has_pl else None, v))
+        if has_pl:
             by_sd[(k, pl)] = v
-    return {k: "; ".join(v) for k, v in by_store.items()}, by_sd
+    out = {}
+    for k, lst in by_store.items():
+        vals = list(dict.fromkeys(v for _, v in lst))
+        if len(vals) == 1:
+            out[k] = vals[0]
+        else:                                           # разные прогнозы на разные даты плана: «10.11: …; 11.11: …»
+            seen, parts = set(), []
+            for d_, v in sorted(lst, key=lambda x: (x[0] is None, x[0] or date.min)):
+                t = f"{fmt_date(d_)}: {v}" if d_ else v
+                if t not in seen:
+                    seen.add(t)
+                    parts.append(t)
+            out[k] = "; ".join(parts)
+    return out, by_sd
 
 
 def ship_pivot_all(frame: pd.DataFrame) -> list:
@@ -4194,8 +4200,9 @@ def ship_view():
     today = now.date()
     od = ship_overdue(ship, today)
     od_inf = overdue_info(od)
-    rem_all = ship[~ship["Отгружен"]]                                   # всё, что ещё не отгружено, за все даты
-    ds = sorted({d_ for d_ in ship["Дата"] if d_ >= today - timedelta(days=OVERDUE_DAYS)}, reverse=True)
+    rem_all = ship[(~ship["Отгружен"]) & (ship["Дата"] >= SHIP_FROM)]   # всё не отгруженное, начиная с SHIP_FROM
+    ds = sorted({d_ for d_ in ship["Дата"] if d_ >= max(today - timedelta(days=OVERDUE_DAYS), SHIP_FROM)},
+                reverse=True)
     options = [ALLREM, OD] + ds
     default = pick_ship_date(ship, today)
     if st.session_state.get("ship_sel") not in options:
@@ -4203,7 +4210,7 @@ def ship_view():
 
     def _fmt(x):
         if x == ALLREM:
-            return (f"Все неотгруженные (общая сводная): {n(len(rem_all))} зак. · "
+            return (f"Все неотгруженные с {SHIP_FROM:%d.%m} (общая сводная): {n(len(rem_all))} зак. · "
                     f"{n(rem_all['Магазин'].map(norm_store).nunique())} маг.")
         if x == OD:
             return (f"Не отгружено ранее (за {OVERDUE_DAYS} дн.): "
