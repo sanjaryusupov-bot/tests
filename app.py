@@ -76,6 +76,9 @@ ARCHIVE_TAB = "Архив"
 ARCHIVE_FROM = date(2026, 10, 1)
 # Координаты магазинов (вкладка «Кординаты» в той же таблице)
 COORDS_GID = "1482916811"
+ALLREM = "allrem"                                   # пункт списка: «Все неотгруженные»
+MB_BACKLOG_NAME = "Беклог Магнита — магазины"       # вопрос/таблица в Metabase с «Прогноз готовности»
+# (необязательно, в Secrets -> [metabase]: backlog_card = ID сохранённого вопроса  или  backlog_table = ID таблицы)
 
 # Акты на отгрузку (для Узуммаркет: по клику на номер заказа показываем номера актов)
 ACTS_SHEET_ID = "1eSYVyNQ89damF7zedSgJ0WERfBDDisxB5laqMzmmKDw"
@@ -2002,12 +2005,108 @@ def ship_status_html(r: dict) -> str:
     return f"<span class='badge {cls}'>{esc(ship_status_text(r))}</span>"
 
 
-def ship_excel(rows: list) -> bytes:
-    d = pd.DataFrame([{"Дата": r["date"], "Магазин": r["shop"], "Город": r["city"],
-                       "Кол-во заказов": r["orders"], "Кол-во штук": r["pcs"],
-                       "Статус отгрузки": ship_status_text(r), "Комментарий": comment_get(r["ckey"])}
-                      for r in rows])
-    return to_xlsx({"Отгрузка": d})
+@st.cache_data(ttl=300, show_spinner=False)
+def load_mb_backlog() -> pd.DataFrame:
+    """«Беклог Магнита — магазины» из Metabase. Ищется по названию (или по backlog_card / backlog_table в Secrets)."""
+    cfg, url, hdr = _mb_cfg()
+    card = int(cfg.get("backlog_card", 0) or 0)
+    tid = int(cfg.get("backlog_table", 0) or 0)
+    model, ident = ("card", card) if card else (("table", tid) if tid else ("", 0))
+    if not model:
+        r = requests.get(f"{url}/api/search", headers=hdr, params={"q": "Беклог Магнита"}, timeout=60)
+        r.raise_for_status()
+        items = [x for x in r.json().get("data", []) if x.get("model") in ("card", "dataset", "table")]
+        want = _hk(MB_BACKLOG_NAME)
+        hit = (next((x for x in items if _hk(x.get("name", "")) == want), None)
+               or next((x for x in items if "беклогмагнита" in _hk(x.get("name", ""))), None))
+        if not hit:
+            raise ValueError(f"В Metabase не найден «{MB_BACKLOG_NAME}». Сохраните вопрос (кнопка «Сохранить») "
+                             "и добавьте его ID в Secrets: [metabase] backlog_card = ...")
+        model, ident = ("table" if hit["model"] == "table" else "card"), int(hit["id"])
+    if model == "card":
+        r = requests.post(f"{url}/api/card/{ident}/query/json", headers=hdr,
+                          data={"format_rows": "false"}, timeout=300)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            raise ValueError(str(data.get("error") or data)[:300])
+        raw = pd.DataFrame(data)
+    else:
+        db, _f = mb_meta(ident)
+        raw = mb_run(db, {"source-table": ident})
+    if raw.empty:
+        raise ValueError(f"«{MB_BACKLOG_NAME}» вернул 0 строк.")
+    return raw
+
+
+def fmt_fc(v) -> str:
+    """Прогноз готовности как текст: даты приводим к 15.11.2026 [14:30], остальное — как есть."""
+    s = str(v if v is not None else "").strip()
+    if s in ("", "None", "nan", "NaT", "null"):
+        return ""
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s) or re.match(r"^\d{1,2}\.\d{2}\.\d{4}", s):
+        t = pd.to_datetime(s, dayfirst=not s[:4].isdigit(), errors="coerce")
+        if pd.notna(t):
+            return f"{t:%d.%m.%Y %H:%M}" if (t.hour or t.minute) else f"{t:%d.%m.%Y}"
+    return s
+
+
+def fc_lookup(back: pd.DataFrame):
+    """({магазин: прогноз(ы)}, {(магазин, дата плана): прогноз}) — сопоставление по названию магазина."""
+    if back is None or back.empty:
+        return {}, {}
+    cols = {_hk(c): c for c in back.columns}
+    c_shop = cols.get("магазин") or next((c for k, c in cols.items() if "магазин" in k or k == "name"), None)
+    c_fc = next((c for k, c in cols.items() if "прогноз" in k and "готов" in k), None)
+    c_pl = cols.get("датаплана") or next((c for k, c in cols.items() if "датаплан" in k), None)
+    if not c_shop or not c_fc:
+        raise ValueError("В «Беклог Магнита — магазины» не найдены колонки «Магазин» и «Прогноз готовности». "
+                         "Есть: " + ", ".join(map(str, back.columns)))
+    plan = _to_date(back[c_pl].fillna("")) if c_pl else pd.Series([None] * len(back), index=back.index)
+    by_store, by_sd = {}, {}
+    for shop, pl, fc in zip(back[c_shop], plan, back[c_fc]):
+        k, v = norm_store(shop), fmt_fc(fc)
+        if not k or not v:
+            continue
+        lst = by_store.setdefault(k, [])
+        if v not in lst:
+            lst.append(v)
+        if pl is not None and pd.notna(pl):
+            by_sd[(k, pl)] = v
+    return {k: "; ".join(v) for k, v in by_store.items()}, by_sd
+
+
+def ship_pivot_all(frame: pd.DataFrame) -> list:
+    """Общая сводная: один магазин = одна строка, все даты вместе."""
+    if frame.empty:
+        return []
+    f = frame.copy()
+    f["_k"] = f["Магазин"].map(norm_store)
+    rows = []
+    for k, g in f.groupby("_k"):
+        d1, d2 = g["Дата"].min(), g["Дата"].max()
+        shop = g["Магазин"].iloc[0]
+        rows.append(dict(
+            date=d1, shop=shop, city=next((c for c in g["Город"] if c), ""),
+            orders=int(g["Заказ"].nunique()), pcs=int(g["Штук"].sum()),
+            done=int(g["Отгружен"].sum()), tot=len(g), ndays=int(g["Дата"].nunique()),
+            raw=", ".join(dict.fromkeys(s for s in g["Статус"] if s)),
+            dates=fmt_date(d1) if d1 == d2 else f"{fmt_date(d1)} – {fmt_date(d2)}",
+            ckey=f"shp_all_{zlib.crc32(k.encode())}",
+            label=f"Отгрузка · все неотгруженные · {shop}"))
+    rows.sort(key=lambda r: (r["date"], r["shop"].lower()))
+    return rows
+
+
+def ship_excel(rows: list, overall: bool = False) -> bytes:
+    recs = []
+    for r in rows:
+        x = {"Плановые даты": r.get("dates", ""), "Дней": r.get("ndays", "")} if overall else {"Дата": r["date"]}
+        x.update({"Магазин": r["shop"], "Город": r["city"], "Кол-во заказов": r["orders"],
+                  "Кол-во штук": r["pcs"], "Статус отгрузки": ship_status_text(r),
+                  "Прогноз готовности": r.get("fc", ""), "Комментарий": comment_get(r["ckey"])})
+        recs.append(x)
+    return to_xlsx({"Все неотгруженные" if overall else "Отгрузка": pd.DataFrame(recs)})
 
 
 def sync_icon(ship: pd.DataFrame, d: date) -> str:
@@ -2550,6 +2649,9 @@ def go_comment(key: str):
     elif key == "w_od":
         ss.page, ss.ship_open = PAGES[0], True
         ss.ship_sel = OD
+    elif key.startswith("shp_all_"):
+        ss.page, ss.ship_open = PAGES[0], True
+        ss.ship_sel = ALLREM
     elif key.startswith(("shp_", "ship_")):
         ss.page, ss.ship_open = PAGES[0], True
         m2 = re.match(r"^shp_(\d{8})_", key)
@@ -4081,7 +4183,8 @@ def _ship_ed_save(wkey: str, rows: list, vkey: str):
             r = rows[int(idx)]
         except (ValueError, IndexError):
             continue
-        _cm_set(r["ckey"], f"Отгрузка · {fmt_date(r['date'])} · {r['shop']}", ch["Комментарий"] or "")
+        _cm_set(r["ckey"], r.get("label") or f"Отгрузка · {fmt_date(r['date'])} · {r['shop']}",
+                ch["Комментарий"] or "")
     st.session_state[vkey] = st.session_state.get(vkey, 0) + 1     # новый ключ таблицы: подхватит сохранённые тексты
 
 
@@ -4091,26 +4194,45 @@ def ship_view():
     today = now.date()
     od = ship_overdue(ship, today)
     od_inf = overdue_info(od)
+    rem_all = ship[~ship["Отгружен"]]                                   # всё, что ещё не отгружено, за все даты
     ds = sorted({d_ for d_ in ship["Дата"] if d_ >= today - timedelta(days=OVERDUE_DAYS)}, reverse=True)
-    options = [OD] + ds
+    options = [ALLREM, OD] + ds
     default = pick_ship_date(ship, today)
     if st.session_state.get("ship_sel") not in options:
         st.session_state.ship_sel = default if default in options else OD
-    st.selectbox("Дата", options, key="ship_sel",
-                 format_func=lambda x: (f"Не отгружено ранее (за {OVERDUE_DAYS} дн.): "
-                                        f"{n(od_inf['orders'])} зак. · {n(od_inf['shops'])} маг."
-                                        if x == OD else date_label(x)))
+
+    def _fmt(x):
+        if x == ALLREM:
+            return (f"Все неотгруженные (общая сводная): {n(len(rem_all))} зак. · "
+                    f"{n(rem_all['Магазин'].map(norm_store).nunique())} маг.")
+        if x == OD:
+            return (f"Не отгружено ранее (за {OVERDUE_DAYS} дн.): "
+                    f"{n(od_inf['orders'])} зак. · {n(od_inf['shops'])} маг.")
+        return date_label(x)
+
+    st.selectbox("Дата", options, key="ship_sel", format_func=_fmt)
     sel = st.session_state.ship_sel
-    sub = od if sel == OD else ship[ship["Дата"] == sel]
-    rows = ship_pivot(sub)
+    overall = sel == ALLREM
+    sub = rem_all if overall else (od if sel == OD else ship[ship["Дата"] == sel])
+    rows = ship_pivot_all(sub) if overall else ship_pivot(sub)
     if not rows:
-        st.success("Здесь нет заказов." if sel != OD else "Неотгруженных заказов за прошлые дни нет.")
+        st.success("Неотгруженных заказов нет." if (overall or sel == OD) else "Здесь нет заказов.")
         return
+
+    # Прогноз готовности из Metabase («Беклог Магнита — магазины») по названию магазина
+    fc_store, fc_sd, fc_err = {}, {}, ""
+    try:
+        fc_store, fc_sd = fc_lookup(load_mb_backlog())
+    except Exception as e:
+        fc_err = str(e)
+    for r in rows:
+        k = norm_store(r["shop"])
+        r["fc"] = ((fc_sd.get((k, r["date"])) if not overall else None) or fc_store.get(k, ""))
 
     ord_n, pcs_n = sum(r["orders"] for r in rows), sum(r["pcs"] for r in rows)
     done_n = int(sub["Отгружен"].sum())
     pcs_left = int(sub.loc[~sub["Отгружен"], "Штук"].sum())
-    shops_n = len({norm_store(r["shop"]) for r in rows})                         # уникальные магазины
+    shops_n = len({norm_store(r["shop"]) for r in rows})
     shops_left = int(sub.loc[~sub["Отгружен"], "Магазин"].map(norm_store).nunique())
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
@@ -4125,22 +4247,24 @@ def ship_view():
         an_widget("ship_w_left", n(len(sub) - done_n), "заказов не отгружено",
                   f"{n(pcs_left)} шт · магазинов: {n(shops_left)}", "left" if len(sub) - done_n else "ok")
 
-    # таблица с редактируемой колонкой «Комментарий»: двойной клик по ячейке, Enter — сохранить
-    vkey = f"ship_ed_v_{'od' if sel == OD else f'{sel:%Y%m%d}'}"
-    wkey = f"ship_ed_{'od' if sel == OD else f'{sel:%Y%m%d}'}_{st.session_state.get(vkey, 0)}"
-    tbl = pd.DataFrame([{
-        "Дата": f"{fmt_date(r['date'])}, {WEEKDAYS[r['date'].weekday()]}",
-        "Магазин": r["shop"],
-        "Город": r["city"] or "—",
-        "Кол-во заказов": r["orders"],
-        "Кол-во штук": r["pcs"],
-        "Статус отгрузки": ship_status_text(r),
-        "Комментарий": comment_get(r["ckey"]),
-    } for r in rows])
+    tag = "all" if overall else ("od" if sel == OD else f"{sel:%Y%m%d}")
+    vkey = f"ship_ed_v_{tag}"
+    wkey = f"ship_ed_{tag}_{st.session_state.get(vkey, 0)}"
+    recs = []
+    for r in rows:
+        x = ({"Плановые даты": r["dates"]} if overall
+             else {"Дата": f"{fmt_date(r['date'])}, {WEEKDAYS[r['date'].weekday()]}"})
+        x.update({"Магазин": r["shop"], "Город": r["city"] or "—",
+                  "Кол-во заказов": r["orders"], "Кол-во штук": r["pcs"],
+                  "Статус отгрузки": ship_status_text(r),
+                  "Прогноз готовности": r["fc"] or "—",
+                  "Комментарий": comment_get(r["ckey"])})
+        recs.append(x)
+    tbl = pd.DataFrame(recs)
     st.data_editor(
         tbl, key=wkey, hide_index=True, width="stretch",
         height=int(min(46 + 35 * len(tbl), 620)),
-        disabled=["Дата", "Магазин", "Город", "Кол-во заказов", "Кол-во штук", "Статус отгрузки"],
+        disabled=[c for c in tbl.columns if c != "Комментарий"],
         column_config={
             "Кол-во заказов": st.column_config.NumberColumn("Кол-во заказов", format="%d"),
             "Кол-во штук": st.column_config.NumberColumn("Кол-во штук", format="%d"),
@@ -4152,11 +4276,18 @@ def ship_view():
     st.caption(f"Итого: магазинов {n(shops_n)} · заказов {n(ord_n)} · штук {n(pcs_n)}. "
                "Комментарий можно писать прямо в таблице: двойной клик по ячейке, Enter — сохранить. "
                "Комментарии общие для всех и видны в колокольчике сверху.")
+    if fc_err:
+        st.caption(f"Прогноз готовности недоступен: {fc_err}")
+    elif not any(r["fc"] for r in rows):
+        st.caption("Прогноз готовности не подтянулся: названия магазинов в Metabase не совпали с таблицей отгрузок.")
+    elif overall:
+        st.caption("В общей сводной, если у магазина несколько прогнозов (на разные даты плана), они показаны через «;».")
 
-    xl_button("Скачать сводную в Excel", lambda: ship_excel(rows),
-              f"otgruzka_{'ranee' if sel == OD else f'{sel:%Y-%m-%d}'}.xlsx", "dl_ship_pivot")
+    xl_button("Скачать сводную в Excel", lambda: ship_excel(rows, overall),
+              f"otgruzka_{'vse_neotgruzheno' if overall else ('ranee' if sel == OD else f'{sel:%Y-%m-%d}')}.xlsx",
+              "dl_ship_pivot")
     st.caption("Статус берётся из колонки «Статус отгрузки» вкладок «Маршруты New» и «Архив».")
-    if sel != OD and sel in dates:
+    if (not overall) and sel != OD and sel in dates:
         st.button("Открыть заказы WMS на эту дату", key="ship_to_orders", on_click=go_orders, args=("Все", sel))
 
 
