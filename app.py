@@ -160,7 +160,6 @@ VIS_KEEP_DAYS = 30                      # сколько дней хранить
 COMMENTS_FILE = "comments.json"         # комментарии к виджетам (файл на сервере)
 COMMENT_MAX = 300                       # максимальная длина комментария
 COMMENT_BELL_DAYS = 3                   # сколько дней комментарий висит в колокольчике (от момента создания)
-HIDDEN_FILE = "hidden_widgets.json"     # какие виджеты скрыты для всех (файл на сервере)
 CHAT_FILE = "chat.json"                 # сообщения чата (файл на сервере)
 CHAT_KEEP = 300                         # сколько последних сообщений хранить
 CHAT_MAX = 500                          # максимальная длина сообщения
@@ -3208,37 +3207,6 @@ def comment_ui(key: str, label: str):
             st.button("💬 Комментарий", key=f"cm_b_{key}", on_click=_cm_open, args=(key,))
 
 
-@st.cache_resource
-def _hidden() -> dict:
-    """Общий для всех список скрытых виджетов: {ключ виджета: True}."""
-    h = {"data": {}, "lock": threading.Lock()}
-    try:
-        with open(HIDDEN_FILE, encoding="utf-8") as f:
-            h["data"] = json.load(f).get("data", {})
-    except Exception:
-        pass
-    return h
-
-
-def widget_hidden(key: str) -> bool:
-    return bool(_hidden()["data"].get(key))
-
-
-def _hide_set(key: str, value: bool):
-    """Скрыть / показать виджет сразу для всех, кто открыт дашборд."""
-    h = _hidden()
-    with h["lock"]:
-        if value:
-            h["data"][key] = True
-        else:
-            h["data"].pop(key, None)
-        try:
-            with open(HIDDEN_FILE, "w", encoding="utf-8") as f:
-                json.dump({"data": h["data"]}, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-
 def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon: str = None, small: bool = False):
     """Виджет с комментарием: сверху карточка (комментарий мелкими буквами внутри), снизу кнопка комментария."""
     card = kpi_box(value, label, sub, cls, icon=icon, note=comment_get(key))
@@ -3868,6 +3836,8 @@ def _cm_recent(limit: int) -> list:
     border = datetime.now(TZ) - timedelta(days=COMMENT_BELL_DAYS)
     fresh = []
     for k, c in items:
+        if k in ("w_ship", "w_od"):          # у этих виджетов комментариев больше нет
+            continue
         try:
             ts = datetime.fromisoformat(c.get("t", "")).astimezone(TZ)
         except Exception:
@@ -4369,22 +4339,12 @@ if page == PAGES[0] and not hub_open and not ship_open:
         is_today = (sd == now.date()) and sm["total"] > 0
         od_df = ship_overdue(ship, now.date())                          # не отгружено в прошлые дни
         od_info = overdue_info(od_df)                                   # заказов, магазинов, штук
-        ship_note = comment_get("w_ship")
+        ship_note = ""                                                  # комментарий у этого виджета убран
         ship_h = SHIP_IFRAME_H + ((20 + 12 * (len(ship_note) // 80)) if ship_note else 0)
         frame = (ship_doc(sd, pct_ship, sm, sync_html, ship_note,
                           title="Отгрузка сегодня" if sd == now.date() else "Последняя отгрузка",
                           live=is_today, od=od_info), ship_h)
         tap("ship", "", open_ship, iframe=frame)                        # нажатие -> сводная по магазинам
-        comment_ui("w_ship", "Отгрузка сегодня")
-        if od_info["orders"] and not widget_hidden("w_od"):             # отдельная карточка: клик -> какие магазины не отгружены
-            tap("od", kpi_box(n(od_info["orders"]), "Не отгружено ранее",
-                              f"магазинов: {n(od_info['shops'])} · {n(od_info['pcs'])} шт · нажмите, чтобы увидеть магазины",
-                              "left", icon="box", note=comment_get("w_od")),
-                open_ship_od)
-            comment_ui("w_od", "Не отгружено ранее")
-            st.button("🙈 Скрыть виджет (у всех)", key="hide_w_od", on_click=_hide_set, args=("w_od", True))
-        elif od_info["orders"]:
-            st.button("👁 Показать виджет «Не отгружено ранее»", key="show_w_od", on_click=_hide_set, args=("w_od", False))
     elif ship_err:
         st.caption("Статус отгрузки недоступен: проверьте доступ к таблице отгрузок.")
 
