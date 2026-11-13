@@ -15,10 +15,11 @@ comments.json (комментарии к виджетам), chat.json (сооб�
 Отдельная карточка «Не отгружено ранее» открывает сводную по неотгруженным магазинам за прошлые дни.
 Колонка «Комментарий» в сводной редактируется прямо в таблице (двойной клик по ячейке).
 Узуммаркет: колонка «Город» убрана; «Дата отгрузки факт» берётся из таблицы актов (колонка E, запасной
-вариант — K) и из «Лист1» (колонка I); для каждого заказа считается SLA (старт — «Передан с хаба / Взят в
-работу ЦПТ», при статусе IN_DELIVERY сдвигается на рабочий день; финиш — фактическая отгрузка).
-Аналитика: собрано / отгружено / переходящий беклог по дням, старый и новый беклог, прочие заказы по
-приоритетам, одна кнопка «Скачать всё в Excel» (с линейными графиками).
+вариант — K) и из «Лист1» (колонка I); для каждого заказа считается SLA (старт вводится прямо в Streamlit,
+при статусе IN_DELIVERY сдвигается на рабочий день; финиш — фактическая отгрузка).
+Аналитика: страница как раньше; новая выгрузка — одна кнопка «Скачать аналитику в Excel» (статус по дням,
+беклог, прочие заказы, SLA Узум, графики — только в файле).
+Погода в Ташкенте (OpenWeather) — всплывающая подсказка при наведении на дату.
 Комментарии хранятся во вкладке таблицы «Комментарии_app» (нужен доступ «Редактор») и живут 3 суток.
 """
 import hashlib
@@ -1313,7 +1314,7 @@ def sla_calc(status, start_raw, fact, today: date, prio) -> dict:
     return dict(start=start, days=days, norm=norm, text=text, ok=ok)
 
 
-def uz_enrich(part: pd.DataFrame, cpmap: dict, acts_df, today: date) -> pd.DataFrame:
+def uz_enrich(part: pd.DataFrame, cpmap: dict, acts_df, today: date, manual: dict = None) -> pd.DataFrame:
     """Добавляет к заказам Категорию, Приоритет, колонки D / O из «Лист1», фактическую дату отгрузки и SLA.
     Факт: сначала таблица актов (колонка E), если актов нет — колонка I «Лист1»."""
     empty = ("", "", "", "", "", "")
@@ -1339,10 +1340,12 @@ def uz_enrich(part: pd.DataFrame, cpmap: dict, acts_df, today: date) -> pd.DataF
                 fact, shown = d_, f"{d_:%d.%m.%Y}"
             else:
                 shown = cp[3]
-        s = sla_calc(cp[4], cp[5], fact, today, cp[1])
-        rows.append((cp[0], cp[1], cp[2], shown, cp[4], fact, s["start"], s["days"], s["norm"], s["text"], s["ok"]))
+        start_raw = (manual or {}).get(k) or cp[5]            # дата, введённая в Streamlit, главнее «Лист1»
+        s = sla_calc(cp[4], start_raw, fact, today, cp[1])
+        rows.append((cp[0], cp[1], cp[2], shown, cp[4], fact, s["start"], s["days"], s["norm"], s["text"], s["ok"],
+                     parse_any_date(start_raw)))
     cols = ["Категория", "Приоритет", "Отгрузка", "Дата Uzum", "Статус заказа", "Факт дата",
-            "SLA старт", "SLA дней", "SLA норма", "SLA", "SLA ок"]
+            "SLA старт", "SLA дней", "SLA норма", "SLA", "SLA ок", "SLA старт ввод"]
     add = pd.DataFrame(rows, columns=cols, index=part.index).astype(object)
     return pd.concat([part.drop(columns=[c for c in cols if c in part.columns]), add], axis=1)
 
@@ -1352,6 +1355,168 @@ def _isna(v) -> bool:
         return v is None or bool(pd.isna(v))
     except Exception:
         return False
+
+
+SLA_TAB = "SLA_старт"            # вкладка основной таблицы: даты старта SLA, введённые в Streamlit
+SLA_FILE = "sla_start.json"      # запасной вариант: файл на сервере
+
+
+def sla_manual_load() -> dict:
+    """{НОМЕР ЗАКАЗА: дата старта SLA} из вкладки таблицы (или из файла)."""
+    try:
+        sh = _client_rw().open_by_key(SHEET_ID)
+        ws = next((w for w in sh.worksheets() if w.title == SLA_TAB), None)
+        if ws is not None:
+            out = {}
+            for r in ws.get_all_values()[1:]:
+                d_ = parse_any_date(r[1]) if len(r) > 1 else None
+                if r and r[0].strip() and d_:
+                    out[r[0].strip().upper()] = d_
+            return out
+    except Exception:
+        pass
+    try:
+        with open(SLA_FILE, encoding="utf-8") as f:
+            return {k: parse_any_date(v) for k, v in json.load(f).items() if parse_any_date(v)}
+    except Exception:
+        return {}
+
+
+def sla_manual_save(data: dict) -> bool:
+    """Сохраняет даты в таблицу (переживает перезапуск) и в файл-копию. False — таблица недоступна для записи."""
+    ok = False
+    try:
+        sh = _client_rw().open_by_key(SHEET_ID)
+        ws = next((w for w in sh.worksheets() if w.title == SLA_TAB), None)
+        if ws is None:
+            ws = sh.add_worksheet(SLA_TAB, rows=1000, cols=2)
+        rows = [["Заказ", "Старт SLA (передан с хаба / взят в работу ЦПТ)"]]
+        rows += [[k, f"{v:%d.%m.%Y}"] for k, v in sorted(data.items())]
+        ws.clear()
+        ws.update(values=rows, range_name="A1", value_input_option="RAW")
+        ok = True
+    except Exception:
+        pass
+    try:
+        with open(SLA_FILE, "w", encoding="utf-8") as f:
+            json.dump({k: f"{v:%d.%m.%Y}" for k, v in data.items()}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    if not ok:
+        try:
+            st.toast("Даты SLA сохранены только на сервере и пропадут при перезапуске: дайте сервисному аккаунту "
+                     f"доступ «Редактор» к основной таблице (вкладка «{SLA_TAB}» создастся сама).", icon="⚠️")
+        except Exception:
+            pass
+    return ok
+
+
+def sla_manual() -> dict:
+    if "sla_manual" not in st.session_state:
+        st.session_state.sla_manual = sla_manual_load()
+    return st.session_state.sla_manual
+
+
+def sla_editor(part: pd.DataFrame):
+    """Таблица для ввода даты старта SLA («Передан с хаба / Взят в работу ЦПТ») прямо в Streamlit.
+    Сначала идут заказы без фактической отгрузки, самые старые даты — первыми."""
+    base = part.assign(_f=part["Факт дата"].notna()).sort_values(["_f", "Дата", "Заказ"]).head(500)
+    ed_df = pd.DataFrame({
+        "Заказ": base["Заказ"].str.strip().values,
+        "Приоритет": base["Приоритет"].fillna("").values,
+        "Статус заказа": base["Статус заказа"].fillna("").values,
+        "Старт SLA": [x if isinstance(x, date) else None for x in base["SLA старт ввод"]],
+    })
+    ver = st.session_state.get("sla_ver", 0)
+    st.caption("Введите дату в колонке «Старт SLA» (клик по ячейке → календарь или текст). Сохраняется сразу. "
+               "Если статус заказа IN_DELIVERY и дата выпала на выходной — старт SLA сдвинется на рабочий день. "
+               "Пустая ячейка — SLA у заказа не считается. Показаны первые 500 заказов.")
+    kw = dict(key=f"sla_ed_{ver}", hide_index=True, disabled=["Заказ", "Приоритет", "Статус заказа"],
+              column_config={"Старт SLA": st.column_config.DateColumn("Старт SLA", format="DD.MM.YYYY")})
+    try:
+        ed = st.data_editor(ed_df, width="stretch", **kw)
+    except TypeError:
+        ed = st.data_editor(ed_df, use_container_width=True, **kw)
+    cur = dict(sla_manual())
+    changed = False
+    for o, v0, v1 in zip(ed_df["Заказ"], ed_df["Старт SLA"], ed["Старт SLA"]):
+        v1 = pd.Timestamp(v1).date() if not _isna(v1) else None
+        if v1 != v0:
+            changed = True
+            if v1:
+                cur[o.upper()] = v1
+            else:
+                cur.pop(o.upper(), None)
+    if changed:
+        sla_manual_save(cur)
+        st.session_state.sla_manual = cur
+        st.session_state.sla_ver = ver + 1
+        st.rerun()
+
+
+# ───────────────────────── Погода в Ташкенте (подсказка при наведении на дату) ─────────────────────────
+OWM_KEY_DEFAULT = "a2678f4d34e7206e32721ad1f0ac41bc"   # лучше положить в Secrets: openweather_key = "..."
+WEATHER_LAT, WEATHER_LON = 41.2995, 69.2401            # Ташкент
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_weather() -> dict:
+    """OpenWeatherMap: сейчас + прогноз на 5 дней (шаг 3 часа) -> {'now': {...}, 'days': {дата: {...}}}.
+    Ошибка сети / ключа не роняет дашборд: подсказка просто покажет «погода недоступна»."""
+    try:
+        key = str(st.secrets["openweather_key"])
+    except Exception:
+        key = OWM_KEY_DEFAULT
+    base = dict(lat=WEATHER_LAT, lon=WEATHER_LON, appid=key, units="metric", lang="ru")
+    try:
+        cur = requests.get("https://api.openweathermap.org/data/2.5/weather", params=base, timeout=5).json()
+        fc = requests.get("https://api.openweathermap.org/data/2.5/forecast", params=base, timeout=5).json()
+        if str(cur.get("cod")) != "200":
+            return {"err": str(cur.get("message") or cur.get("cod"))}
+        now_ = dict(t=cur["main"]["temp"], desc=cur["weather"][0]["description"], wind=cur["wind"].get("speed", 0))
+        tmp = {}
+        for it in fc.get("list", []):
+            ts = datetime.fromtimestamp(it["dt"], TZ)
+            tmp.setdefault(ts.date(), []).append(
+                (ts.hour, it["main"]["temp"], it["weather"][0]["description"], it["wind"].get("speed", 0),
+                 it.get("pop", 0)))
+        days = {}
+        for d_, v in tmp.items():
+            day_part = [x for x in v if 9 <= x[0] <= 18] or v
+            descs = [x[2] for x in day_part]
+            days[d_] = dict(tmin=min(x[1] for x in v), tmax=max(x[1] for x in v),
+                            desc=max(set(descs), key=descs.count), wind=max(x[3] for x in v),
+                            pop=round(max(x[4] for x in v) * 100))
+        return {"now": now_, "days": days}
+    except Exception as e:
+        return {"err": str(e)}
+
+
+def weather_title(d, wx: dict = None) -> str:
+    """Текст всплывающей подсказки с погодой Ташкента на дату d (прогноз OpenWeather доступен на 5 дней вперёд)."""
+    try:
+        if d is None or pd.isna(d):
+            return ""
+    except Exception:
+        return ""
+    wx = wx if wx is not None else load_weather()
+    if "now" not in wx:
+        return "Погода в Ташкенте сейчас недоступна"
+    today_ = datetime.now(TZ).date()
+    head = f"Ташкент, {d:%d.%m}: "
+    if d < today_:
+        return head + "прошедший день, погода не хранится"
+    day = wx["days"].get(d)
+    if d == today_:
+        w = wx["now"]
+        s = f"сейчас {w['t']:+.0f}°C, {w['desc']}, ветер {w['wind']:.0f} м/с"
+        if day:
+            s += f"; за день {day['tmin']:+.0f}…{day['tmax']:+.0f}°C"
+        return head + s
+    if day:
+        return (head + f"{day['tmin']:+.0f}…{day['tmax']:+.0f}°C, {day['desc']}, ветер до {day['wind']:.0f} м/с, "
+                f"осадки {day['pop']}%")
+    return head + "прогноз есть только на 5 дней вперёд"
 
 
 # ───────────────────────── Metabase: остатки ─────────────────────────
@@ -2907,6 +3072,7 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=No
             + "<th class='num'>Штук</th><th>Статус</th><th>WMS</th></tr>")
     ncol = head.count("<th")
     body = []
+    wx = load_weather()                                      # один запрос на всю таблицу (кэш 10 минут)
     for r in frame.head(limit).to_dict("records"):
         extra = ""
         if cp:
@@ -2940,7 +3106,7 @@ def orders_table(frame: pd.DataFrame, limit: int = 1500, cp: bool = False, ux=No
         oc = " class='ordc'" if (wide or acts is not None) else ""
         city = "" if sla else f"<td>{esc(r['Город'] or '—')}</td>"
         body.append(
-            f"<tr><td>{fmt_date(r['Дата'])}</td><td{oc}>{oid}</td><td>{esc(r['Магазин'])}</td>"
+            f"<tr><td title='{esc(weather_title(r['Дата'], wx))}'>{fmt_date(r['Дата'])}</td><td{oc}>{oid}</td><td>{esc(r['Магазин'])}</td>"
             f"{city}{extra}<td class='num'>{n(r['Штук'])}</td>"
             f"<td>{badge(r['Собран'], bool(r.get('Новый', False)))}</td>"
             f"<td>{esc(r['Статус WMS'] or '—')}</td></tr>")
@@ -4223,7 +4389,8 @@ def topright():
     st.markdown(
         f"<div class='tb-right'><span class='live onl' title='Нажмите, чтобы увидеть, кто сейчас в дашборде'>"
         f"<i class='dot'></i><span>{n_on} онлайн</span></span><span class='sep'></span>"
-        f"<span class='tb-date'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}</span><span class='sep'></span>"
+        f"<span class='tb-date' title='{esc(weather_title(nw.date()))}'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}"
+        f"</span><span class='sep'></span>"
         f"{bell_html()}</div>",
         unsafe_allow_html=True)
 
@@ -4355,6 +4522,7 @@ with h3:
     if st.button("Обновить", key="btn_refresh", width="stretch", type="primary"):
         st.cache_data.clear()
         st.session_state.pop("plan", None)      # рейсы тоже перечитаем из хранилища
+        st.session_state.pop("sla_manual", None)   # даты старта SLA тоже
         st.rerun()
 
 if df.empty:
@@ -4520,7 +4688,8 @@ def ship_view():
     def _fmt(x):
         if x == ALLREM:
             return (f"Все неотгруженные с {SHIP_FROM:%d.%m} (общая сводная): {n(len(rem_all))} зак. · "
-                    f"{n(rem_all['Магазин'].map(norm_store).nunique())} маг.")
+                    f"{n(rem_all['Магазин'].map(norm_store).nunique())} маг. · "
+                    f"сегодня {today:%d.%m}: {n(int((rem_all['Дата'] == today).sum()))} зак.")
         if x == OD:
             return (f"Не отгружено ранее (за {OVERDUE_DAYS} дн.): "
                     f"{n(od_inf['orders'])} зак. · {n(od_inf['shops'])} маг.")
@@ -4562,6 +4731,16 @@ def ship_view():
     with c5:
         an_widget("ship_w_left", n(len(sub) - done_n), "заказов не отгружено",
                   f"{n(pcs_left)} шт · магазинов: {n(shops_left)}", "left" if len(sub) - done_n else "ok")
+
+    if overall:                                   # «Все»: отдельно показываем сегодняшний день
+        def _part(f):
+            f = f[~f["Отгружен"]]
+            return f"<b>{n(len(f))}</b> зак. · <b>{n(int(f['Штук'].sum()))}</b> шт · маг. {n(f['Магазин'].map(norm_store).nunique())}"
+        st.markdown(
+            f"<div style='margin:-4px 0 10px;font-size:13px'>Не отгружено — ранее (до {today:%d.%m}): "
+            f"{_part(sub[sub['Дата'] < today])} &nbsp;|&nbsp; <b>сегодня ({today:%d.%m}): "
+            f"{_part(sub[sub['Дата'] == today])}</b> &nbsp;|&nbsp; дальше по плану: "
+            f"{_part(sub[sub['Дата'] > today])}</div>", unsafe_allow_html=True)
 
     tag = "all" if overall else ("od" if sel == OD else f"{sel:%Y%m%d}")
     vkey = f"ship_ed_v_{tag}"
@@ -4677,7 +4856,7 @@ if page == PAGES[0] and not hub_open and not ship_open:
                 d_html = f"{fmt_date(d_)}<small>{WEEKDAYS[d_.weekday()]}, {d_:%Y}</small>"
                 key, target = f"new_{d_:%Y%m%d}", d_
             tap(key, f"""<div class="day {'urg' if d_ is not None and (d_ - now.date()).days <= 3 else 'amb'}">
-              <div class="d">{d_html}</div>
+              <div class="d" title="{esc(weather_title(d_)) if d_ is not None else ''}">{d_html}</div>
               <div class="mid"><span class="badge no">не маршрутизировано</span>
               <div class="meta">заказов <b>{n(len(g_))}</b> · <b>{n(g_['Штук'].sum())}</b> шт</div>{cm_line('w_' + key)}</div>
               <div class="pct">{n(g_['Штук'].sum())}<small>шт</small></div><div class="chev">{ic('chev', P['mute'], 16)}</div></div>""",
@@ -4700,7 +4879,7 @@ if page == PAGES[0] and not hub_open and not ship_open:
         full = "full" if r["Осталось"] == 0 else ""
         left_pcs = r["Штук"] - r["Штук собрано"]
         tap(f"day_{d:%Y%m%d}", f"""<div class="day {full}">
-          <div class="d">{fmt_date(d)}<small>{WEEKDAYS[d.weekday()]}, {d:%Y}</small></div>
+          <div class="d" title="{esc(weather_title(d))}">{fmt_date(d)}<small>{WEEKDAYS[d.weekday()]}, {d:%Y}</small></div>
           <div class="mid"><div class="bar"><i style="width:{r['Процент']}%"></i></div>
           <div class="meta">собрано <b>{r['Собрано']}</b> зак. ({n(r['Штук собрано'])} шт) · осталось <b>{r['Осталось']}</b> зак.
           ({n(left_pcs)} шт) · всего {r['Заказов']} зак., {n(r['Штук'])} шт</div>{cm_line(f'w_day_{d:%Y%m%d}')}</div>
@@ -4773,24 +4952,20 @@ if page == PAGES[1]:
                     st.warning("Не удалось прочитать таблицу актов. Откройте её для почты сервисного аккаунта "
                                "(роль «Читатель»).")
                     st.caption(str(e))
-                part = uz_enrich(part, cpmap, acts_df, now.date())
+                part = uz_enrich(part, cpmap, acts_df, now.date(), sla_manual())
                 if is_uz:
-                    sla_head = ux_heads[3] if len(ux_heads) > 3 else ""
-                    if not sla_head:
-                        st.warning("SLA: в «Лист1» не найдена колонка «Передан с хаба / Взят в работу ЦПТ» "
-                                   "(ищу заголовок со словами «передан с хаба», «взят в работу», «цпт»). "
-                                   "Впишите букву колонки в SLA_START_COL в начале app.py.")
-                    else:
-                        known = part[part["SLA дней"].notna()]
-                        late = int((known["SLA ок"] == False).sum())          # noqa: E712
-                        st.caption(
-                            f"SLA: старт — «{sla_head}» (при статусе IN_DELIVERY сдвигается на рабочий день), "
-                            f"финиш — фактическая отгрузка; считаем рабочие дни. Норма по приоритетам: "
-                            + ", ".join(f"П{p} — {d_} дн." for p, d_ in SLA_NORM_DAYS.items())
-                            + f", без приоритета — {SLA_NORM_DEFAULT} дн. "
-                            f"С рассчитанным SLA: {n(len(known))} из {n(len(part))} заказов, просрочено: {n(late)}"
-                            + (f", в среднем {f1(known['SLA дней'].astype(float).mean())} раб. дн." if len(known) else "")
-                            + ".")
+                    with st.expander("Старт SLA: вводите даты «Передан с хаба / Взят в работу ЦПТ» здесь"):
+                        sla_editor(part)
+                    known = part[part["SLA дней"].notna()]
+                    late = int((known["SLA ок"] == False).sum())          # noqa: E712
+                    st.caption(
+                        "SLA: старт — введённая выше дата (при статусе IN_DELIVERY сдвигается на рабочий день), "
+                        "финиш — фактическая отгрузка; считаем рабочие дни. Норма по приоритетам: "
+                        + ", ".join(f"П{p} — {d_} дн." for p, d_ in SLA_NORM_DAYS.items())
+                        + f", без приоритета — {SLA_NORM_DEFAULT} дн. "
+                        f"С рассчитанным SLA: {n(len(known))} из {n(len(part))} заказов, просрочено: {n(late)}"
+                        + (f", в среднем {f1(known['SLA дней'].astype(float).mean())} раб. дн." if len(known) else "")
+                        + ".")
             nc, dn = part[~part["Собран"]], part[part["Собран"]]
             st.button("← Все прочие заказы", on_click=set_oth, args=(None,), key="oth_back")
             st.markdown(f"<div class='sec'>{esc(sel)}</div>", unsafe_allow_html=True)
@@ -5412,10 +5587,48 @@ def other_tables(o: pd.DataFrame, today: date):
     return by_p.reset_index(drop=True), by_s.reset_index(drop=True)
 
 
+def status_by_date(o: pd.DataFrame, today: date, plans: dict) -> pd.DataFrame:
+    """По каждой плановой дате: заказы, штуки, собрано, отгружено, остаток к отгрузке, дата планируемой отгрузки."""
+    cols = ["Дата", "tz", "tp", "sz", "sp", "pct", "ns_z", "ns_p", "oz", "op", "wait", "rem", "plan"]
+    rows = []
+    for d, g in o.groupby("Дата"):
+        tp = int(g["Штук"].sum())
+        c, sh = g[g["Собран"]], g[g["Отгружен"]]
+        sp, op = int(c["Штук"].sum()), int(sh["Штук"].sum())
+        rows.append([d, len(g), tp, len(c), sp, round(sp / tp * 100) if tp else 0, len(g) - len(c), tp - sp,
+                     len(sh), op, int(g.loc[g["Собран"] & ~g["Отгружен"], "Штук"].sum()), tp - op,
+                     plans.get(d) or f"{max(d, today) + timedelta(days=1):%d.%m}"])
+    return pd.DataFrame(rows, columns=cols).sort_values("Дата").reset_index(drop=True)
+
+
+def status_lines(x, today: date) -> list:
+    """Текст по одной дате в виде: Собрано — N зак. (X шт., P%) / Осталось собрать / Общий объём / Отгружено / План."""
+    f = lambda v: f"{int(v):,}".replace(",", " ")
+    out = []
+    if x.sp == 0:
+        out.append("Собрано — 0 шт.")
+    else:
+        out.append(f"Собрано — {f(x.sz)} зак. ({f(x.sp)} шт., {x.pct}%)")
+    if x.sp > 0 and x.ns_z > 0:
+        out.append(f"Осталось собрать — {f(x.ns_z)} зак. ({f(x.ns_p)} шт.)")
+    out.append(f"Общий объём — {f(x.tp)} шт.")
+    if x.Дата <= today or x.op > 0:
+        out.append(f"Фактически отгружено — {f(x.op)} шт.")
+    if x.rem > 0:
+        out.append(f"Оставшийся объём к отгрузке — {f(x.rem)} шт.")
+        if x.wait > 0:
+            out.append(f"Собранные {f(x.wait)} шт. планируем отгрузить {x.plan}.")
+        else:
+            out.append(f"Планируем отгружать {x.plan}.")
+    else:
+        out.append("Всё отгружено.")
+    return out
+
+
 def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.DataFrame,
                     oth_p: pd.DataFrame, oth_s: pd.DataFrame, oth_day: pd.DataFrame,
-                    uz: pd.DataFrame, today: date) -> bytes:
-    """Одна книга Excel: Сводка (линейные графики), По дням, Очередь по дням, Очередь заказов,
+                    uz: pd.DataFrame, status_main: pd.DataFrame, status_oth: pd.DataFrame, today: date) -> bytes:
+    """Одна книга Excel: Статус по дням (текст + таблицы + графики), Сводка (линейные графики), По дням, Очередь по дням, Очередь заказов,
     Прочие заказы (таблицы и графики), Uzum SLA."""
     from openpyxl import Workbook
     from openpyxl.chart import BarChart, LineChart, Reference
@@ -5571,6 +5784,41 @@ def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.
     wu.freeze_panes = "C2"
     wu.auto_filter.ref = f"A1:{get_column_letter(len(u_head))}{max(len(u_rows) + 1, 2)}"
 
+    # ── Статус по дням (в формате «Заказы от …: собрано / отгружено / план») ──
+    wsd = wb.create_sheet("Статус по дням", 0)
+    wsd["A1"] = f"Статус заказов по дням на {today:%d.%m.%Y}"
+    wsd["A1"].font = Font(bold=True, size=15)
+    wsd.column_dimensions["A"].width = 15
+    for col in "BCDEFGHI":
+        wsd.column_dimensions[col].width = 17
+
+    def status_block(top, title, st_df):
+        wsd.cell(row=top, column=1, value=title).font = Font(bold=True, size=13)
+        heads = ["Дата", "Заказов", "Штук", "Собрано, зак", "Собрано, шт", "Собрано, %", "Отгружено, шт",
+                 "Осталось к отгрузке, шт", "Планируем отгрузить"]
+        rows = [[f"{r.Дата:%d.%m}", r.tz, r.tp, r.sz, r.sp, r.pct, r.op, r.rem, r.plan]
+                for r in st_df.itertuples(index=False)]
+        end = table(wsd, top + 1, heads, rows)
+        if len(st_df):
+            bc = BarChart()
+            bc.type = "col"
+            for c in (5, 7, 8):                                   # собрано, отгружено, осталось к отгрузке (шт)
+                bc.add_data(Reference(wsd, min_col=c, min_row=top + 1, max_row=end), titles_from_data=True)
+            bc.set_categories(Reference(wsd, min_col=1, min_row=top + 2, max_row=end))
+            style_chart(bc, title, "Штук", w=22, h=8.5)
+            wsd.add_chart(bc, f"K{top + 1}")
+        r_ = end + 2
+        for x in st_df.itertuples(index=False):
+            wsd.cell(row=r_, column=1, value=f"Заказы от {x.Дата:%d.%m}").font = Font(bold=True)
+            for line in status_lines(x, today):
+                r_ += 1
+                wsd.cell(row=r_, column=1, value=line)
+            r_ += 2
+        return max(r_, top + 20)
+
+    nxt = status_block(3, "Основные заказы", status_main)
+    status_block(nxt + 1, "Прочие заказы", status_oth)
+
     out = BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -5620,17 +5868,15 @@ if page == PAGES[5]:
         except TypeError:
             st.altair_chart(ch, use_container_width=True)
 
-    # ═════════ Сборка, отгрузка и беклог ═════════
-    st.markdown("<div class='sec'>Сборка, отгрузка и беклог</div>", unsafe_allow_html=True)
+    # ═════════ Выгрузка в Excel: вся новая аналитика (статус по дням, беклог, прочие, SLA) — только в файле ═════════
     today_b = now.date()
     ship_raw_b = None
     try:
         _tb = load_ship_tabs()
         ship_raw_b = (pd.concat([parse_ship(_tb.get("new")), parse_ship(_tb.get("archive"))], ignore_index=True)
                       .drop_duplicates("Заказ", keep="first"))
-    except Exception as e:
-        st.warning("Не удалось прочитать таблицу отгрузок — «отгружено» считается неполно.")
-        st.caption(str(e))
+    except Exception:
+        pass
     cpmap_b, acts_b = {}, None
     try:
         cpmap_b, _hd = load_cat_prio()
@@ -5641,125 +5887,28 @@ if page == PAGES[5]:
     except Exception:
         pass
     flow_b = build_flow(df_all, ship_raw_b, acts_b, cpmap_b, today_b)
-    if flow_b.empty:
-        st.info(f"Нет заказов с плановой датой от {SHIP_FROM:%d.%m.%Y}.")
-    else:
+    if not flow_b.empty:
         main_b, oth_b = flow_b[~flow_b["Прочий"]], flow_b[flow_b["Прочий"]]
+        plans_b = {}
+        with st.expander("Excel: когда планируем отгружать (по умолчанию — на следующий день)"):
+            st.caption("Эти даты попадут в фразы «Планируем отгрузить …» в Excel. Оставьте пустым, чтобы взять "
+                       "дату по умолчанию; можно писать несколько дат, например «13.11 и 14.11».")
+            for d_ in sorted(flow_b.loc[~flow_b["Отгружен"], "Дата"].unique()):
+                dflt = f"{max(d_, today_b) + timedelta(days=1):%d.%m}"
+                plans_b[d_] = (st.text_input(f"Заказы от {d_:%d.%m}", key=f"plan_ship_{d_:%Y%m%d}",
+                                             placeholder=dflt) or "").strip() or dflt
         day_b, oday_b = day_flow(main_b, today_b), day_flow(oth_b, today_b)
         kpi_b = backlog_kpi(main_b, today_b)
         qd_b, qo_b = queue_by_day(main_b, today_b), queue_orders(main_b, today_b)
         op_b, os_b = other_tables(oth_b, today_b)
+        stm_b, sto_b = status_by_date(main_b, today_b, plans_b), status_by_date(oth_b, today_b, plans_b)
         uz_b = flow_b[flow_b["_k"] == UZ_KEY]
-        uz_b = uz_enrich(uz_b, cpmap_b, acts_b, today_b) if not uz_b.empty else uz_b.assign(
+        uz_b = uz_enrich(uz_b, cpmap_b, acts_b, today_b, sla_manual()) if not uz_b.empty else uz_b.assign(
             **{c: [] for c in ["Категория", "Статус заказа", "Факт дата", "SLA старт", "SLA дней", "SLA норма", "SLA"]})
         uz_b = uz_b.sort_values(["Дата", "Заказ"]) if not uz_b.empty else uz_b
-
-        xl_button("Скачать всё в Excel (графики, беклог, прочие, SLA Узум)",
-                  lambda: analytics_excel(day_b, kpi_b, qd_b, qo_b, op_b, os_b, oday_b, uz_b, today_b),
+        xl_button("Скачать аналитику в Excel",
+                  lambda: analytics_excel(day_b, kpi_b, qd_b, qo_b, op_b, os_b, oday_b, uz_b, stm_b, sto_b, today_b),
                   f"analitika_{today_b:%Y%m%d}.xlsx", "dl_analytics")
-
-        def pc(t):
-            return f"{n(t[1])} шт"
-
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            an_widget("bl_all", n(kpi_b["all"][0]), "общий беклог отгрузки, заказов",
-                      f"{pc(kpi_b['all'])} · не собрано из них: {n(kpi_b['old_nc'][0] + kpi_b['new_nc'][0])}",
-                      "left" if kpi_b["all"][0] else "ok", "box")
-        with b2:
-            an_widget("bl_old", n(kpi_b["old"][0]), "старый беклог (дни до сегодня)",
-                      f"{pc(kpi_b['old'])} · не собрано: {n(kpi_b['old_nc'][0])} зак. — в приоритете",
-                      "left" if kpi_b["old"][0] else "ok", "box")
-        with b3:
-            an_widget("bl_new", n(kpi_b["new"][0]), f"новый беклог (сегодня, {today_b:%d.%m})",
-                      f"{pc(kpi_b['new'])} · не собрано: {n(kpi_b['new_nc'][0])} зак.",
-                      "blue" if kpi_b["new"][0] else "ok", "box")
-        b4, b5, b6 = st.columns(3)
-        with b4:
-            an_widget("bl_done", n(kpi_b["done"][0]), "собрано (дни до сегодня), заказов", pc(kpi_b["done"]), "ok")
-        with b5:
-            an_widget("bl_ship", n(kpi_b["shipped"][0]), "отгружено (дни до сегодня), заказов",
-                      pc(kpi_b["shipped"]), "ok")
-        with b6:
-            an_widget("bl_wait", n(kpi_b["waiting"][0]), "собрано, ждёт отгрузки, заказов", pc(kpi_b["waiting"]),
-                      "left" if kpi_b["waiting"][0] else "ok")
-
-        unit_b = st.segmented_control("Единицы на графике", ["Заказы", "Штуки"], key="an_bl_unit") or "Заказы"
-        sfx = "z" if unit_b == "Заказы" else "p"
-        if day_b.empty:
-            st.info("Нет данных по дням.")
-        else:
-            series_b = [("План", f"plan_{sfx}"), ("Собрано", f"sb_{sfx}"), ("Отгружено", f"ot_{sfx}"),
-                        ("Переходящий беклог", f"carry_ot_{sfx}")]
-            ch_b = pd.concat([pd.DataFrame({"Дата": pd.to_datetime(day_b["Дата"]), "Показатель": nm,
-                                            "Значение": day_b[col]}) for nm, col in series_b])
-            names_b = [x for x, _ in series_b]
-            line_b = (alt.Chart(ch_b).mark_line(point=True, strokeWidth=3)
-                      .encode(x=alt.X("yearmonthdate(Дата):T", title=None,
-                                      axis=alt.Axis(format="%d.%m", labelAngle=-45)),
-                              y=alt.Y("Значение:Q", title=unit_b, axis=alt.Axis(format=",.0f")),
-                              color=alt.Color("Показатель:N", title=None, legend=alt.Legend(orient="top"),
-                                              scale=alt.Scale(domain=names_b,
-                                                              range=["#8C93B5", "#1E9E5C", "#4C8DFF", "#E8A33D"])),
-                              strokeDash=alt.condition(alt.datum["Показатель"] == "План",
-                                                       alt.value([5, 4]), alt.value([1, 0])),
-                              tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
-                                       alt.Tooltip("Показатель:N"),
-                                       alt.Tooltip("Значение:Q", title=unit_b, format=",.0f")]))
-            show_chart(line_b.properties(height=380))
-            st.caption("Переходящий беклог на конец дня = накопленная сумма «план − отгружено» по всем дням от "
-                       f"{SHIP_FROM:%d.%m.%Y}: то, что не уехало вовремя и переходит на следующий день.")
-
-        st.markdown("<div class='sec'>Очередь: старые дни всегда первыми</div>", unsafe_allow_html=True)
-        if qd_b.empty:
-            st.success("Неотгруженных заказов за прошедшие дни и сегодня нет.")
-        else:
-            rows = [[str(r["№"]), f"<b>{fmt_date(r['Дата'])}</b>, {WEEKDAYS[r['Дата'].weekday()]}",
-                     n(r["Возраст, дн"]),
-                     f"<span class='badge {'no' if r['Тип'] == 'Старый' else 'ok'}'>{r['Тип']}</span>",
-                     n(r["Не отгружено, зак"]), n(r["Не отгружено, шт"]), n(r["в т.ч. не собрано, зак"]),
-                     n(r["в т.ч. собрано, ждёт отгрузки, зак"])] for _, r in qd_b.iterrows()]
-            st.markdown(simple_table(["№", "Дата", "Возраст, дн", "Тип", "Не отгружено, зак", "Не отгружено, шт",
-                                      "Не собрано, зак", "Собрано, ждёт отгрузки, зак"], rows,
-                                     num_cols={2, 4, 5, 6, 7}), unsafe_allow_html=True)
-            st.caption("№ 1 — самый старый день: его собираем и отгружаем в первую очередь. "
-                       "Полный список заказов в этой очереди (с приоритетами) — в Excel, лист «Очередь заказов».")
-
-        st.markdown("<div class='sec'>Прочие заказы по приоритетам</div>", unsafe_allow_html=True)
-        if op_b.empty:
-            st.info("Прочих заказов за выбранные дни нет.")
-        else:
-            rows = [[f"<b>{esc(r['Приоритет'])}</b>"] + [n(r[c]) for c in op_b.columns[1:]]
-                    for _, r in op_b.iterrows()]
-            st.markdown(simple_table(list(op_b.columns), rows, num_cols=set(range(1, len(op_b.columns)))),
-                        unsafe_allow_html=True)
-            melt_b = op_b.melt(id_vars="Приоритет", value_vars=["Собрано", "Отгружено", "Не собрано", "Беклог, зак"],
-                               var_name="Показатель", value_name="Заказов")
-            bars_b = (alt.Chart(melt_b).mark_bar()
-                      .encode(x=alt.X("Приоритет:N", sort=op_b["Приоритет"].tolist(), title=None),
-                              xOffset="Показатель:N",
-                              y=alt.Y("Заказов:Q", axis=alt.Axis(format=",.0f")),
-                              color=alt.Color("Показатель:N", title=None, legend=alt.Legend(orient="top"),
-                                              scale=alt.Scale(domain=["Собрано", "Отгружено", "Не собрано", "Беклог, зак"],
-                                                              range=["#1E9E5C", "#4C8DFF", "#E8A33D", "#C2308B"])),
-                              tooltip=["Приоритет:N", "Показатель:N", alt.Tooltip("Заказов:Q", format=",.0f")]))
-            show_chart(bars_b.properties(height=300))
-            with st.expander(f"По магазинам и приоритетам ({len(os_b)})"):
-                rows = [[f"<b>{esc(r['Магазин'])}</b>", esc(r["Приоритет"])] + [n(r[c]) for c in os_b.columns[2:]]
-                        for _, r in os_b.iterrows()]
-                st.markdown(simple_table(list(os_b.columns), rows, num_cols=set(range(2, len(os_b.columns)))),
-                            unsafe_allow_html=True)
-            st.caption("Приоритет берётся из «Лист1» (у магазинов без приоритета — «Без приоритета»). Отгружено: для "
-                       "Узуммаркет и Вайлдберриз — по актам и «Статусу заказа», для остальных — по таблице отгрузок, "
-                       "если они там есть. Беклог — не отгружено с плановой датой до сегодня включительно.")
-        _bk = _cmts()["backend"]
-        st.caption("Комментарии хранятся в таблице и удаляются через "
-                   f"{COMMENT_TTL_DAYS} суток." if _bk == "table" else
-                   "⚠️ Комментарии пока лежат только в файле на сервере и могут пропасть при перезапуске приложения: "
-                   f"дайте сервисному аккаунту доступ «Редактор» к основной таблице (вкладка «{COMMENTS_TAB}» "
-                   "создастся сама).")
-
-    st.markdown("<div class='sec'>Динамика заказов</div>", unsafe_allow_html=True)
 
     # один и тот же заказ считаем один раз (повторы строк в таблицах не раздувают числа)
     src = df_all.dropna(subset=["Дата"]).drop_duplicates("Заказ")
