@@ -1456,6 +1456,7 @@ def sla_editor(part: pd.DataFrame):
 
 
 # ───────────────────────── Погода в Ташкенте (подсказка при наведении на дату) ─────────────────────────
+RU_WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]                    # дни недели (нужны верхней панели)
 OWM_KEY_DEFAULT = "a2678f4d34e7206e32721ad1f0ac41bc"   # лучше положить в Secrets: openweather_key = "..."
 WEATHER_LAT, WEATHER_LON = 41.2995, 69.2401            # Ташкент
 
@@ -4607,9 +4608,9 @@ with st.sidebar:
                 unsafe_allow_html=True)
 
 # ── верхняя панель ──
-st.markdown("<style>" + fx_css(bool(st.session_state.dark)) + "</style>", unsafe_allow_html=True)
 with st.container(key="topbar"):
-    st.markdown(fx_html(), unsafe_allow_html=True)               # анимированный фон (погода + листья), под виджетами
+    # анимированный фон (погода + листья) под виджетами; стили и разметка в одном абсолютном слое — высоту панели не меняет
+    st.markdown("<style>" + fx_css(bool(st.session_state.dark)) + "</style>" + fx_html(), unsafe_allow_html=True)
     tb0, tb1, tb2, tb3 = st.columns([1.5, 4.3, 3.4, .55], vertical_alignment="center")
     with tb0:
         st.markdown(logo_html(LOGO_TOP_HEIGHT), unsafe_allow_html=True)
@@ -5695,9 +5696,6 @@ def status_lines(x, today: date) -> list:
     else:
         out.append("Всё отгружено.")
     return out
-
-
-RU_WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
 def volume_forecast(df_all: pd.DataFrame, today: date, horizon: int = 7) -> dict:
