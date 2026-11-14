@@ -17,9 +17,10 @@ comments.json (комментарии к виджетам), chat.json (сооб�
 Узуммаркет: колонка «Город» убрана; «Дата отгрузки факт» берётся из таблицы актов (колонка E, запасной
 вариант — K) и из «Лист1» (колонка I); для каждого заказа считается SLA (старт вводится прямо в Streamlit,
 при статусе IN_DELIVERY сдвигается на рабочий день; финиш — фактическая отгрузка).
-Аналитика: страница как раньше; новая выгрузка — одна кнопка «Скачать аналитику в Excel» (статус по дням,
-беклог, прочие заказы, SLA Узум, графики — только в файле).
-Погода в Ташкенте (OpenWeather) — всплывающая подсказка при наведении на дату.
+Аналитика: страница как раньше; новая выгрузка — одна кнопка «Скачать аналитику в Excel» (лист «Статус по
+дням» и лист «Примерный объём» — план по магазинам на 7 дней вперёд).
+Погода в Ташкенте (OpenWeather): карточка при наведении на дату вверху; фон верхней строки — анимация погоды
+(солнце / облака / дождь) и осенние листья.
 Комментарии хранятся во вкладке таблицы «Комментарии_app» (нужен доступ «Редактор») и живут 3 суток.
 """
 import hashlib
@@ -1473,23 +1474,196 @@ def load_weather() -> dict:
         fc = requests.get("https://api.openweathermap.org/data/2.5/forecast", params=base, timeout=5).json()
         if str(cur.get("cod")) != "200":
             return {"err": str(cur.get("message") or cur.get("cod"))}
-        now_ = dict(t=cur["main"]["temp"], desc=cur["weather"][0]["description"], wind=cur["wind"].get("speed", 0))
+        now_ = dict(t=cur["main"]["temp"], feels=cur["main"].get("feels_like", cur["main"]["temp"]),
+                    hum=cur["main"].get("humidity", 0), desc=cur["weather"][0]["description"],
+                    main=cur["weather"][0].get("main", ""), wind=cur["wind"].get("speed", 0),
+                    sunrise=cur.get("sys", {}).get("sunrise"), sunset=cur.get("sys", {}).get("sunset"))
         tmp = {}
         for it in fc.get("list", []):
             ts = datetime.fromtimestamp(it["dt"], TZ)
             tmp.setdefault(ts.date(), []).append(
                 (ts.hour, it["main"]["temp"], it["weather"][0]["description"], it["wind"].get("speed", 0),
-                 it.get("pop", 0)))
+                 it.get("pop", 0), it["weather"][0].get("main", "")))
         days = {}
         for d_, v in tmp.items():
             day_part = [x for x in v if 9 <= x[0] <= 18] or v
             descs = [x[2] for x in day_part]
+            mains = [x[5] for x in day_part]
             days[d_] = dict(tmin=min(x[1] for x in v), tmax=max(x[1] for x in v),
-                            desc=max(set(descs), key=descs.count), wind=max(x[3] for x in v),
-                            pop=round(max(x[4] for x in v) * 100))
+                            desc=max(set(descs), key=descs.count), main=max(set(mains), key=mains.count),
+                            wind=max(x[3] for x in v), pop=round(max(x[4] for x in v) * 100))
         return {"now": now_, "days": days}
     except Exception as e:
         return {"err": str(e)}
+
+
+def wx_emoji(main: str) -> str:
+    return {"clear": "☀️", "clouds": "⛅", "rain": "🌧️", "drizzle": "🌦️", "thunderstorm": "⛈️", "snow": "🌨️",
+            "mist": "🌫️", "fog": "🌫️", "haze": "🌫️", "dust": "🌫️", "smoke": "🌫️"}.get(str(main).lower(), "⛅")
+
+
+def weather_pop_html(today_: date) -> str:
+    """Карточка погоды в Ташкенте, всплывает при наведении на дату (оформлена как карточка колокольчика)."""
+    wx = load_weather()
+    head = "<div class='bp-h'>Погода · Ташкент</div>"
+    if "now" not in wx:
+        return f"<div class='wx-pop'>{head}<div class='empty'>Погода сейчас недоступна</div></div>"
+    w = wx["now"]
+    days = wx["days"]
+    td = days.get(today_)
+    rng = f" · за день {td['tmin']:+.0f}…{td['tmax']:+.0f}°" if td else ""
+    now_box = (f"<div class='wx-now'><span class='wx-ic'>{wx_emoji(w['main'])}</span>"
+               f"<div><b class='wx-t'>{w['t']:+.0f}°C</b><div class='wx-d'>{esc(str(w['desc']).capitalize())}</div></div></div>"
+               f"<div class='bp-box'>Ощущается как <b>{w['feels']:+.0f}°</b> · влажность <b>{w['hum']:.0f}%</b> · "
+               f"ветер <b>{w['wind']:.0f} м/с</b>{rng}</div>")
+    rows = ""
+    for d_ in sorted(days)[:5]:
+        x = days[d_]
+        lab = "Сегодня" if d_ == today_ else f"{RU_WD[d_.weekday()].capitalize()} {d_:%d.%m}"
+        rows += (f"<div class='wx-row'><span class='wx-l'>{lab}</span><span>{wx_emoji(x['main'])}</span>"
+                 f"<b>{x['tmin']:+.0f}…{x['tmax']:+.0f}°</b><small>💧 {x['pop']}%</small></div>")
+    return (f"<div class='wx-pop'>{head}{now_box}<div class='wx-rows'>{rows}</div>"
+            "<div class='bp-f'>OpenWeather · данные обновляются раз в 10 минут</div></div>")
+
+
+def fx_mode() -> str:
+    """Какую погодную анимацию рисовать на фоне верхней панели: sun / cloud / rain."""
+    m = str((load_weather().get("now") or {}).get("main", "")).lower()
+    if m in ("rain", "drizzle", "thunderstorm"):
+        return "rain"
+    return "sun" if m == "clear" else "cloud"
+
+
+def _leaf_uri(fill: str) -> str:
+    svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 1.5C5.5 7.5 4.2 14.5 12 22.5"
+           f"C19.8 14.5 18.5 7.5 12 1.5Z' fill='{fill}'/><path d='M12 4.5V22M12 11l-3.2-2.6M12 14.5l3.4-2.8M12 17.8"
+           "L8.8 15.4' stroke='rgba(80,30,10,.55)' stroke-width='.8' fill='none' stroke-linecap='round'/></svg>")
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
+def _cloud_uri(fill: str) -> str:
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 60'><g fill='{fill}'>"
+           "<circle cx='34' cy='38' r='17'/><circle cx='58' cy='28' r='22'/><circle cx='85' cy='36' r='17'/>"
+           "<rect x='28' y='36' width='66' height='19' rx='9.5'/></g></svg>")
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
+def _rain_uri(w: int, h: int, n: int, color: str, seed: int) -> str:
+    import random as _rnd
+    r = _rnd.Random(seed)
+    lines = "".join(
+        f"<line x1='{x:.1f}' y1='{y:.1f}' x2='{x - 0.25 * 13:.1f}' y2='{y + 13:.1f}'/>"
+        for x, y in ((r.uniform(4, w - 4), r.uniform(0, h - 14)) for _ in range(n)))
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}'>"
+           f"<g stroke='{color}' stroke-width='1.3' stroke-linecap='round'>{lines}</g></svg>")
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
+def fx_css(dark: bool) -> str:
+    """Анимированный фон верхней панели: погода (солнце / облака / дождь) + осенние листья. Только фон: кнопки и
+    виджеты не сдвигаются (слой абсолютный, под ними), на телефоне та же анимация, при «уменьшить движение» — статично."""
+    leaf = ["#E8872B", "#C9452C", "#E5B23A", "#A8582B", "#D1632A"]
+    cloud_fill = "#9FB0DA" if dark else "#8EA3CF"
+    cloud_op = ".16" if dark else ".30"
+    rain_c = "#9DB8FF" if dark else "#5B7FD1"
+    css = """
+.st-key-topbar [data-testid="stElementContainer"]:has(.tb-fx) { position:absolute !important; inset:0; width:auto !important;
+  height:auto !important; min-height:0 !important; margin:0 !important; padding:0 !important; z-index:0; pointer-events:none; }
+.st-key-topbar [data-testid="stHorizontalBlock"] { position:relative; z-index:1; }
+.tb-fx { position:absolute; inset:0; border-radius:15px; overflow:hidden; pointer-events:none; contain:paint; }
+.tb-fx .fx-sky { position:absolute; inset:0; }
+.tb-fx.fx-sun .fx-sky { background:linear-gradient(100deg, rgba(255,196,92,$sun_a) 0%, rgba(255,150,120,$sun_b) 38%, transparent 72%); }
+.tb-fx.fx-cloud .fx-sky { background:linear-gradient(100deg, rgba(120,150,215,$cl_a) 0%, rgba(160,130,220,$cl_b) 45%, transparent 80%); }
+.tb-fx.fx-rain .fx-sky { background:linear-gradient(100deg, rgba(70,100,175,$rn_a) 0%, rgba(90,80,160,$rn_b) 50%, transparent 85%); }
+/* солнце: мягкое свечение + медленно вращающиеся лучи */
+.fx-sun-core { position:absolute; left:-40px; top:-70px; width:190px; height:190px; border-radius:50%;
+  background:radial-gradient(circle, rgba(255,214,120,.95) 0 14%, rgba(255,184,80,.45) 32%, transparent 68%);
+  animation:fxpulse 5s ease-in-out infinite; }
+.fx-sun-rays { position:absolute; left:-110px; top:-140px; width:330px; height:330px; border-radius:50%;
+  background:repeating-conic-gradient(from 0deg, rgba(255,196,80,.30) 0 5deg, transparent 5deg 16deg);
+  -webkit-mask:radial-gradient(circle, #000 0 18%, transparent 62%); mask:radial-gradient(circle, #000 0 18%, transparent 62%);
+  animation:fxspin 70s linear infinite; }
+.tb-fx.fx-night .fx-sun-core { background:radial-gradient(circle, rgba(220,230,255,.95) 0 12%, rgba(150,170,255,.35) 32%, transparent 66%); }
+.tb-fx.fx-night .fx-sun-rays { opacity:.25; }
+@keyframes fxpulse { 0%,100% { transform:scale(1); opacity:.9; } 50% { transform:scale(1.08); opacity:1; } }
+@keyframes fxspin { to { transform:rotate(360deg); } }
+/* облака */
+.fx-cl { position:absolute; left:0; background:url("$cloud_uri") center/contain no-repeat; opacity:$cloud_op;
+  animation:fxdrift var(--d) linear infinite; animation-delay:var(--dl); }
+@keyframes fxdrift { from { transform:translateX(-260px); } to { transform:translateX(100vw); } }
+/* дождь: два слоя капель с разной скоростью */
+.fx-rain { position:absolute; inset:0; background-repeat:repeat; }
+.fx-rain.r1 { background-image:url("$rain1"); background-size:120px 480px; opacity:.55; animation:fxrain1 2.4s linear infinite; }
+.fx-rain.r2 { background-image:url("$rain2"); background-size:80px 320px; opacity:.35; animation:fxrain2 1.7s linear infinite; }
+@keyframes fxrain1 { to { background-position:-120px 480px; } }
+@keyframes fxrain2 { to { background-position:-80px 320px; } }
+/* осенние листья: падают и покачиваются */
+.fx-lf { position:absolute; top:-18px; width:var(--s); height:var(--s); animation:fxfall var(--d) linear infinite;
+  animation-delay:var(--dl); opacity:.0; }
+.fx-lf::before { content:""; position:absolute; inset:0; background:var(--img) center/contain no-repeat;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.25)); animation:fxsway var(--sd) ease-in-out infinite alternate;
+  animation-delay:var(--dl); }
+@keyframes fxfall { 0% { top:-18px; opacity:0; transform:translateX(0); } 10% { opacity:.9; }
+  90% { opacity:.9; } 100% { top:104%; opacity:0; transform:translateX(var(--wd)); } }
+@keyframes fxsway { from { transform:translateX(-7px) rotate(-55deg); } to { transform:translateX(7px) rotate(65deg); } }
+@media (max-width:560px) { .fx-lf.m { display:none; } .fx-sun-core { left:-60px; } }
+@media (prefers-reduced-motion:reduce) { .tb-fx *, .tb-fx *::before { animation:none !important; } .fx-lf { opacity:.7; top:30%; } }
+.tb-right .wxd { position:relative; cursor:pointer; outline:none; }
+.tb-right .wxd::after { content:""; position:absolute; left:-24px; right:-24px; top:100%; height:16px; }
+.wx-pop { display:none; position:absolute; right:-30px; top:calc(100% + 12px); width:340px; max-width:88vw; z-index:9999;
+  padding:14px 16px; border-radius:16px; background:$card; border:1px solid $line; box-shadow:0 18px 50px rgba(0,0,0,.45);
+  white-space:normal; text-align:left; color:$ink; cursor:default; font-weight:400; }
+.wxd:hover .wx-pop, .wxd:focus-within .wx-pop, .wx-pop:hover { display:block; animation:wxin .18s ease-out; }
+@keyframes wxin { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+.wx-pop .bp-h { font-weight:800; font-size:.95rem; color:$ink; margin-bottom:8px; }
+.wx-pop .bp-box { padding:8px 10px; border-radius:10px; background:$head; border:1px solid $line; font-size:.74rem;
+  color:$mute; line-height:1.55; margin-bottom:8px; }
+.wx-pop .bp-box b { color:$ink; }
+.wx-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
+.wx-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
+.wx-now { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.wx-now .wx-ic { font-size:2.3rem; line-height:1; }
+.wx-now .wx-t { font-size:1.75rem; color:$ink; line-height:1.1; }
+.wx-now .wx-d { font-size:.78rem; color:$mute; }
+.wx-rows { display:flex; flex-direction:column; gap:5px; }
+.wx-row { display:grid; grid-template-columns:1fr 26px auto 54px; align-items:center; gap:8px; padding:6px 10px;
+  border-radius:10px; background:$head; border:1px solid $line; font-size:.76rem; color:$ink; }
+.wx-row .wx-l { color:$mute; }
+.wx-row small { color:$mute; font-size:.68rem; text-align:right; }
+"""
+    css = Template(css).safe_substitute(
+        P, cloud_uri=_cloud_uri(cloud_fill), cloud_op=cloud_op, rain1=_rain_uri(120, 480, 15, rain_c, 3),
+        rain2=_rain_uri(80, 320, 9, rain_c, 8),
+        sun_a=".30" if dark else ".34", sun_b=".10" if dark else ".14", cl_a=".16" if dark else ".14",
+        cl_b=".08" if dark else ".07", rn_a=".28" if dark else ".16", rn_b=".12" if dark else ".08")
+    leaves = "".join(f".fx-lf.k{i} {{ --img:url(\"{_leaf_uri(c)}\"); }}\n" for i, c in enumerate(leaf))
+    return css + leaves
+
+
+def fx_html() -> str:
+    """Разметка фона верхней панели (абсолютный слой под виджетами)."""
+    import random as _rnd
+    mode = fx_mode()
+    hr = datetime.now(TZ).hour
+    night = " fx-night" if (hr < 6 or hr >= 19) else ""
+    parts = [f"<div class='tb-fx fx-{mode}{night}' aria-hidden='true'><div class='fx-sky'></div>"]
+    if mode == "sun":
+        parts.append("<div class='fx-sun-rays'></div><div class='fx-sun-core'></div>")
+    elif mode == "cloud":
+        for i, (top, h, d, dl) in enumerate([(-6, 42, 70, -5), (14, 30, 95, -48), (30, 36, 80, -26), (4, 24, 110, -70)]):
+            parts.append(f"<i class='fx-cl' style='top:{top}px;width:{int(h * 2)}px;height:{h}px;--d:{d}s;--dl:{dl}s'></i>")
+    else:
+        parts.append("<div class='fx-rain r1'></div><div class='fx-rain r2'></div>")
+        for i, (top, h, d, dl) in enumerate([(-10, 40, 90, -20), (6, 30, 120, -75)]):
+            parts.append(f"<i class='fx-cl' style='top:{top}px;width:{int(h * 2)}px;height:{h}px;--d:{d}s;--dl:{dl}s'></i>")
+    r = _rnd.Random(11)
+    for i in range(11):
+        size, dur = r.randint(12, 20), r.uniform(7, 13)
+        parts.append(f"<i class='fx-lf k{i % 5}{' m' if i > 6 else ''}' style='left:{3 + i * 8.7 + r.uniform(-3, 3):.1f}%;"
+                     f"--s:{size}px;--d:{dur:.1f}s;--dl:-{r.uniform(0, dur):.1f}s;--sd:{r.uniform(1.6, 3):.1f}s;"
+                     f"--wd:{r.randint(-40, 60)}px'></i>")
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def weather_title(d, wx: dict = None) -> str:
@@ -4389,8 +4563,8 @@ def topright():
     st.markdown(
         f"<div class='tb-right'><span class='live onl' title='Нажмите, чтобы увидеть, кто сейчас в дашборде'>"
         f"<i class='dot'></i><span>{n_on} онлайн</span></span><span class='sep'></span>"
-        f"<span class='tb-date' title='{esc(weather_title(nw.date()))}'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}"
-        f"</span><span class='sep'></span>"
+        f"<span class='tb-date wxd' tabindex='0'>{nw:%d.%m.%Y}{ic('calendar', P['mute'], 15)}"
+        f"{weather_pop_html(nw.date())}</span><span class='sep'></span>"
         f"{bell_html()}</div>",
         unsafe_allow_html=True)
 
@@ -4433,7 +4607,9 @@ with st.sidebar:
                 unsafe_allow_html=True)
 
 # ── верхняя панель ──
+st.markdown("<style>" + fx_css(bool(st.session_state.dark)) + "</style>", unsafe_allow_html=True)
 with st.container(key="topbar"):
+    st.markdown(fx_html(), unsafe_allow_html=True)               # анимированный фон (погода + листья), под виджетами
     tb0, tb1, tb2, tb3 = st.columns([1.5, 4.3, 3.4, .55], vertical_alignment="center")
     with tb0:
         st.markdown(logo_html(LOGO_TOP_HEIGHT), unsafe_allow_html=True)
@@ -5483,110 +5659,6 @@ def build_flow(df_all: pd.DataFrame, ship_raw, acts_df, cpmap: dict, today: date
     return d.drop(columns=["_u"]).reset_index(drop=True)
 
 
-FLOW_COLS = ["plan_z", "plan_p", "sb_z", "sb_p", "ot_z", "ot_p", "ns_z", "ns_p", "no_z", "no_p",
-             "carry_sb_z", "carry_sb_p", "carry_ot_z", "carry_ot_p"]
-
-
-def day_flow(o: pd.DataFrame, today: date) -> pd.DataFrame:
-    """По дням (до сегодня, без пропусков): план, собрано, отгружено, не собрано, не отгружено и ПЕРЕХОДЯЩИЙ беклог —
-    накопленная сумма «план − собрано» и «план − отгружено» (z — заказы, p — штуки)."""
-    o = o[o["Дата"] <= today]
-    if o.empty:
-        return pd.DataFrame(columns=["Дата"] + FLOW_COLS)
-    o = o.assign(z=1, sb_z=o["Собран"].astype(int), ot_z=o["Отгружен"].astype(int),
-                 sb_p=o["Штук"].where(o["Собран"], 0), ot_p=o["Штук"].where(o["Отгружен"], 0))
-    g = o.groupby("Дата").agg(plan_z=("z", "sum"), plan_p=("Штук", "sum"), sb_z=("sb_z", "sum"),
-                              sb_p=("sb_p", "sum"), ot_z=("ot_z", "sum"), ot_p=("ot_p", "sum"))
-    idx = pd.date_range(pd.Timestamp(min(g.index)), pd.Timestamp(today))
-    g.index = pd.to_datetime(g.index)
-    g = g.reindex(idx, fill_value=0)
-    g["ns_z"], g["ns_p"] = g["plan_z"] - g["sb_z"], g["plan_p"] - g["sb_p"]
-    g["no_z"], g["no_p"] = g["plan_z"] - g["ot_z"], g["plan_p"] - g["ot_p"]
-    for a, b in (("carry_sb_z", "ns_z"), ("carry_sb_p", "ns_p"), ("carry_ot_z", "no_z"), ("carry_ot_p", "no_p")):
-        g[a] = g[b].cumsum()
-    g.insert(0, "Дата", [x.date() for x in g.index])
-    return g.reset_index(drop=True)[["Дата"] + FLOW_COLS].astype({c: int for c in FLOW_COLS})
-
-
-def backlog_kpi(o: pd.DataFrame, today: date) -> dict:
-    """Беклог отгрузки: старый (плановая дата раньше сегодня) и новый (сегодня); будущие даты — это план, не беклог."""
-    def pair(f):
-        return int(len(f)), int(f["Штук"].sum())
-    past = o[o["Дата"] <= today]
-    un = past[~past["Отгружен"]]
-    old, new = un[un["Дата"] < today], un[un["Дата"] == today]
-    return dict(all=pair(un), old=pair(old), new=pair(new),
-                old_nc=pair(old[~old["Собран"]]), new_nc=pair(new[~new["Собран"]]),
-                done=pair(past[past["Собран"]]), shipped=pair(past[past["Отгружен"]]),
-                not_collected=pair(past[~past["Собран"] & ~past["Отгружен"]]),
-                waiting=pair(past[past["Собран"] & ~past["Отгружен"]]), future=pair(o[o["Дата"] > today]))
-
-
-def queue_by_day(o: pd.DataFrame, today: date) -> pd.DataFrame:
-    """Очередь по дням: самые старые дни — первыми (№ 1 — самый старый неотгруженный день)."""
-    un = o[(~o["Отгружен"]) & (o["Дата"] <= today)]
-    cols = ["№", "Дата", "Возраст, дн", "Тип", "Не отгружено, зак", "Не отгружено, шт",
-            "в т.ч. не собрано, зак", "в т.ч. собрано, ждёт отгрузки, зак"]
-    if un.empty:
-        return pd.DataFrame(columns=cols)
-    g = (un.groupby("Дата").agg(z=("Заказ", "count"), p=("Штук", "sum"), nc=("Собран", lambda s: int((~s).sum())))
-         .reset_index().sort_values("Дата"))
-    g["w"] = g["z"] - g["nc"]
-    out = pd.DataFrame({"№": range(1, len(g) + 1), "Дата": g["Дата"].values,
-                        "Возраст, дн": [(today - x).days for x in g["Дата"]],
-                        "Тип": ["Старый" if x < today else "Новый" for x in g["Дата"]],
-                        "Не отгружено, зак": g["z"].values, "Не отгружено, шт": g["p"].values,
-                        "в т.ч. не собрано, зак": g["nc"].values, "в т.ч. собрано, ждёт отгрузки, зак": g["w"].values})
-    return out
-
-
-def queue_orders(o: pd.DataFrame, today: date) -> pd.DataFrame:
-    """Все неотгруженные заказы до сегодня: старые дни — всегда первыми, внутри дня — приоритет 1, 2, 3…"""
-    un = o[(~o["Отгружен"]) & (o["Дата"] <= today)].copy()
-    un["_p"] = un["Приоритет"].map(lambda x: prio_num(x) if prio_num(x) is not None else 99)
-    un = un.sort_values(["Дата", "_p", "Штук"], ascending=[True, True, False]).reset_index(drop=True)
-    return pd.DataFrame({"№": range(1, len(un) + 1), "Дата": un["Дата"], "Возраст, дн": un["Возраст"],
-                         "Тип": un["Тип"], "Заказ": un["Заказ"], "Магазин": un["Магазин"],
-                         "Приоритет": un["Приоритет"], "Штук": un["Штук"],
-                         "Собран": np.where(un["Собран"], "да", "нет")})
-
-
-def other_tables(o: pd.DataFrame, today: date):
-    """Прочие заказы: (по приоритетам, по магазинам × приоритет). Беклог = не отгружено с датой до сегодня включительно;
-    «старый» — дата раньше сегодня, «новый» — сегодня."""
-    cols_p = ["Приоритет", "Заказов", "Штук", "Собрано", "Отгружено", "Не собрано",
-              "Беклог, зак", "Беклог, шт", "Старый беклог, зак", "Новый беклог, зак"]
-    if o.empty:
-        return pd.DataFrame(columns=cols_p), pd.DataFrame(columns=["Магазин"] + cols_p)
-    o = o[o["Дата"] <= today].copy() if (o["Дата"] <= today).any() else o.iloc[0:0].copy()
-    if o.empty:
-        return pd.DataFrame(columns=cols_p), pd.DataFrame(columns=["Магазин"] + cols_p)
-    o["_bk"] = (~o["Отгружен"])
-    o["_old"] = o["_bk"] & (o["Дата"] < today)
-    o["_new"] = o["_bk"] & (o["Дата"] == today)
-    o["_bp"] = o["Штук"].where(o["_bk"], 0)
-
-    def agg(keys):
-        g = o.groupby(keys).agg(Заказов=("Заказ", "count"), Штук=("Штук", "sum"), Собрано=("Собран", "sum"),
-                                Отгружено=("Отгружен", "sum"), bk=("_bk", "sum"), bp=("_bp", "sum"),
-                                old=("_old", "sum"), new=("_new", "sum")).reset_index()
-        g["Не собрано"] = g["Заказов"] - g["Собрано"]
-        g = g.rename(columns={"bk": "Беклог, зак", "bp": "Беклог, шт", "old": "Старый беклог, зак",
-                              "new": "Новый беклог, зак"})
-        g["_p"] = g["Приоритет"].map(lambda x: prio_num(x) if prio_num(x) is not None else 99)
-        for c in ("Заказов", "Штук", "Собрано", "Отгружено", "Не собрано", "Беклог, зак", "Беклог, шт",
-                  "Старый беклог, зак", "Новый беклог, зак"):
-            g[c] = g[c].astype(int)
-        return g
-
-    by_p = agg(["Приоритет"]).sort_values("_p")[cols_p]
-    st_order = {name: i for i, name in enumerate(EXCLUDE_STORES)}
-    by_s = agg(["Магазин", "Приоритет"])
-    by_s["_s"] = by_s["Магазин"].map(lambda x: st_order.get(x, 99))
-    by_s = by_s.sort_values(["_s", "_p"])[["Магазин"] + cols_p]
-    return by_p.reset_index(drop=True), by_s.reset_index(drop=True)
-
-
 def status_by_date(o: pd.DataFrame, today: date, plans: dict) -> pd.DataFrame:
     """По каждой плановой дате: заказы, штуки, собрано, отгружено, остаток к отгрузке, дата планируемой отгрузки."""
     cols = ["Дата", "tz", "tp", "sz", "sp", "pct", "ns_z", "ns_p", "oz", "op", "wait", "rem", "plan"]
@@ -5625,13 +5697,59 @@ def status_lines(x, today: date) -> list:
     return out
 
 
-def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.DataFrame,
-                    oth_p: pd.DataFrame, oth_s: pd.DataFrame, oth_day: pd.DataFrame,
-                    uz: pd.DataFrame, status_main: pd.DataFrame, status_oth: pd.DataFrame, today: date) -> bytes:
-    """Одна книга Excel: Статус по дням (текст + таблицы + графики), Сводка (линейные графики), По дням, Очередь по дням, Очередь заказов,
-    Прочие заказы (таблицы и графики), Uzum SLA."""
+RU_WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def volume_forecast(df_all: pd.DataFrame, today: date, horizon: int = 7) -> dict:
+    """Примерный объём по магазинам на horizon дней вперёд от сегодняшней даты.
+    История — все завершённые дни (раньше сегодня), все магазины. Для каждого магазина считаем: всего за период,
+    за последние 7 дней, в скольких неделях были заказы. Магазин «еженедельный», если заказы были минимум в 60% недель
+    периода (если истории меньше двух недель — проверить нельзя, считаем еженедельными всех, кто был).
+    Прогноз на дату = среднее по последним 4 таким же дням недели, но только если в этот день недели у магазина
+    были заказы хотя бы в половине таких дней. Также показываем, сколько на эти даты уже заведено в WMS."""
+    dates = [today + timedelta(days=i) for i in range(horizon)]
+    allo = df_all.dropna(subset=["Дата"]).drop_duplicates("Заказ")
+    known = allo[allo["Дата"].isin(dates)].groupby("Дата")["Штук"].sum().to_dict()
+    hist = allo[allo["Дата"] < today].copy()
+    labels = [f"{RU_WD[d.weekday()]} {d:%d.%m}" for d in dates]
+    out = dict(dates=dates, labels=labels, known=[int(known.get(d, 0)) for d in dates], rows=[], first=None,
+               last=today - timedelta(days=1), weeks=0, weekly_n=0)
+    if hist.empty:
+        return out
+    hist["_k"] = hist["Магазин"].map(norm_store)
+    names = hist.groupby("_k")["Магазин"].agg(lambda s: s.value_counts().index[0])
+    first, last = hist["Дата"].min(), today - timedelta(days=1)
+    span = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    wk = lambda x: x - timedelta(days=x.weekday())
+    weeks_total = len({wk(x) for x in span})
+    wd_cnt = {w: sum(1 for x in span if x.weekday() == w) for w in range(7)}
+    daily = hist.groupby(["_k", "Дата"])["Штук"].sum().reset_index()
+    out.update(first=first, weeks=weeks_total)
+    for k, g in daily.groupby("_k"):
+        g = g.sort_values("Дата")
+        weeks_n = len({wk(x) for x in g["Дата"]})
+        weekly = True if weeks_total < 2 else weeks_n >= -(-weeks_total * 6 // 10)       # >= 60% недель
+        fc, wds = [], set()
+        for d in dates:
+            gg = g[g["Дата"].map(lambda x: x.weekday()) == d.weekday()]
+            ok = weekly and len(gg) >= 1 and len(gg) / max(wd_cnt[d.weekday()], 1) >= 0.5
+            v = int(round(gg["Штук"].tail(4).mean())) if ok else 0
+            fc.append(v)
+            if v:
+                wds.add(d.weekday())
+        out["rows"].append(dict(
+            name=names[k], total=int(g["Штук"].sum()), days=len(g), weeks_n=weeks_n,
+            last7=int(g.loc[g["Дата"] >= today - timedelta(days=7), "Штук"].sum()), weekly=weekly,
+            wds=", ".join(RU_WD[w] for w in sorted(wds)), fc=fc))
+    out["rows"].sort(key=lambda r: (not r["weekly"], -r["total"]))
+    out["weekly_n"] = sum(1 for r in out["rows"] if r["weekly"])
+    return out
+
+
+def analytics_excel(status_main: pd.DataFrame, status_oth: pd.DataFrame, fc: dict, today: date) -> bytes:
+    """Excel: лист «Статус по дням» (таблица + текст «Заказы от …») для основных и прочих заказов и лист
+    «Примерный объём» (план по магазинам на 7 дней вперёд). Без графиков и других листов."""
     from openpyxl import Workbook
-    from openpyxl.chart import BarChart, LineChart, Reference
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
@@ -5648,144 +5766,19 @@ def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.
         ws.row_dimensions[top].height = 34
         for i, r in enumerate(rows, 1):
             for j, v in enumerate(r):
-                if isinstance(v, (np.integer,)):
+                if isinstance(v, np.integer):
                     v = int(v)
-                elif isinstance(v, (np.floating,)):
+                elif isinstance(v, np.floating):
                     v = float(v)
-                elif _isna(v):
-                    v = None
                 c = ws.cell(row=top + i, column=left + j, value=v)
                 c.border = box
-                if isinstance(v, date):
-                    c.number_format = "DD.MM.YYYY"
+                if isinstance(v, (int, float)):
+                    c.number_format = "#,##0"
         return top + len(rows)
 
-    def widths(ws, ws_headers, minw=11, maxw=34):
-        for j, h in enumerate(ws_headers, 1):
-            ws.column_dimensions[get_column_letter(j)].width = min(max(len(str(h)) * 0.9 + 3, minw), maxw)
-
-    def style_chart(ch, title, ytitle, w=26, h=9.5):
-        ch.title, ch.width, ch.height = title, w, h
-        ch.y_axis.title = ytitle
-        ch.x_axis.delete = False
-        ch.y_axis.delete = False
-        ch.legend.position = "b"
-
-    # ── По дням ──
-    wd = wb.active
-    wd.title = "По дням"
-    d_head = ["Дата", "План, зак", "Собрано, зак", "Отгружено, зак", "Не собрано, зак", "Не отгружено, зак",
-              "Переходящий беклог сборки, зак", "Переходящий беклог отгрузки, зак",
-              "План, шт", "Собрано, шт", "Отгружено, шт", "Не собрано, шт", "Не отгружено, шт",
-              "Переходящий беклог сборки, шт", "Переходящий беклог отгрузки, шт"]
-    d_rows = [[f"{r.Дата:%d.%m}", r.plan_z, r.sb_z, r.ot_z, r.ns_z, r.no_z, r.carry_sb_z, r.carry_ot_z,
-               r.plan_p, r.sb_p, r.ot_p, r.ns_p, r.no_p, r.carry_sb_p, r.carry_ot_p]
-              for r in day.itertuples(index=False)]
-    nd = table(wd, 1, d_head, d_rows)
-    widths(wd, d_head)
-    wd.freeze_panes = "B2"
-
-    # ── Сводка + линейные графики ──
-    ws = wb.create_sheet("Сводка", 0)
-    ws["A1"] = f"Аналитика сборки и отгрузки на {today:%d.%m.%Y}"
-    ws["A1"].font = Font(bold=True, size=15)
-    ws["A2"] = (f"Беклог = не отгружено с плановой датой до сегодня включительно. Старый — дата раньше сегодня, "
-                f"новый — сегодня. Заказы с датой от {SHIP_FROM:%d.%m.%Y}. Старые дни всегда в приоритете.")
-    ws["A2"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws.merge_cells("A2:H2")
-    ws.row_dimensions[2].height = 32
-    k_rows = [["Общий беклог отгрузки", *kpi["all"]], ["Старый беклог", *kpi["old"]], ["Новый беклог (сегодня)", *kpi["new"]],
-              ["  из старого: не собрано", *kpi["old_nc"]], ["  из нового: не собрано", *kpi["new_nc"]],
-              ["Собрано, ждёт отгрузки", *kpi["waiting"]], ["Не собрано (за все дни до сегодня)", *kpi["not_collected"]],
-              ["Собрано всего", *kpi["done"]], ["Отгружено всего", *kpi["shipped"]],
-              ["План на будущие даты", *kpi["future"]]]
-    table(ws, 4, ["Показатель", "Заказов", "Штук"], k_rows)
-    ws.column_dimensions["A"].width = 38
-    for col in "BCDEFGH":
-        ws.column_dimensions[col].width = 13
-    if nd >= 2:
-        cats_ = Reference(wd, min_col=1, min_row=2, max_row=nd)
-        for anchor, title, ytitle, cols in (
-                ("A17", "Движение заказов по дням (заказы)", "Заказов", (2, 3, 4, 8)),
-                ("A37", "Движение заказов по дням (штуки)", "Штук", (9, 10, 11, 15))):
-            lc = LineChart()
-            for c in cols:
-                lc.add_data(Reference(wd, min_col=c, min_row=1, max_row=nd), titles_from_data=True)
-            lc.set_categories(cats_)
-            for s_ in lc.series:
-                s_.smooth = False
-                s_.marker.symbol = "circle"
-            style_chart(lc, title, ytitle)
-            ws.add_chart(lc, anchor)
-
-    # ── Очередь ──
-    wq = wb.create_sheet("Очередь по дням")
-    q_head = list(qdays.columns)
-    table(wq, 1, q_head, qdays.values.tolist())
-    widths(wq, q_head)
-    wq.freeze_panes = "A2"
-    wo = wb.create_sheet("Очередь заказов")
-    o_head = list(qord.columns)
-    table(wo, 1, o_head, qord.values.tolist())
-    widths(wo, o_head)
-    wo.freeze_panes = "A2"
-    wo.auto_filter.ref = f"A1:{get_column_letter(len(o_head))}{max(len(qord) + 1, 2)}"
-
-    # ── Прочие заказы ──
-    wp = wb.create_sheet("Прочие заказы")
-    wp["A1"] = "Прочие заказы: по приоритетам, магазинам и дням"
-    wp["A1"].font = Font(bold=True, size=14)
-    r1 = 3
-    p_head = list(oth_p.columns)
-    e1 = table(wp, r1, p_head, oth_p.values.tolist())
-    if len(oth_p):
-        bc = BarChart()
-        bc.type = "col"
-        for c in (4, 5, 6, 7):                       # Собрано, Отгружено, Не собрано, Беклог (зак.)
-            bc.add_data(Reference(wp, min_col=c, min_row=r1, max_row=e1), titles_from_data=True)
-        bc.set_categories(Reference(wp, min_col=1, min_row=r1 + 1, max_row=e1))
-        style_chart(bc, "Прочие заказы по приоритетам", "Заказов", w=20, h=8.5)
-        wp.add_chart(bc, f"L{r1}")
-    r2 = r1 + max(len(oth_p) + 3, 19)
-    s_head = list(oth_s.columns)
-    wp.cell(row=r2 - 1, column=1, value="По магазинам и приоритетам").font = Font(bold=True)
-    e2 = table(wp, r2, s_head, oth_s.values.tolist())
-    r3 = e2 + 4
-    wp.cell(row=r3 - 1, column=1, value="Прочие заказы по дням").font = Font(bold=True)
-    od_head = ["Дата", "План, зак", "Собрано, зак", "Отгружено, зак", "Не собрано, зак", "Не отгружено, зак",
-               "Переходящий беклог отгрузки, зак"]
-    od_rows = [[f"{r.Дата:%d.%m}", r.plan_z, r.sb_z, r.ot_z, r.ns_z, r.no_z, r.carry_ot_z]
-               for r in oth_day.itertuples(index=False)]
-    e3 = table(wp, r3, od_head, od_rows)
-    if len(oth_day):
-        lc = LineChart()
-        for c in (2, 3, 4, 7):
-            lc.add_data(Reference(wp, min_col=c, min_row=r3, max_row=e3), titles_from_data=True)
-        lc.set_categories(Reference(wp, min_col=1, min_row=r3 + 1, max_row=e3))
-        for s_ in lc.series:
-            s_.smooth = False
-            s_.marker.symbol = "circle"
-        style_chart(lc, "Прочие заказы: движение по дням", "Заказов", w=20, h=8.5)
-        wp.add_chart(lc, f"L{r3}")
-    for j in range(1, max(len(p_head), len(s_head)) + 1):
-        wp.column_dimensions[get_column_letter(j)].width = 17 if j > 1 else 24
-
-    # ── Uzum SLA ──
-    wu = wb.create_sheet("Uzum SLA")
-    u_head = ["Дата", "Заказ", "Категория", "Приоритет", "Статус заказа", "Старт SLA", "Дата отгрузки (факт)",
-              "Раб. дней потрачено", "Норма, раб. дн", "SLA", "Штук", "Собран"]
-    u_rows = []
-    for r in uz.to_dict("records"):
-        u_rows.append([r["Дата"], r["Заказ"], r["Категория"], r["Приоритет"], r["Статус заказа"], r["SLA старт"],
-                       r["Факт дата"], r["SLA дней"], r["SLA норма"], r["SLA"], r["Штук"],
-                       "да" if r["Собран"] else "нет"])
-    table(wu, 1, u_head, u_rows)
-    widths(wu, u_head, minw=13)
-    wu.freeze_panes = "C2"
-    wu.auto_filter.ref = f"A1:{get_column_letter(len(u_head))}{max(len(u_rows) + 1, 2)}"
-
-    # ── Статус по дням (в формате «Заказы от …: собрано / отгружено / план») ──
-    wsd = wb.create_sheet("Статус по дням", 0)
+    # ── Статус по дням ──
+    wsd = wb.active
+    wsd.title = "Статус по дням"
     wsd["A1"] = f"Статус заказов по дням на {today:%d.%m.%Y}"
     wsd["A1"].font = Font(bold=True, size=15)
     wsd.column_dimensions["A"].width = 15
@@ -5796,17 +5789,9 @@ def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.
         wsd.cell(row=top, column=1, value=title).font = Font(bold=True, size=13)
         heads = ["Дата", "Заказов", "Штук", "Собрано, зак", "Собрано, шт", "Собрано, %", "Отгружено, шт",
                  "Осталось к отгрузке, шт", "Планируем отгрузить"]
-        rows = [[f"{r.Дата:%d.%m}", r.tz, r.tp, r.sz, r.sp, r.pct, r.op, r.rem, r.plan]
+        rows = [[f"{r.Дата:%d.%m}", r.tz, r.tp, r.sz, r.sp, r.pct, r.op, r.rem, r.plan if r.rem > 0 else "—"]
                 for r in st_df.itertuples(index=False)]
         end = table(wsd, top + 1, heads, rows)
-        if len(st_df):
-            bc = BarChart()
-            bc.type = "col"
-            for c in (5, 7, 8):                                   # собрано, отгружено, осталось к отгрузке (шт)
-                bc.add_data(Reference(wsd, min_col=c, min_row=top + 1, max_row=end), titles_from_data=True)
-            bc.set_categories(Reference(wsd, min_col=1, min_row=top + 2, max_row=end))
-            style_chart(bc, title, "Штук", w=22, h=8.5)
-            wsd.add_chart(bc, f"K{top + 1}")
         r_ = end + 2
         for x in st_df.itertuples(index=False):
             wsd.cell(row=r_, column=1, value=f"Заказы от {x.Дата:%d.%m}").font = Font(bold=True)
@@ -5814,10 +5799,60 @@ def analytics_excel(day: pd.DataFrame, kpi: dict, qdays: pd.DataFrame, qord: pd.
                 r_ += 1
                 wsd.cell(row=r_, column=1, value=line)
             r_ += 2
-        return max(r_, top + 20)
+        return r_
 
     nxt = status_block(3, "Основные заказы", status_main)
     status_block(nxt + 1, "Прочие заказы", status_oth)
+
+    # ── Примерный объём ──
+    wf = wb.create_sheet("Примерный объём")
+    end_d = fc["dates"][-1]
+    wf["A1"] = f"Примерный объём по магазинам на 7 дней: {fc['dates'][0]:%d.%m.%Y} — {end_d:%d.%m.%Y}"
+    wf["A1"].font = Font(bold=True, size=15)
+    first = fc["first"]
+    wf["A2"] = ("Как считаем: берём все магазины за весь период и смотрим, в какие дни недели они были. Магазин считается "
+                "еженедельным, если заказы были минимум в 60% недель периода. Прогноз на дату — среднее по последним "
+                "4 таким же дням недели (только если в этот день недели заказы были хотя бы в половине случаев). "
+                "Серые строки — нерегулярные магазины, в план они не входят.")
+    wf["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+    wf.merge_cells("A2:L2")
+    wf.row_dimensions[2].height = 62
+    wf["A3"] = (f"История: {first:%d.%m.%Y} — {fc['last']:%d.%m.%Y}, недель: {fc['weeks']}. "
+                f"Магазинов в истории: {len(fc['rows'])}, еженедельных: {fc['weekly_n']}." if first else
+                "Истории по заказам нет — прогноз построить не из чего.")
+    wf["A3"].font = Font(italic=True)
+    heads = (["Магазин", "Всего за период, шт", "Дней с заказами", "Недель с заказами", "За последние 7 дней, шт",
+              "Еженедельный", "Дни недели"] + fc["labels"] + ["Итого за 7 дней, шт"])
+    rows = []
+    for r in fc["rows"]:
+        rows.append([r["name"], r["total"], r["days"], r["weeks_n"], r["last7"], "да" if r["weekly"] else "нет",
+                     r["wds"] or "—"] + [v if v else None for v in r["fc"]] + [sum(r["fc"])])
+    top = 5
+    end = table(wf, top, heads, rows)
+    for i, r in enumerate(fc["rows"], 1):
+        if not r["weekly"]:
+            for j in range(1, len(heads) + 1):
+                wf.cell(row=top + i, column=j).font = Font(color="9AA0B5")
+    nd = len(fc["dates"])
+    tot = [sum(r["fc"][i] for r in fc["rows"] if r["weekly"]) for i in range(nd)]
+    extra = [max(tot[i] - fc["known"][i], 0) for i in range(nd)]
+    foot = [("ИТОГО ожидается на дату, шт", tot), ("Уже заведено в WMS на дату, шт", fc["known"]),
+            ("Ещё ожидается сверх заведённого, шт", extra)]
+    for k_, (title, vals) in enumerate(foot):
+        rr = end + 1 + k_
+        wf.cell(row=rr, column=1, value=title).font = Font(bold=True)
+        for i, v in enumerate(vals):
+            c = wf.cell(row=rr, column=8 + i, value=v)
+            c.font, c.number_format = Font(bold=True), "#,##0"
+        c = wf.cell(row=rr, column=8 + nd, value=sum(vals))
+        c.font, c.number_format = Font(bold=True), "#,##0"
+        for j in range(1, len(heads) + 1):
+            wf.cell(row=rr, column=j).fill = PatternFill("solid", fgColor="EEF1FA")
+            wf.cell(row=rr, column=j).border = box
+    wf.column_dimensions["A"].width = 34
+    for j in range(2, len(heads) + 1):
+        wf.column_dimensions[get_column_letter(j)].width = 14 if j != 7 else 18
+    wf.freeze_panes = "B6"
 
     out = BytesIO()
     wb.save(out)
@@ -5868,7 +5903,7 @@ if page == PAGES[5]:
         except TypeError:
             st.altair_chart(ch, use_container_width=True)
 
-    # ═════════ Выгрузка в Excel: вся новая аналитика (статус по дням, беклог, прочие, SLA) — только в файле ═════════
+    # ═════════ Выгрузка в Excel: статус по дням и примерный объём (только в файле) ═════════
     today_b = now.date()
     ship_raw_b = None
     try:
@@ -5897,17 +5932,10 @@ if page == PAGES[5]:
                 dflt = f"{max(d_, today_b) + timedelta(days=1):%d.%m}"
                 plans_b[d_] = (st.text_input(f"Заказы от {d_:%d.%m}", key=f"plan_ship_{d_:%Y%m%d}",
                                              placeholder=dflt) or "").strip() or dflt
-        day_b, oday_b = day_flow(main_b, today_b), day_flow(oth_b, today_b)
-        kpi_b = backlog_kpi(main_b, today_b)
-        qd_b, qo_b = queue_by_day(main_b, today_b), queue_orders(main_b, today_b)
-        op_b, os_b = other_tables(oth_b, today_b)
         stm_b, sto_b = status_by_date(main_b, today_b, plans_b), status_by_date(oth_b, today_b, plans_b)
-        uz_b = flow_b[flow_b["_k"] == UZ_KEY]
-        uz_b = uz_enrich(uz_b, cpmap_b, acts_b, today_b, sla_manual()) if not uz_b.empty else uz_b.assign(
-            **{c: [] for c in ["Категория", "Статус заказа", "Факт дата", "SLA старт", "SLA дней", "SLA норма", "SLA"]})
-        uz_b = uz_b.sort_values(["Дата", "Заказ"]) if not uz_b.empty else uz_b
+        fc_b = volume_forecast(df_all, today_b)
         xl_button("Скачать аналитику в Excel",
-                  lambda: analytics_excel(day_b, kpi_b, qd_b, qo_b, op_b, os_b, oday_b, uz_b, stm_b, sto_b, today_b),
+                  lambda: analytics_excel(stm_b, sto_b, fc_b, today_b),
                   f"analitika_{today_b:%Y%m%d}.xlsx", "dl_analytics")
 
     # один и тот же заказ считаем один раз (повторы строк в таблицах не раздувают числа)
