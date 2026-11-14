@@ -1560,6 +1560,76 @@ def _rain_uri(w: int, h: int, n: int, color: str, seed: int) -> str:
     return "data:image/svg+xml;utf8," + quote(svg, safe="")
 
 
+def _leaf_tile_uri(w: int, h: int, n: int, seed: int) -> str:
+    """Плитка w×h с n осенними листьями разного цвета, размера и поворота."""
+    import random as _rnd
+    r = _rnd.Random(seed)
+    cols = ["#E8872B", "#C9452C", "#E5B23A", "#A8582B", "#D1632A"]
+    leaves = ""
+    for i in range(n):
+        s_ = r.uniform(0.55, 1.0)
+        x, y = r.uniform(16, w - 16), r.uniform(16, h - 16)
+        leaves += (f"<g transform='translate({x:.0f} {y:.0f}) rotate({r.randint(0, 359)}) scale({s_:.2f})'>"
+                   f"<path d='M0 -11C-6.5 -5 -7.8 2 0 10C7.8 2 6.5 -5 0 -11Z' fill='{cols[i % 5]}'/>"
+                   "<path d='M0 -8V10M0 -1l-3.2 -2.6M0 2.5l3.4 -2.8' stroke='rgba(80,30,10,.55)' stroke-width='.8' "
+                   "fill='none' stroke-linecap='round'/></g>")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}'>{leaves}</svg>"
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
+def _cloud_tile_uri(w: int, h: int, fill: str, seed: int) -> str:
+    import random as _rnd
+    r = _rnd.Random(seed)
+    g = ""
+    for i in range(4):
+        s_, x, y = r.uniform(0.7, 1.3), (i + 0.5) * w / 4 - 50, r.uniform(8, h - 70)
+        g += (f"<g transform='translate({x:.0f} {y:.0f}) scale({s_:.2f})' fill='{fill}' opacity='{r.uniform(.6, 1):.2f}'>"
+              "<circle cx='34' cy='38' r='17'/><circle cx='58' cy='28' r='22'/><circle cx='85' cy='36' r='17'/>"
+              "<rect x='28' y='36' width='66' height='19' rx='9.5'/></g>")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}'>{g}</svg>"
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
+def sidebar_fx_css(dark: bool, mode: str, night: bool) -> str:
+    """Фон всей боковой панели: погода (солнце / облака / дождь) + осенние листья. Два слоя-псевдоэлемента
+    (::before — листья, ::after — погода) под содержимым панели; двигаются через transform.
+    Меню, кнопки и размеры панели не меняются."""
+    cloud_fill = "#9FB0DA" if dark else "#8EA3CF"
+    rain_c = "#9DB8FF" if dark else "#5B7FD1"
+    wash = {"sun": ("rgba(255,190,90,%s)" % (".16" if dark else ".30"), "rgba(255,120,150,%s)" % (".05" if dark else ".08")),
+            "cloud": ("rgba(110,140,215,%s)" % (".14" if dark else ".16"), "rgba(150,120,215,%s)" % (".05" if dark else ".07")),
+            "rain": ("rgba(70,100,175,%s)" % (".24" if dark else ".20"), "rgba(90,80,160,%s)" % (".08" if dark else ".08"))}[mode]
+    leaf = _leaf_tile_uri(300, 600, 9, 5)
+    css = """
+section[data-testid="stSidebar"] { clip-path:inset(0); background-image:linear-gradient(180deg, $w1 0%, $w2 55%, transparent 100%) !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] { position:relative; z-index:1; }
+section[data-testid="stSidebar"]::before { content:""; position:absolute; left:-300px; right:0; top:-600px; bottom:0; z-index:0;
+  pointer-events:none; background:url("$leaf") 0 0/300px 600px repeat; opacity:.85; animation:sbleaf 46s linear infinite; }
+section[data-testid="stSidebar"]::after { content:""; position:absolute; z-index:0; pointer-events:none; $after }
+@keyframes sbleaf { to { transform:translate(300px, 600px); } }
+@keyframes sbcloud { to { transform:translate(600px, 0); } }
+@keyframes sbrain { to { transform:translate(-120px, 480px); } }
+@keyframes sbspin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { section[data-testid="stSidebar"]::before, section[data-testid="stSidebar"]::after { animation:none !important; } }
+"""
+    if mode == "sun":
+        glow = ("radial-gradient(circle, rgba(220,230,255,.95) 0 12%, rgba(150,170,255,.35) 32%, transparent 66%)" if night else
+                "radial-gradient(circle, rgba(255,214,120,.95) 0 14%, rgba(255,184,80,.45) 32%, transparent 68%)")
+        rays = "" if night else ", repeating-conic-gradient(from 0deg, rgba(255,196,80,.30) 0 5deg, transparent 5deg 16deg)"
+        after_css = (f"left:-170px; top:-170px; width:420px; height:420px; border-radius:50%; "
+                     f"background:{glow}{rays}; -webkit-mask:radial-gradient(circle, #000 0 20%, transparent 64%); "
+                     f"mask:radial-gradient(circle, #000 0 20%, transparent 64%); animation:sbspin 90s linear infinite;")
+    elif mode == "cloud":
+        after_css = (f"left:-600px; right:0; top:0; bottom:0; opacity:{'.20' if dark else '.34'}; "
+                     f"background:url(\"{_cloud_tile_uri(600, 340, cloud_fill, 4)}\") 0 0/600px 340px repeat; "
+                     "animation:sbcloud 150s linear infinite;")
+    else:
+        after_css = (f"left:0; right:-120px; top:-480px; bottom:0; opacity:{'.55' if dark else '.50'}; "
+                     f"background:url(\"{_rain_uri(120, 480, 22, rain_c, 3)}\") 0 0/120px 480px repeat; "
+                     "animation:sbrain 2.6s linear infinite;")
+    return Template(css).safe_substitute(w1=wash[0], w2=wash[1], leaf=leaf, after=after_css)
+
+
 def fx_css(dark: bool) -> str:
     """Анимированный фон верхней панели: погода (солнце / облака / дождь) + осенние листья. Только фон: кнопки и
     виджеты не сдвигаются (слой абсолютный, под ними), на телефоне та же анимация, при «уменьшить движение» — статично."""
@@ -1638,7 +1708,18 @@ def fx_css(dark: bool) -> str:
         sun_a=".30" if dark else ".34", sun_b=".10" if dark else ".14", cl_a=".16" if dark else ".14",
         cl_b=".08" if dark else ".07", rn_a=".28" if dark else ".16", rn_b=".12" if dark else ".08")
     leaves = "".join(f".fx-lf.k{i} {{ --img:url(\"{_leaf_uri(c)}\"); }}\n" for i, c in enumerate(leaf))
-    return css + leaves
+    hr_ = datetime.now(TZ).hour
+    side = sidebar_fx_css(dark, fx_mode(), hr_ < 6 or hr_ >= 19)
+    search = Template("""
+/* поиск сверху: без тёмных рамок и углов; рамка одна, тонкая, в цвет темы (при фокусе — акцентная) */
+.st-key-gsearch [data-testid="stTextInputRootElement"] { background:$card !important; border:1px solid $line !important;
+  border-radius:12px !important; box-shadow:none !important; outline:none !important; overflow:hidden; }
+.st-key-gsearch [data-testid="stTextInputRootElement"]:focus-within { border-color:$accent !important;
+  box-shadow:0 0 0 3px $glow !important; }
+.st-key-gsearch [data-baseweb="input"], .st-key-gsearch [data-baseweb="base-input"], .st-key-gsearch input {
+  border:0 !important; box-shadow:none !important; outline:none !important; border-radius:12px !important; }
+""").safe_substitute(P)
+    return css + leaves + side + search
 
 
 def fx_html() -> str:
@@ -5896,10 +5977,27 @@ if page == PAGES[5]:
     st.markdown("<div class='sec'>Аналитика</div>", unsafe_allow_html=True)
 
     def show_chart(ch):
+        """Тема графика задаётся явно (цвета приложения), а не берётся из темы Streamlit: цифры и оси читаются
+        и на тёмном, и на светлом фоне, в том числе с телефона."""
+        ch = (ch.configure(background=P["card"])
+              .configure_axis(labelColor=P["mute"], titleColor=P["ink"], gridColor=P["line"], domainColor=P["line"],
+                              tickColor=P["line"], labelFontSize=11, titleFontSize=12)
+              .configure_legend(labelColor=P["ink"], titleColor=P["ink"], labelFontSize=12, symbolType="square")
+              .configure_view(stroke=None))
         try:
-            st.altair_chart(ch, width="stretch")
+            st.altair_chart(ch, theme=None, width="stretch")
         except TypeError:
-            st.altair_chart(ch, use_container_width=True)
+            st.altair_chart(ch, theme=None, use_container_width=True)
+
+    def bar_labels(data, x, y, text, vertical: bool):
+        """Цифры над столбиками: цвет темы + контур цвета фона (читаются на любом фоне); при многих столбцах —
+        вертикально, чтобы не налезали друг на друга. Без своей всплывающей подсказки."""
+        kw = dict(angle=270, align="left", baseline="middle", dy=-5) if vertical else dict(dy=-8)
+        base = alt.Chart(data).encode(x=x, y=y, text=text, tooltip=alt.value(None))
+        halo = base.mark_text(fontWeight="bold", fontSize=11, color=P["card"], stroke=P["card"], strokeWidth=4,
+                              strokeJoin="round", **kw)
+        top = base.mark_text(fontWeight="bold", fontSize=11, color=P["ink"], **kw)
+        return halo + top
 
     # ═════════ Выгрузка в Excel: статус по дням и примерный объём (только в файле) ═════════
     today_b = now.date()
@@ -6035,8 +6133,7 @@ if page == PAGES[5]:
                         bars = (alt.Chart(sd).mark_bar(size=34, color="#C2308B")
                                 .encode(x=xenc, y=alt.Y("avg:Q", title="Заказов на 1 магазин", axis=alt.Axis(format=".1f")),
                                         tooltip=tips))
-                        labels = (alt.Chart(sd).mark_text(dy=-8, fontWeight="bold")
-                                  .encode(x=xenc, y="avg:Q", text=alt.Text("avg:Q", format=".1f")))
+                        labels = bar_labels(sd, xenc, alt.Y("avg:Q"), alt.Text("avg:Q", format=".1f"), vertical=False)
                         show_chart((bars + labels).properties(height=400))
 
                         st.markdown("<div class='sec'>" + ("По неделям" if weekly else "По дням") + "</div>",
@@ -6080,16 +6177,17 @@ if page == PAGES[5]:
                         an_widget("an_left", n(tot - done_), f"не собрано, {UW}", "", "left")
                     an_store_stats()
                     xenc = alt.X("yearmonthdate(Дата):T", title=None, axis=alt.Axis(format="%d.%m", labelAngle=-45))
+                    ysc = alt.Scale(domain=[0, max(float(tt["Вел"].max()), 1) * 1.22], nice=False)   # запас под цифры
                     bars = (alt.Chart(g).mark_bar(size=22 if len(g) < 40 else 10)
                             .encode(x=xenc,
-                                    y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
+                                    y=alt.Y("Вел:Q", title=UT, scale=ysc, axis=alt.Axis(format=",.0f")),
                                     color=alt.Color("Статус:N", title=None, scale=colors,
                                                     legend=alt.Legend(orient="top")),
                                     tooltip=[alt.Tooltip("yearmonthdate(Дата):T", title="Дата", format="%d.%m.%Y"),
                                              alt.Tooltip("Статус:N"),
                                              alt.Tooltip("Вел:Q", title=UT, format=",.0f")]))
-                    labels = (alt.Chart(tt).mark_text(dy=-8, fontWeight="bold")
-                              .encode(x=xenc, y="Вел:Q", text=alt.Text("Вел:Q", format=",.0f")))
+                    labels = bar_labels(tt, xenc, alt.Y("Вел:Q", scale=ysc), alt.Text("Вел:Q", format=",.0f"),
+                                        vertical=len(tt) > 5)
                     show_chart((bars + labels).properties(height=400))
                     st.caption("Столбец = один день, цифра над столбиком — итог за день. Зелёная часть — собранное, "
                                "оранжевая — не собранное (включая новые не маршрутизированные заказы). "
@@ -6123,15 +6221,16 @@ if page == PAGES[5]:
                     g = part.groupby(["W", "Статус"], as_index=False)["Вел"].sum()
                     g["Неделя"] = g["W"].map(lambda p: _period_label(p, True))
                     xenc = alt.X("Неделя:N", sort=order, title=None, axis=alt.Axis(labelAngle=-30))
+                    ysc = alt.Scale(domain=[0, max(float(wk["Итого"].max()), 1) * 1.22], nice=False)
                     bars = (alt.Chart(g).mark_bar(size=38)
                             .encode(x=xenc,
-                                    y=alt.Y("Вел:Q", title=UT, axis=alt.Axis(format=",.0f")),
+                                    y=alt.Y("Вел:Q", title=UT, scale=ysc, axis=alt.Axis(format=",.0f")),
                                     color=alt.Color("Статус:N", title=None, scale=colors,
                                                     legend=alt.Legend(orient="top")),
                                     tooltip=[alt.Tooltip("Неделя:N"), alt.Tooltip("Статус:N"),
                                              alt.Tooltip("Вел:Q", title=UT, format=",.0f")]))
-                    labels = (alt.Chart(wk).mark_text(dy=-8, fontWeight="bold")
-                              .encode(x=xenc, y=alt.Y("Итого:Q"), text=alt.Text("Итого:Q", format=",.0f")))
+                    labels = bar_labels(wk, xenc, alt.Y("Итого:Q", scale=ysc), alt.Text("Итого:Q", format=",.0f"),
+                                        vertical=len(wk) > 4)
                     show_chart((bars + labels).properties(height=400))
 
                     def _chg(r):
