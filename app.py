@@ -21,6 +21,9 @@ comments.json (комментарии к виджетам), chat.json (сооб�
 дням» и лист «Примерный объём» — план по магазинам на 7 дней вперёд).
 Погода в Ташкенте (OpenWeather): карточка при наведении на дату вверху; фон верхней строки — анимация погоды
 (солнце / облака / дождь) и осенние листья.
+Модель склада 3D: клик по «Данные актуальные» в боковом меню (Three.js, зум колёсиком/щипком, поворот, сдвиг). Зоны: сортировка
+(мезонин 5 этажей, 6x6 паллет; SORTING/SORTED), хаб слева (принято / не принято коробок), ворота отгрузки (сегодня).
+Цифры зоны не менялись 30 мин -> людей нет, стоит охрана (состояние хранится в wh_activity.json).
 Комментарии хранятся во вкладке таблицы «Комментарии_app» (нужен доступ «Редактор») и живут 3 суток.
 """
 import hashlib
@@ -183,6 +186,11 @@ COMMENT_TTL_DAYS = 3                    # через сколько суток �
 COMMENT_BELL_DAYS = COMMENT_TTL_DAYS    # в колокольчике комментарий живёт столько же
 COMMENTS_TAB = "Комментарии_app"        # вкладка основной таблицы, где хранятся комментарии (создаётся сама)
 CHAT_FILE = "chat.json"                 # сообщения чата (файл на сервере)
+WH_FILE = "wh_activity.json"            # когда в зонах склада последний раз менялись цифры (файл на сервере)
+WH_IDLE_MIN = 30                        # цифры стоят столько минут -> операций нет, в зоне только охрана
+WH_WORKERS = {"sort": 20, "hub": 5, "ship": 10}   # людей на схеме: сортировка / хаб / отгрузка
+WH_ROWS, WH_PER_ROW = 6, 6              # паллет в сортировке: рядов x паллет в ряду
+WH_HEIGHT = 680                         # высота 3D-окна, px
 CHAT_KEEP = 300                         # сколько последних сообщений хранить
 CHAT_MAX = 500                          # максимальная длина сообщения
 CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
@@ -542,7 +550,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 
 /* невидимые кнопки: их «нажимает» скрипт при клике на «N онлайн», на логотип, на кнопку чата,
    на комментарий в колокольчике и при наборе текста в чате */
-.st-key-onl_open, .st-key-go_home, .st-key-chat_open, .st-key-chat_ping, [class*="st-key-cmgo_"] {
+.st-key-onl_open, .st-key-go_home, .st-key-chat_open, .st-key-wh_open, .st-key-chat_ping, [class*="st-key-cmgo_"] {
   position:absolute !important; left:-9999px; top:0; width:1px; height:1px;
   overflow:hidden; opacity:0; pointer-events:none; }
 
@@ -637,6 +645,11 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
   padding:16px 18px 14px; box-shadow:0 28px 90px rgba(0,0,0,.6), 0 0 0 1px rgba(224,51,143,.14); }
 .st-key-win_chat { width:min(440px, 94vw); }
 .st-key-win_onl { width:min(1000px, 96vw); }
+.st-key-win_wh { width:min(1320px, 98vw); }
+.st-key-win_wh iframe { height:min(680px, 76vh) !important; border-radius:16px; border:1px solid $line; }
+.sidecard { cursor:pointer; transition:border-color .15s, transform .15s; }
+.sidecard:hover { border-color:rgba(52,194,122,.85); transform:translateY(-1px); }
+.sidecard .wh-go { display:block; font-size:.68rem; color:$mute; margin-top:2px; }
 .win-t { font-weight:800; font-size:1.1rem; color:$ink; }
 .st-key-winclose button { width:34px; height:34px; min-height:34px; padding:0; border-radius:50%; gap:0;
                           background:$head; }
@@ -4538,6 +4551,630 @@ def _auto_track():
         record_history(d, sh, no)
     except Exception:
         pass
+    try:
+        wh_track(wh_collect())          # когда в зонах склада в последний раз менялись цифры
+    except Exception:
+        pass
+
+
+# ───────────────────────── Модель склада 3D (клик по «Данные актуальные») ─────────────────────────
+WH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--ink:#1B1B22;--mute:#5d6280;--glass:rgba(255,255,255,.82);--line:rgba(30,37,72,.18);--bg:#dfe6f1}
+body.dark{--ink:#EEF0FA;--mute:#9aa3c7;--glass:rgba(13,17,38,.78);--line:rgba(120,140,255,.22);--bg:#070A1A}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
+#wrap{position:relative;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
+#cv,#cv canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab}
+#cv canvas:active{cursor:grabbing}
+.glass{background:var(--glass);border:1px solid var(--line);border-radius:14px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#cards{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:7px;width:238px;max-height:calc(100% - 20px);overflow:auto;z-index:5}
+.zc{padding:8px 11px 9px;cursor:pointer;transition:transform .15s,border-color .15s}
+.zc:hover{transform:translateX(2px);border-color:#8B3DFF}
+.zt{display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:.82rem;margin-bottom:4px}
+.zt i{width:9px;height:9px;border-radius:50%;background:#34C27A;box-shadow:0 0 9px #34C27A;animation:pl 1.6s infinite}
+.zc.idle .zt i{background:#F2A23D;box-shadow:0 0 9px #F2A23D;animation:none}
+.zc.nd .zt i{background:#8C93B5;box-shadow:none;animation:none}
+@keyframes pl{50%{opacity:.35}}
+.ln{display:flex;justify-content:space-between;gap:8px;font-size:.72rem;line-height:1.55}
+.ln b{font-weight:700}.ln b.o{color:#F2A23D}.ln b.g{color:#34C27A}.ln b.r{color:#E5484D}.ln b.bl{color:#3B9CFF}
+.ln span{color:var(--mute);text-align:right}
+.zs{margin-top:5px;padding-top:5px;border-top:1px dashed var(--line);font-size:.68rem;color:var(--mute)}
+.zc.idle .zs{color:#F2A23D;font-weight:600}
+#ctl{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end;z-index:5}
+.row{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.bt{border:1px solid var(--line);background:var(--glass);color:var(--ink);border-radius:10px;padding:6px 10px;font-size:.72rem;font-weight:700;cursor:pointer;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);font-family:inherit}
+.bt:hover{border-color:#8B3DFF}.bt.on{background:linear-gradient(135deg,#8B3DFF,#E0338F);color:#fff;border-color:transparent}
+.bt.sq{width:34px;height:34px;padding:0;font-size:1.05rem}
+.cap{font-size:.62rem;color:var(--mute);text-align:right;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+#leg{position:absolute;left:10px;bottom:10px;padding:7px 11px;font-size:.66rem;color:var(--mute);display:flex;gap:11px;flex-wrap:wrap;max-width:calc(100% - 20px);z-index:5}
+#leg i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+#upd{position:absolute;right:12px;bottom:12px;font-size:.62rem;color:var(--mute);z-index:5;text-align:right;line-height:1.4}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:3}
+.lb{position:absolute;left:0;top:0;white-space:nowrap;font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:7px;background:rgba(10,14,32,.72);color:#fff;border:1px solid rgba(255,255,255,.18);will-change:transform}
+.lb.zone{font-size:.72rem;background:linear-gradient(135deg,rgba(139,61,255,.9),rgba(224,51,143,.9))}
+.lb.zone.idle{background:rgba(60,66,90,.92)}
+.lb.mz{background:rgba(47,111,214,.9)}.lb.fl{font-size:.56rem;background:rgba(255,193,7,.9);color:#1b1b22;border:none}
+.lb.gt{font-size:.56rem;background:rgba(52,194,122,.9);border:none}.lb.guard{background:rgba(242,162,61,.95);color:#1b1b22;border:none}
+#msg{display:none;position:absolute;inset:0;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:.9rem;color:var(--mute);z-index:4}
+@media(max-width:620px){#cards{width:190px}.ln{font-size:.66rem}.zt{font-size:.74rem}#leg{display:none}.bt{padding:5px 8px}}
+</style></head>
+<body class="__THEME__">
+<div id="wrap">
+ <div id="cv"></div>
+ <div id="labels"></div>
+ <div id="cards"></div>
+ <div id="ctl">
+  <div class="row"><button class="bt sq" id="zin" title="Приблизить">+</button><button class="bt sq" id="zout" title="Отдалить">−</button></div>
+  <div class="cap">Обзор</div>
+  <div class="row"><button class="bt" data-pre="all">Весь склад</button><button class="bt" data-pre="sort">Сортировка</button><button class="bt" data-pre="hub">Хаб</button><button class="bt" data-pre="ship">Ворота</button><button class="bt" data-pre="top">Сверху</button></div>
+  <div class="cap">Этажи мезонина</div>
+  <div class="row"><button class="bt" data-fl="1">1</button><button class="bt" data-fl="2">2</button><button class="bt" data-fl="3">3</button><button class="bt" data-fl="4">4</button><button class="bt" data-fl="5">5</button></div>
+  <div class="row"><button class="bt on" id="wl">Стены</button></div>
+ </div>
+ <div id="leg" class="glass"><span><i style="background:#F2A23D"></i>SORTING</span><span><i style="background:#34C27A"></i>SORTED / принято</span><span><i style="background:#E5484D"></i>не принято</span><span><i style="background:#3B9CFF"></i>к отгрузке / в кузове</span><span id="unit"></span></div>
+ <div id="upd"></div>
+ <div id="msg">3D не запустилось (нет WebGL или не загрузилась библиотека).<br>Цифры по зонам — слева.</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>(function(){
+var S=__STATE__;
+var DARK=!!S.dark;
+function el(id){return document.getElementById(id);}
+function fmt(n){return String(Math.round(n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f');}
+function rnd(a,b){return a+Math.random()*(b-a);}
+function pick(a){return a[Math.floor(Math.random()*a.length)];}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+var ST=S.state||{};
+function zst(z){return ST[z]||{idle:true,min:0,nodata:true};}
+
+/* ───── панели (HTML) ───── */
+function zoneCard(key,title,lines){
+  var s=zst(key),cls=s.nodata?'nd':(s.idle?'idle':'work');
+  var st=s.nodata?'нет данных':(s.idle?'🛡 нет операций с '+s.since+' (30+ мин) · охрана':'● идёт работа · '+S.workers[key]+' чел. · изм. в '+s.since);
+  return '<div class="zc glass '+cls+'" data-z="'+key+'"><div class="zt"><span>'+title+'</span><i></i></div>'+lines+'<div class="zs">'+st+'</div></div>';
+}
+function buildCards(){
+  var a='',b='',c='';
+  if(S.sort){a='<div class="ln"><b class="o">SORTING</b><span>'+fmt(S.sort.sorting)+' шт · '+fmt(S.sort.o_sorting)+' зак.</span></div>'+
+    '<div class="ln"><b class="g">SORTED</b><span>'+fmt(S.sort.sorted)+' шт · '+fmt(S.sort.o_sorted)+' зак.</span></div>';}
+  if(S.hub){b='<div class="ln"><b class="g">Принято</b><span>'+fmt(S.hub.ok)+' кор.</span></div>'+
+    '<div class="ln"><b class="r">Не принято</b><span>'+fmt(S.hub.no)+' кор.</span></div>'+(S.hub.period?'<div class="ln"><b>Даты</b><span>'+S.hub.period+'</span></div>':'');}
+  if(S.ship){var p=S.ship.pcs?Math.round(S.ship.pcs_done/S.ship.pcs*100):0;
+    var tr=S.ship.trips||[],td=0;for(var i=0;i<tr.length;i++)if(tr[i].done)td++;
+    c='<div class="ln"><b class="bl">Отгружено</b><span>'+fmt(S.ship.pcs_done)+' из '+fmt(S.ship.pcs)+' шт ('+p+'%)</span></div>'+
+      '<div class="ln"><b>Рейсов</b><span>'+td+' из '+tr.length+'</span></div>';}
+  el('cards').innerHTML=zoneCard('sort','Сортировка',a)+zoneCard('hub','Хаб · приёмка',b)+zoneCard('ship',S.ship?S.ship.title:'Отгрузка сегодня',c);
+}
+buildCards();
+el('upd').innerHTML='Автообновление раз в минуту<br>Колёсико / щипок — зум · ЛКМ — поворот · ПКМ — сдвиг';
+
+var okGL=false;
+try{var tc=document.createElement('canvas');okGL=!!(window.WebGLRenderingContext&&(tc.getContext('webgl')||tc.getContext('experimental-webgl')));}catch(e){}
+if(typeof THREE==='undefined'||!okGL){el('msg').style.display='flex';el('ctl').style.display='none';return;}
+
+/* ───── сцена ───── */
+var wrap=el('wrap'),W=wrap.clientWidth||900,H=wrap.clientHeight||600;
+var small=Math.min(window.innerWidth,window.innerHeight)<520;
+var renderer=new THREE.WebGLRenderer({antialias:!small,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,small?1.5:2));
+renderer.setSize(W,H);
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+el('cv').appendChild(renderer.domElement);
+var scene=new THREE.Scene();
+var BG=DARK?0x070A1A:0xdfe6f1;
+scene.background=new THREE.Color(BG);scene.fog=new THREE.Fog(BG,140,360);
+var cam=new THREE.PerspectiveCamera(42,W/H,0.1,600);
+scene.add(new THREE.HemisphereLight(DARK?0xaec0ff:0xffffff,DARK?0x2a2f45:0x8d8d8d,DARK?0.55:0.75));
+scene.add(new THREE.AmbientLight(0xffffff,DARK?0.12:0.18));
+var sun=new THREE.DirectionalLight(DARK?0xc8d4ff:0xfff4e0,DARK?0.55:0.8);
+sun.position.set(-22,60,34);sun.castShadow=true;
+sun.shadow.mapSize.set(small?1024:2048,small?1024:2048);
+var sc=sun.shadow.camera;sc.left=-62;sc.right=62;sc.top=46;sc.bottom=-46;sc.near=5;sc.far=150;sun.shadow.bias=-0.0006;
+scene.add(sun);
+
+var Wx0=-26,Wx1=26,Wz0=-18,Wz1=18,WHt=15,YARD=-1.1;
+var GATES=[2.9,6.1,9.3,12.5,15.7];
+var D=new THREE.Object3D(),CC=new THREE.Color();
+
+function box(w,h,d,col,opt){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial(Object.assign({color:col,roughness:.85,metalness:.05},opt||{})));return m;}
+function add(m,x,y,z,sh){m.position.set(x,y,z);if(sh!==false){m.castShadow=true;m.receiveShadow=true;}scene.add(m);return m;}
+
+/* раскладка */
+var PAL=[],L={sort:[],np:[],ac:[],stg:[]};
+var rows=S.rows||6,per=S.per||6;
+var sortZ=[],sortX=[];
+for(var r=0;r<rows;r++)sortZ.push((r-(rows-1)/2)*5.5);
+for(var j=0;j<per;j++)sortX.push(7+(j-(per-1)/2)*4);
+for(r=0;r<rows;r++)for(j=0;j<per;j++)L.sort.push({x:sortX[j],z:sortZ[r]});
+var HZ=[];for(var k=0;k<7;k++)HZ.push(-16.2+2.3*k);
+for(k=0;k<7;k++){L.np.push({x:-14.0,z:HZ[k]});L.np.push({x:-17.0,z:HZ[k]});L.ac.push({x:-20.6,z:HZ[k]});L.ac.push({x:-23.4,z:HZ[k]});}
+var SZ=[];for(k=0;k<8;k++)SZ.push(2.0+2.2*k);
+for(k=0;k<8;k++)for(j=0;j<3;j++)L.stg.push({x:-21+3*j,z:SZ[k]});
+
+/* ───── пол ───── */
+function floorTex(){
+  var P=30,w=(Wx1-Wx0)*P,h=(Wz1-Wz0)*P,c=document.createElement('canvas');c.width=w;c.height=h;var g=c.getContext('2d');
+  function X(x){return (x-Wx0)*P;}function Zc(z){return (z-Wz0)*P;}
+  g.fillStyle=DARK?'#464c5e':'#a8acb5';g.fillRect(0,0,w,h);
+  for(var i=0;i<5000;i++){g.fillStyle='rgba('+(DARK?'255,255,255':'0,0,0')+','+(Math.random()*.05)+')';g.fillRect(Math.random()*w,Math.random()*h,rnd(1,3),rnd(1,3));}
+  g.strokeStyle='rgba(0,0,0,.22)';g.lineWidth=1.5;
+  for(var x=Wx0+6;x<Wx1;x+=6){g.beginPath();g.moveTo(X(x),0);g.lineTo(X(x),h);g.stroke();}
+  for(var z=Wz0+6;z<Wz1;z+=6){g.beginPath();g.moveTo(0,Zc(z));g.lineTo(w,Zc(z));g.stroke();}
+  function zone(x0,z0,x1,z1,fill,line,lab){g.fillStyle=fill;g.fillRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.strokeStyle=line;g.lineWidth=5;g.setLineDash([22,12]);g.strokeRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.setLineDash([]);
+    g.fillStyle=line;g.globalAlpha=.55;g.font='800 34px sans-serif';g.textAlign='left';g.fillText(lab,X(x0)+14,Zc(z1)-14);g.globalAlpha=1;}
+  zone(-25.6,-17.6,-12.4,-1.0,'rgba(59,156,255,.10)','#3B9CFF','ХАБ · ПРИЁМКА');
+  zone(-25.6,1.0,-12.4,17.6,'rgba(242,162,61,.10)','#F2A23D','ОТГРУЗКА');
+  zone(-8.8,-17.6,25.6,17.6,'rgba(52,194,122,.07)','#34C27A','СОРТИРОВКА · МЕЗОНИН');
+  g.strokeStyle='#e9e9e9';g.lineWidth=4;g.setLineDash([28,20]);g.beginPath();g.moveTo(X(-10.9),Zc(-17));g.lineTo(X(-10.9),Zc(17));g.stroke();g.setLineDash([]);
+  /* места под паллеты */
+  g.lineWidth=3;
+  function spot(p,col){g.strokeStyle=col;g.strokeRect(X(p.x-.7),Zc(p.z-.5),1.4*P,1.0*P);}
+  L.sort.forEach(function(p){spot(p,'#f1c40f');});L.np.forEach(function(p){spot(p,'#ff6b6b');});
+  L.ac.forEach(function(p){spot(p,'#5ad6a0');});L.stg.forEach(function(p){spot(p,'#6ab3ff');});
+  /* проходы */
+  g.fillStyle='rgba(241,196,15,.55)';
+  for(var r=0;r<sortZ.length;r++){g.fillRect(X(-5.4),Zc(sortZ[r]+1.8)-2,(sortX[sortX.length-1]+3-(-5.4))*P,4);}
+  var t=new THREE.CanvasTexture(c);t.anisotropy=4;return t;
+}
+var floor=new THREE.Mesh(new THREE.PlaneGeometry(Wx1-Wx0,Wz1-Wz0),new THREE.MeshStandardMaterial({map:floorTex(),roughness:.92}));
+floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+var yard=new THREE.Mesh(new THREE.PlaneGeometry(400,400),new THREE.MeshStandardMaterial({color:DARK?0x1b1f2c:0x7d828d,roughness:1}));
+yard.rotation.x=-Math.PI/2;yard.position.y=YARD;yard.receiveShadow=true;scene.add(yard);
+/* разметка двора */
+(function(){var c=document.createElement('canvas');c.width=512;c.height=512;var g=c.getContext('2d');g.fillStyle='rgba(0,0,0,0)';g.clearRect(0,0,512,512);
+  g.fillStyle='#e8e8e8';for(var i=0;i<5;i++){g.fillRect(i*100+30,0,6,512);}
+  var t=new THREE.CanvasTexture(c);var m=new THREE.Mesh(new THREE.PlaneGeometry(16,40),new THREE.MeshBasicMaterial({map:t,transparent:true,opacity:.35}));
+  m.rotation.x=-Math.PI/2;m.position.set(-33,YARD+0.02,9.3);scene.add(m);})();
+
+/* ───── инстансы ───── */
+function Inst(geo,mat,cap){this.m=new THREE.InstancedMesh(geo,mat,cap);this.n=0;this.cap=cap;this.m.castShadow=true;this.m.receiveShadow=true;this.m.frustumCulled=false;scene.add(this.m);}
+Inst.prototype.add=function(x,y,z,sx,sy,sz,ry,col){if(this.n>=this.cap)return;D.position.set(x,y,z);D.rotation.set(0,ry||0,0);D.scale.set(sx,sy,sz);D.updateMatrix();this.m.setMatrixAt(this.n,D.matrix);if(col!==undefined){CC.setHex(col);this.m.setColorAt(this.n,CC);}this.n++;};
+Inst.prototype.done=function(){this.m.count=this.n;this.m.instanceMatrix.needsUpdate=true;if(this.m.instanceColor)this.m.instanceColor.needsUpdate=true;};
+var UB=new THREE.BoxGeometry(1,1,1);
+function cardTex(){var c=document.createElement('canvas');c.width=128;c.height=128;var g=c.getContext('2d');
+  g.fillStyle='#f0f0f0';g.fillRect(0,0,128,128);
+  for(var i=0;i<400;i++){g.fillStyle='rgba(0,0,0,'+Math.random()*.06+')';g.fillRect(Math.random()*128,Math.random()*128,2,2);}
+  g.fillStyle='#cfcfcf';g.fillRect(56,0,16,128);g.fillStyle='#fff';g.fillRect(14,20,28,22);g.fillStyle='#777';g.fillRect(18,25,20,2);g.fillRect(18,31,14,2);
+  g.strokeStyle='rgba(0,0,0,.25)';g.lineWidth=3;g.strokeRect(1.5,1.5,125,125);return new THREE.CanvasTexture(c);}
+var CT=cardTex();
+var matBox=new THREE.MeshStandardMaterial({map:CT,roughness:.9});
+var matWood=new THREE.MeshStandardMaterial({color:0xb98b55,roughness:.95});
+var matSteel=new THREE.MeshStandardMaterial({color:0x2f6fd6,roughness:.5,metalness:.4});
+var matBeam=new THREE.MeshStandardMaterial({color:0xff8a1f,roughness:.5,metalness:.3});
+var palI=new Inst(UB,matWood,1000),bx=new Inst(UB,matBox,2200),cargo=new Inst(UB,matBox,1600);
+var BW=.58,BH=.38,BD=.38;
+function palletAt(p){
+  palI.add(p.x,.05,p.z-.35,1.2,.1,.1,0);palI.add(p.x,.05,p.z,1.2,.1,.1,0);palI.add(p.x,.05,p.z+.35,1.2,.1,.1,0);
+  for(var i=0;i<5;i++)palI.add(p.x,.122,p.z-.34+i*.17,1.2,.044,.12,0);
+}
+function boxOn(p,k,col){
+  var layer=Math.floor(k/4),s=k%4;
+  bx.add(p.x+(s%2?.3:-.3)+rnd(-.015,.015),.144+BH/2+layer*BH,p.z+(s<2?-.2:.2)+rnd(-.015,.015),BW,BH,BD,rnd(-.04,.04),col);
+}
+var CAPP=20;
+L.sort.concat(L.np,L.ac,L.stg).forEach(palletAt);palI.done();
+
+/* единица: сколько штук в одной коробке на схеме */
+var U={};
+var cs=S.sort?(S.sort.sorting+S.sort.sorted):0;U.sort=Math.max(1,Math.ceil(cs/(L.sort.length*CAPP*.8)));
+var hmax=S.hub?Math.max(S.hub.ok/(L.ac.length*CAPP*.9),S.hub.no/(L.np.length*CAPP*.9)):0;U.hub=Math.max(1,Math.ceil(hmax));
+var rem=S.ship?Math.max(0,S.ship.pcs-S.ship.pcs_done):0;U.ship=Math.max(1,Math.ceil(Math.max(rem,S.ship?S.ship.pcs_done:0)/(L.stg.length*CAPP*.9)));
+el('unit').textContent='1 коробка на схеме: сортировка ≈ '+U.sort+' шт · хаб ≈ '+U.hub+' кор. · отгрузка ≈ '+U.ship+' шт';
+var CO={orange:0xF2A23D,green:0x34C27A,red:0xE5484D,blue:0x3B9CFF};
+var nSortOr=0,nSortGr=0;
+if(S.sort){nSortOr=Math.round(S.sort.sorting/U.sort);nSortGr=Math.round(S.sort.sorted/U.sort);}
+var capS=L.sort.length*CAPP;if(nSortOr+nSortGr>capS){var f=capS/(nSortOr+nSortGr);nSortOr=Math.floor(nSortOr*f);nSortGr=Math.floor(nSortGr*f);}
+function fillList(list,n,col,fromEnd){var left=n;for(var i=0;i<list.length&&left>0;i++){var p=list[fromEnd?list.length-1-i:i];var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(p,q,col);left-=c;}}
+/* SORTING (оранжевые) заполняют паллеты с начала, SORTED (зелёные) — с конца */
+var sortOrCnt=nSortOr;
+(function(){var left=nSortOr,i,p;for(i=0;i<L.sort.length&&left>0;i++){p=L.sort[i];var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(p,q,CO.orange);left-=c;}
+  left=nSortGr;for(i=0;i<L.sort.length&&left>0;i++){p=L.sort[L.sort.length-1-i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.green);left-=c;}})();
+var nOk=S.hub?Math.round(S.hub.ok/U.hub):0,nNo=S.hub?Math.round(S.hub.no/U.hub):0;
+fillList(L.ac,nOk,CO.green,false);fillList(L.np,nNo,CO.red,false);
+var nRem=Math.min(L.stg.length*CAPP,Math.round(rem/U.ship));fillList(L.stg,nRem,CO.blue,false);
+
+/* ───── стены ───── */
+var wallMats=[],wallGroups=[];
+function wallMat(){var m=new THREE.MeshStandardMaterial({color:DARK?0x39405a:0xe9ecf1,roughness:.9,transparent:true});wallMats.push(m);return m;}
+function wallBox(w,h,d,x,y,z,mat,grp){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.castShadow=false;m.receiveShadow=true;scene.add(m);grp.push(m);return m;}
+var wm=wallMat(),gL=[],gB=[],gR=[],gF=[];
+var th=WHt-YARD;
+wallBox(.4,th,Wz1-Wz0,Wx1,YARD+th/2,0,wm,gR);
+wallBox(Wx1-Wx0,th,.4,0,YARD+th/2,Wz0,wm,gB);
+wallBox(Wx1-Wx0,th,.4,0,YARD+th/2,Wz1,wm,gF);
+(function(){var edges=[Wz0],i;for(i=0;i<GATES.length;i++){edges.push(GATES[i]-1.3,GATES[i]+1.3);}edges.push(Wz1);
+  for(i=0;i<edges.length;i+=2){var a=edges[i],b=edges[i+1];if(b-a>.01)wallBox(.4,th,b-a,Wx0,YARD+th/2,(a+b)/2,wm,gL);}
+  for(i=0;i<GATES.length;i++){wallBox(.4,WHt-3.4,2.6,Wx0,3.4+(WHt-3.4)/2,GATES[i],wm,gL);wallBox(.4,-YARD,2.6,Wx0,YARD/2,GATES[i],wm,gL);}})();
+wallGroups=[{g:gL,n:[-1,0,0],c:Wx0},{g:gB,n:[0,0,-1],c:Wz0},{g:gR,n:[1,0,0],c:Wx1},{g:gF,n:[0,0,1],c:Wz1}];
+/* цоколь и окна */
+var winMat=new THREE.MeshStandardMaterial({color:0xbcd7ff,emissive:DARK?0x2a4a80:0x6f8fb8,emissiveIntensity:.6,roughness:.3});
+for(var wi=0;wi<9;wi++){var w1=new THREE.Mesh(new THREE.BoxGeometry(3.2,1.3,.1),winMat);w1.position.set(-20+wi*5.6,12.6,Wz0+.25);scene.add(w1);}
+for(wi=0;wi<6;wi++){var w2=new THREE.Mesh(new THREE.BoxGeometry(.1,1.3,3.2),winMat);w2.position.set(Wx1-.25,12.6,-14+wi*5.6);scene.add(w2);}
+/* ворота */
+var doors=[],lamps=[];
+GATES.forEach(function(z,i){
+  var d=box(2.6,3.2,.12,0xaeb4c0,{metalness:.3});add(d,Wx0+.15,1.6,z,false);doors.push(d);
+  for(var s=0;s<7;s++){var gr=box(2.62,.03,.14,0x7a8190);gr.position.set(0,-1.25+s*.45,0);d.add(gr);}
+  var lm=new THREE.MeshBasicMaterial({color:0xff4d4d});var lp=new THREE.Mesh(new THREE.SphereGeometry(.14,10,8),lm);lp.position.set(Wx0+.3,3.7,z);scene.add(lp);lamps.push(lm);
+  var bump=box(.3,.5,.4,0x111111);add(bump,Wx0-.3,-.25,z-1.0,false);var bump2=box(.3,.5,.4,0x111111);add(bump2,Wx0-.3,-.25,z+1.0,false);
+});
+/* фермы и светильники */
+for(var tx=-24;tx<=24;tx+=8){var tr=box(.25,.5,36,DARK?0x1b1f2e:0x4a4f5e);tr.position.set(tx,14.6,0);scene.add(tr);}
+var lampMat=new THREE.MeshBasicMaterial({color:DARK?0xdfe8ff:0xffffff});
+for(tx=-24;tx<=24;tx+=8)for(var tz=-12;tz<=12;tz+=12){var lm2=new THREE.Mesh(new THREE.BoxGeometry(.5,.08,3),lampMat);lm2.position.set(tx+4,14.2,tz);scene.add(lm2);}
+
+/* ───── мезонин: 5 этажей ───── */
+var MX=[-9,-1,7,15,23],MZ=[-15.85,-10.35,-4.85,.65,6.15,11.65,17.15],DECKS=[3,6,9,12];
+var col=new Inst(UB,matSteel,MX.length*MZ.length);
+MX.forEach(function(x){MZ.forEach(function(z){col.add(x,6.1,z,.3,12.2,.3,0);});});col.done();
+var beams=new Inst(UB,matBeam,DECKS.length*(MZ.length+MX.length+2)+8);
+DECKS.forEach(function(y){MZ.forEach(function(z){beams.add(7.9,y-.12,z,34.2,.22,.18,0);});MX.concat([25]).forEach(function(x){beams.add(x,y-.12,0,.18,.22,36,0);});});beams.done();
+var deckGroups=[];
+var gratTex=(function(){var c=document.createElement('canvas');c.width=64;c.height=64;var g=c.getContext('2d');g.fillStyle='#8e97a8';g.fillRect(0,0,64,64);g.strokeStyle='rgba(20,24,36,.7)';g.lineWidth=3;for(var i=0;i<64;i+=8){g.beginPath();g.moveTo(i,0);g.lineTo(i,64);g.stroke();g.beginPath();g.moveTo(0,i);g.lineTo(64,i);g.stroke();}var t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(70,72);return t;})();
+DECKS.forEach(function(y,di){
+  var grp=new THREE.Group();scene.add(grp);deckGroups.push(grp);
+  var deck=new THREE.Mesh(new THREE.BoxGeometry(34.2,.1,36),new THREE.MeshStandardMaterial({map:gratTex,transparent:true,opacity:.28,depthWrite:false,roughness:.6}));
+  deck.position.set(7.9,y,0);deck.receiveShadow=false;grp.add(deck);
+  var pts=[],yy=y+1.1,x0=-9.2,x1=25.1,z0=-18,z1=18;
+  [[x0,z0,x1,z0],[x1,z0,x1,z1],[x1,z1,x0,z1],[x0,z1,x0,z0]].forEach(function(s){pts.push(s[0],yy,s[1],s[2],yy,s[3]);pts.push(s[0],y+.55,s[1],s[2],y+.55,s[3]);});
+  var lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  grp.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xffc107})));
+  /* стеллажи и коробки на этаже */
+  var sh=new Inst(UB,matBeam,140),db=new Inst(UB,matBox,360);grp.add(sh.m);grp.add(db.m);
+  var cards=[0xc9a36b,0xd8b98a,0xb98f5a,0xe0c9a0];
+  for(var zi=1;zi<MZ.length-1;zi++){var rz=MZ[zi]+1.3;
+    for(var xs=-5;xs<22;xs+=4.4){if(Math.random()<.22)continue;
+      sh.add(xs+1.8,y+.5,rz,3.6,.05,.9,0);sh.add(xs+1.8,y+1.35,rz,3.6,.05,.9,0);
+      sh.add(xs,y+.9,rz-.4,.06,1.8,.06,0);sh.add(xs+3.6,y+.9,rz-.4,.06,1.8,.06,0);
+      for(var sl=0;sl<2;sl++){var by=y+(sl?1.35:.5)+.025+.19,n=Math.floor(rnd(2,6));
+        for(var q=0;q<n;q++)db.add(xs+.4+q*.62,by,rz+rnd(-.1,.1),.5,.38,.5,rnd(-.05,.05),pick(cards));}}}
+  sh.done();db.done();
+});
+/* лестница на первый этаж мезонина */
+var stairs=new Inst(UB,matBeam,20);
+for(var st=0;st<16;st++)stairs.add(-8.2,.1+st*.19,-17.4+st*.28,1.1,.06,.3,0);stairs.done();
+
+/* ───── конвейер сортировки ───── */
+var belt=box(.9,.12,33,0x2c2f3a);add(belt,-7,.9,0);
+var railA=box(.06,.18,33,0xb0b6c4);add(railA,-7.45,1.02,0);var railB=box(.06,.18,33,0xb0b6c4);add(railB,-6.55,1.02,0);
+var legI=new Inst(UB,matSteel,24);for(var lz=-16;lz<=16;lz+=3)legI.add(-7,.45,lz,.7,.9,.06,0);legI.done();
+var cbox=new Inst(UB,matBox,20),cbPos=[];
+for(var ci=0;ci<18;ci++)cbPos.push({z:-16+ci*1.8,c:ci%3===0?CO.orange:0xd9b98a});
+function cbUpdate(){for(var i=0;i<cbPos.length;i++){var b=cbPos[i];D.position.set(-7,1.15,b.z);D.rotation.set(0,0,0);D.scale.set(.5,.34,.4);D.updateMatrix();cbox.m.setMatrixAt(i,D.matrix);}cbox.m.instanceMatrix.needsUpdate=true;}
+for(ci=0;ci<cbPos.length;ci++)cbox.add(-7,1.15,cbPos[ci].z,.5,.34,.4,0,cbPos[ci].c);cbox.done();
+
+/* ───── грузовики у ворот ───── */
+var trips=(S.ship&&S.ship.trips)||[];
+var pend=trips.filter(function(t){return !t.done;}),shown=pend.length?pend:trips.slice(-GATES.length);
+var loading=pend.length>0;
+if(S.ship&&!trips.length){shown=[{n:'1'},{n:'2'},{n:'3'}];loading=true;}
+shown=shown.slice(0,GATES.length);
+var truckCols=[0xeeeeee,0x2d62c8,0xc83a3a,0xe9e9e9,0x2f9e6b];
+var capT=14*5*4;
+var loadedBoxes=S.ship?Math.round(S.ship.pcs_done/U.ship):0;
+var perTruck=shown.length?Math.min(capT,Math.round(loadedBoxes/shown.length)):0;
+shown.forEach(function(t,i){
+  var z=GATES[i],bc=truckCols[i%truckCols.length];
+  var bed=box(9.4,.2,2.5,0x4a4f5e);add(bed,-31.9,-.1,z);
+  var sm=new THREE.MeshStandardMaterial({color:0xdfe6f0,transparent:true,opacity:.22,roughness:.4,depthWrite:false});
+  [-1.25,1.25].forEach(function(o){var sd=new THREE.Mesh(new THREE.BoxGeometry(9.4,2.8,.05),sm);sd.position.set(-31.9,1.4,z+o);scene.add(sd);});
+  var rf=new THREE.Mesh(new THREE.BoxGeometry(9.4,.05,2.5),sm);rf.position.set(-31.9,2.8,z);scene.add(rf);
+  add(box(.08,2.8,2.5,bc),-36.6,1.4,z);
+  add(box(2.2,2.7,2.4,bc),-38.2,1.25,z);
+  var wsh=box(.05,1.0,2.0,0x1b2538);add(wsh,-39.3,1.9,z,false);
+  var ax=[-33.6,-34.9,-38.2];ax.forEach(function(x){[-1.2,1.2].forEach(function(o){var w=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.36,14),new THREE.MeshStandardMaterial({color:0x15171d,roughness:.9}));w.rotation.x=Math.PI/2;w.position.set(x,-.6,z+o);w.castShadow=true;scene.add(w);});});
+  var n=perTruck;
+  for(var q=0;q<n;q++){var col_=Math.floor(q/20),rest=q%20,ly=Math.floor(rest/5),iz=rest%5;
+    cargo.add(-36.1+col_*.6,.2+BH/2+ly*BH,z+(iz-2)*.46,BW,BH,.4,0,CO.blue);}
+});
+cargo.done();
+GATES.forEach(function(z,i){var has=i<shown.length;doors[i].position.y=has&&loading?4.9:1.6;lamps[i].color.setHex(!has?0xff4d4d:(loading?0x34C27A:0xF2A23D));});
+
+/* ───── люди ───── */
+var gLeg=new THREE.BoxGeometry(.16,.82,.2);gLeg.translate(0,-.41,0);
+var gArm=new THREE.BoxGeometry(.11,.58,.12);gArm.translate(0,-.29,0);
+var gTor=new THREE.BoxGeometry(.44,.6,.26),gHead=new THREE.SphereGeometry(.125,12,10);
+var gHat=new THREE.SphereGeometry(.14,12,8,0,Math.PI*2,0,Math.PI/2),gBrim=new THREE.CylinderGeometry(.17,.17,.02,14);
+var gStrip=new THREE.BoxGeometry(.45,.06,.27),gCar=new THREE.BoxGeometry(.5,.34,.34);
+var skins=[0xf0c9a0,0xd9a77c,0xb07d55,0x8d5a3a];
+var mats={};function M(c,o){var k=c+(o?'e':'');if(!mats[k])mats[k]=new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.8},o||{}));return mats[k];}
+function Person(vest,hat,pants){
+  var g=new THREE.Group();
+  var P=function(geo,mat,x,y,z){var m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);m.castShadow=true;g.add(m);return m;};
+  var pm=M(pants||0x2b3245);
+  var legL=P(gLeg,pm,-.1,.85,0),legR=P(gLeg,pm,.1,.85,0);
+  P(gTor,M(vest),0,1.15,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.27,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.03,0);
+  var armL=P(gArm,M(vest),-.28,1.42,0),armR=P(gArm,M(vest),.28,1.42,0);
+  P(gHead,M(pick(skins)),0,1.57,0);P(gHat,M(hat),0,1.6,0);P(gBrim,M(hat),0,1.605,.02);
+  var cb=new THREE.Mesh(gCar,matBox.clone());cb.material.color.setHex(0xe8a24a);cb.position.set(0,1.0,.38);cb.castShadow=true;cb.visible=false;g.add(cb);
+  return {g:g,legL:legL,legR:legR,armL:armL,armR:armR,cb:cb};
+}
+var actors=[],guards=[];
+function mkActor(zone,vest,hat,x,z,cfg){
+  var p=Person(vest,hat);p.zone=zone;p.g.position.set(x,0,z);scene.add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.2,1.55);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);actors.push(p);return p;}
+function setCarry(p,v,colr){p.carry=v;p.cb.visible=v;if(v&&colr!==undefined)p.cb.material.color.setHex(colr);}
+
+/* маршруты */
+function planSort(a){var r=a.cfg.row,lane=sortZ[r]+1.8,j=Math.floor(Math.random()*sortX.length),px=sortX[j];
+  a.route=[{x:-5.7+rnd(-.2,.2),z:lane,act:'pick',dur:1.0,c:CO.orange},{x:px,z:lane},{x:px,z:sortZ[r]+1.05,act:'put',dur:1.1},{x:px,z:lane}];}
+function planHub(a){var za=pick(HZ),zb=pick(HZ);
+  a.route=[{x:-15.5,z:za,act:'pick',dur:1.0,c:CO.red},{x:-15.5,z:za+1.15},{x:-18.8,z:za+1.15},{x:-22.0,z:za+1.15},{x:-22.0,z:zb,act:'put',dur:1.0},{x:-22.0,z:zb+1.15},{x:-18.8,z:zb+1.15}];}
+function planShip(a){var za=pick(SZ),gi=a.cfg.gate%Math.max(1,GATES.length),gz=GATES[gi];
+  if(!loading||gi>=shown.length){a.route=[{x:-19.5,z:za,act:'wait',dur:rnd(2,5)},{x:-19.5,z:za+1.1},{x:-16.5,z:za+1.1},{x:-16.5,z:pick(SZ)}];return;}
+  a.route=[{x:-19.5,z:za,act:'pick',dur:.9,c:CO.blue},{x:-19.5,z:za+1.1},{x:-23.8,z:za+1.1},{x:-23.8,z:gz},{x:-28.5,z:gz,act:'put',dur:1.0},{x:-23.8,z:gz}];}
+function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
+var PLAN={sort:planSort,hub:planHub,ship:planShip};
+var rowsAssign=[];for(var ai=0;ai<S.workers.sort;ai++)rowsAssign.push(ai%rows);
+for(ai=0;ai<S.workers.sort;ai++){var rr=rowsAssign[ai];mkActor('sort',0xF2A23D,pick([0xffffff,0xf5d142]),rnd(-5,16),sortZ[rr]+1.8,{row:rr});}
+for(ai=0;ai<S.workers.hub;ai++)mkActor('hub',0x3B9CFF,0xffffff,-15.5,pick(HZ),{});
+for(ai=0;ai<S.workers.ship;ai++)mkActor('ship',0xD7E83A,pick([0xffffff,0xf5d142]),rnd(-22,-17),pick(SZ),{gate:ai});
+/* охрана: по одному человеку на зону */
+function mkGuard(zone,way){var p=Person(0x1a2030,0x141824,0x141824);p.zone=zone;p.g.position.set(way[0][0],0,way[0][1]);scene.add(p.g);p.ph=0;p.speed=.6;p.route=[];p.wait=0;p.cfg={way:way,i:0};p.yaw=0;
+  var cone=new THREE.Mesh(new THREE.ConeGeometry(.9,3.4,16,1,true),new THREE.MeshBasicMaterial({color:0xfff2a8,transparent:true,opacity:.16,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
+  cone.rotation.x=-Math.PI/2+.25;cone.position.set(0,1.1,1.8);p.g.add(cone);
+  var cap=new THREE.Mesh(new THREE.BoxGeometry(.3,.05,.34),M(0x141824));cap.position.set(0,1.7,.06);p.g.add(cap);
+  p.guard=true;p.g.visible=false;guards.push(p);actors.push(p);return p;}
+var gdSort=mkGuard('sort',[[-5,-2],[-5,8],[3,10],[3,-2]]);
+var gdHub=mkGuard('hub',[[-18.8,-14],[-18.8,-4],[-14,-3]]);
+var gdShip=mkGuard('ship',[[-23.8,4],[-23.8,14],[-18,16],[-18,4]]);
+
+/* погрузчик в проходе */
+var fork=new THREE.Group();(function(){
+  var b=box(1.1,.9,1.8,0xf2b01e);b.position.set(0,.7,-.2);fork.add(b);
+  var cab=box(1.0,.05,1.0,0x222222);cab.position.set(0,1.9,-.25);fork.add(cab);
+  [[-.5,-.7],[.5,-.7],[-.5,.1],[.5,.1]].forEach(function(p){var po=box(.05,1.0,.05,0x222222);po.position.set(p[0],1.4,p[1]);fork.add(po);});
+  var mast=box(.08,2.6,.08,0x333333);mast.position.set(-.3,1.5,.85);fork.add(mast);var mast2=mast.clone();mast2.position.x=.3;fork.add(mast2);
+  var f1=box(.1,.05,1.1,0x555555);f1.position.set(-.3,.25,1.4);fork.add(f1);var f2=f1.clone();f2.position.x=.3;fork.add(f2);
+  [[-.55,-.75],[.55,-.75],[-.55,.35],[.55,.35]].forEach(function(p){var w=new THREE.Mesh(new THREE.CylinderGeometry(.22,.22,.18,12),M(0x15171d));w.rotation.z=Math.PI/2;w.position.set(p[0],.22,p[1]);fork.add(w);});
+  var dr=Person(0xD7E83A,0xffffff);dr.g.position.set(0,.45,-.25);dr.g.scale.set(.85,.85,.85);dr.legL.rotation.x=-1.4;dr.legR.rotation.x=-1.4;fork.add(dr.g);
+  var pl=new THREE.Group();var pb=box(1.2,.12,.8,0xb98b55);pl.add(pb);for(var q=0;q<8;q++){var bb=new THREE.Mesh(new THREE.BoxGeometry(.5,.36,.36),matBox.clone());bb.material.color.setHex(q<4?CO.green:CO.orange);bb.position.set(q%2?.28:-.28,.24+Math.floor(q/4)*.37,q%4<2?-.18:.18);pl.add(bb);}
+  pl.position.set(0,.55,1.45);pl.rotation.y=Math.PI/2;fork.add(pl);fork.userData.pl=pl;
+  fork.traverse(function(o){if(o.isMesh)o.castShadow=true;});})();
+scene.add(fork);var FK={z:-12,dir:1,turn:0,y:0};fork.position.set(-10.9,0,-12);
+
+/* ───── подписи ───── */
+var labels=[],lbEl=el('labels');
+function mkLabel(txt,pos,cls,fn){var d=document.createElement('div');d.className='lb '+(cls||'');d.innerHTML=txt;lbEl.appendChild(d);var o={d:d,pos:pos,fn:fn};labels.push(o);return o;}
+var lbSort=mkLabel('',new THREE.Vector3(7,.3,17.9),'zone'),lbHub=mkLabel('',new THREE.Vector3(-19,.3,-17.7),'zone'),lbShip=mkLabel('',new THREE.Vector3(-25.5,4.4,9.3),'zone');
+mkLabel('МЕЗОНИН · 5 этажей',new THREE.Vector3(7,13.2,0),'mz');
+DECKS.forEach(function(y,i){mkLabel((i+2)+' этаж',new THREE.Vector3(24.6,y+.4,-17.6),'fl');});
+mkLabel('1 этаж · сортировка',new THREE.Vector3(24.6,.4,-17.6),'fl');
+GATES.forEach(function(z,i){mkLabel('Ворота '+(i+1),new THREE.Vector3(Wx0+.4,3.95,z),'gt');});
+var lbG1=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard'),lbG2=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard'),lbG3=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard');
+lbG1.follow=gdSort.g;lbG2.follow=gdHub.g;lbG3.follow=gdShip.g;
+function zoneLabel(k,t){var s=zst(k);return t+' · '+(s.nodata?'нет данных':(s.idle?'🛡 охрана':S.workers[k]+' чел.'));}
+lbSort.d.textContent=zoneLabel('sort','СОРТИРОВКА');lbHub.d.textContent=zoneLabel('hub','ХАБ');lbShip.d.textContent=zoneLabel('ship','ОТГРУЗКА');
+[[lbSort,'sort'],[lbHub,'hub'],[lbShip,'ship']].forEach(function(x){if(zst(x[1]).idle)x[0].d.classList.add('idle');});
+
+/* затемнение зон без операций */
+function dim(x0,z0,x1,z1){var m=new THREE.Mesh(new THREE.PlaneGeometry(x1-x0,z1-z0),new THREE.MeshBasicMaterial({color:0x05070f,transparent:true,opacity:.34,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set((x0+x1)/2,.03,(z0+z1)/2);scene.add(m);return m;}
+var dimZ={sort:dim(-8.8,-17.6,25.6,17.6),hub:dim(-25.6,-17.6,-12.4,-1),ship:dim(-25.6,1,-12.4,17.6)};
+['sort','hub','ship'].forEach(function(z){var idle=zst(z).idle;dimZ[z].visible=idle;});
+actors.forEach(function(a){var z_=zst(a.zone);a.g.visible=z_.nodata?false:(a.guard?z_.idle:!z_.idle);});
+function gOn(z){var q=zst(z);return q.idle&&!q.nodata;}lbG1.d.style.display=gOn('sort')?'':'none';lbG2.d.style.display=gOn('hub')?'':'none';lbG3.d.style.display=gOn('ship')?'':'none';
+var forkActive=!(zst('sort').idle&&zst('ship').idle);
+fork.userData.pl.visible=forkActive;
+var beltActive=!zst('sort').idle;
+
+/* ───── движение ───── */
+var WALL_BOUND=null;
+function stepActor(a,dt){
+  if(a.wait>0){a.wait-=dt;a.moving=false;}
+  else{
+    if(!a.route.length){if(a.guard)planGuard(a);else PLAN[a.zone](a);}
+    var t=a.route[0],p=a.g.position,dx=t.x-p.x,dz=t.z-p.z,d=Math.hypot(dx,dz),sp=a.speed*dt;
+    if(d<=sp+.02){p.x=t.x;p.z=t.z;a.route.shift();a.moving=false;
+      if(t.act==='pick'){setCarry(a,true,t.c);a.wait=t.dur;}else if(t.act==='put'){setCarry(a,false);a.wait=t.dur;}else if(t.act==='wait'){a.wait=t.dur;}}
+    else{p.x+=dx/d*sp;p.z+=dz/d*sp;a.moving=true;var ty=Math.atan2(dx,dz),dy=ty-a.yaw;while(dy>Math.PI)dy-=6.283;while(dy<-Math.PI)dy+=6.283;a.yaw+=dy*Math.min(1,dt*8);a.g.rotation.y=a.yaw;}
+  }
+  var sw=0;if(a.moving){a.ph+=dt*a.speed*4.6;sw=Math.sin(a.ph)*.7;}
+  a.legL.rotation.x=sw;a.legR.rotation.x=-sw;
+  if(a.carry){a.armL.rotation.x=a.armR.rotation.x=-1.25;}else{a.armL.rotation.x=-sw*.8;a.armR.rotation.x=sw*.8;}
+  a.g.position.y=a.moving?Math.abs(Math.sin(a.ph))*.03:0;
+}
+function updateFork(dt){
+  if(!forkActive){return;}
+  FK.z+=FK.dir*dt*2.2*(FK.turn>0?0:1);
+  if(FK.turn>0){FK.turn-=dt;fork.rotation.y+=FK.dir*-dt*Math.PI*1.2;if(FK.turn<=0){fork.rotation.y=FK.dir>0?0:Math.PI;}}
+  else if(FK.z>13&&FK.dir>0){FK.dir=-1;FK.turn=1.4;fork.userData.pl.visible=false;}
+  else if(FK.z<-12&&FK.dir<0){FK.dir=1;FK.turn=1.4;fork.userData.pl.visible=true;}
+  fork.position.set(FK.dir>0?-10.9:-10.3,0,FK.z);
+}
+function updateBelt(dt){
+  if(!beltActive)return;
+  for(var i=0;i<cbPos.length;i++){cbPos[i].z+=dt*.45;if(cbPos[i].z>16)cbPos[i].z=-16;}cbUpdate();
+}
+
+/* ───── камера ───── */
+var tgt=new THREE.Vector3(-2,2,0),sph={th:-.5,ph:1.0,r:78},goal=null;
+try{var sv=window.parent.__whcam;if(sv){tgt.set(sv.x,sv.y,sv.z);sph.th=sv.th;sph.ph=sv.ph;sph.r=sv.r;}}catch(e){}
+function saveCam(){try{window.parent.__whcam={x:tgt.x,y:tgt.y,z:tgt.z,th:sph.th,ph:sph.ph,r:sph.r};}catch(e){}}
+function applyCam(){var sp=Math.sin(sph.ph),cp=Math.cos(sph.ph);cam.position.set(tgt.x+sph.r*sp*Math.sin(sph.th),tgt.y+sph.r*cp,tgt.z+sph.r*sp*Math.cos(sph.th));cam.lookAt(tgt);}
+function limit(){sph.ph=clamp(sph.ph,.06,1.52);sph.r=clamp(sph.r,2.5,150);tgt.x=clamp(tgt.x,-45,36);tgt.z=clamp(tgt.z,-30,30);tgt.y=clamp(tgt.y,0,14);}
+var ray=new THREE.Raycaster(),ndc=new THREE.Vector2(),plane=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+function groundPt(cx,cy,y){var r=renderer.domElement.getBoundingClientRect();ndc.set((cx-r.left)/r.width*2-1,-((cy-r.top)/r.height)*2+1);ray.setFromCamera(ndc,cam);plane.constant=-y;var o=new THREE.Vector3();return ray.ray.intersectPlane(plane,o)?o:null;}
+function zoomAt(f,cx,cy){var old=sph.r,nr=clamp(old*f,2.5,150);
+  if(cx!==undefined){var p=groundPt(cx,cy,tgt.y);if(p){var k=1-nr/old;tgt.x+=(p.x-tgt.x)*k;tgt.z+=(p.z-tgt.z)*k;}}
+  sph.r=nr;limit();goal=null;saveCam();}
+function panBy(dx,dy){var s=sph.r*.0017,rx=Math.cos(sph.th),rz=-Math.sin(sph.th),fx=-Math.sin(sph.th),fz=-Math.cos(sph.th);
+  tgt.x+=(-dx*rx+dy*fx)*s;tgt.z+=(-dx*rz+dy*fz)*s;limit();goal=null;}
+var cvs=renderer.domElement,ptrs={},pinch=0,lastTap=0;
+cvs.addEventListener('contextmenu',function(e){e.preventDefault();});
+cvs.addEventListener('pointerdown',function(e){cvs.setPointerCapture(e.pointerId);ptrs[e.pointerId]={x:e.clientX,y:e.clientY,b:e.button};goal=null;
+  var ks=Object.keys(ptrs);if(ks.length===2){var a=ptrs[ks[0]],b=ptrs[ks[1]];pinch=Math.hypot(a.x-b.x,a.y-b.y);}
+  var now=Date.now();if(now-lastTap<320&&ks.length===1){var p=groundPt(e.clientX,e.clientY,0);if(p){flyTo(new THREE.Vector3(p.x,1,p.z),sph.th,Math.min(sph.ph,1.1),13);}}lastTap=now;});
+cvs.addEventListener('pointermove',function(e){var p=ptrs[e.pointerId];if(!p)return;var dx=e.clientX-p.x,dy=e.clientY-p.y;
+  var ks=Object.keys(ptrs);
+  if(ks.length>=2){var a=ptrs[ks[0]],b=ptrs[ks[1]];p.x=e.clientX;p.y=e.clientY;var d=Math.hypot(a.x-b.x,a.y-b.y);if(pinch>0){zoomAt(pinch/d,(a.x+b.x)/2,(a.y+b.y)/2);}pinch=d;panBy(dx/2,dy/2);}
+  else if(p.b===2||e.shiftKey||e.ctrlKey){panBy(dx,dy);p.x=e.clientX;p.y=e.clientY;}
+  else{sph.th-=dx*.0065;sph.ph-=dy*.005;limit();p.x=e.clientX;p.y=e.clientY;}});
+function up(e){delete ptrs[e.pointerId];pinch=0;saveCam();}
+cvs.addEventListener('pointerup',up);cvs.addEventListener('pointercancel',up);
+cvs.addEventListener('wheel',function(e){e.preventDefault();var f=Math.exp(clamp(e.deltaY,-120,120)*.0013);zoomAt(f,e.clientX,e.clientY);},{passive:false});
+function flyTo(t,th,ph,r){goal={t:t.clone(),th:th,ph:ph,r:r};}
+var PRE={all:[new THREE.Vector3(-2,2,0),-.5,1.0,78],sort:[new THREE.Vector3(7,1.2,0),-.3,.85,38],hub:[new THREE.Vector3(-19,1,-9.5),.5,.9,24],ship:[new THREE.Vector3(-24,1,9.5),1.15,.95,26],top:[new THREE.Vector3(0,0,0),0,.1,82]};
+function preset(k){var p=PRE[k];flyTo(p[0],p[1],p[2],p[3]);if(k==='sort')setFloors(1);if(k==='all')setFloors(5);}
+/* этажи и стены */
+var floorsN=5,wallsOn=true;
+try{if(window.parent.__whfl)floorsN=window.parent.__whfl;}catch(e){}
+function setFloors(n){floorsN=n;try{window.parent.__whfl=n;}catch(e){}deckGroups.forEach(function(g,i){g.visible=(i+2)<=n;});
+  var bs=document.querySelectorAll('[data-fl]');for(var i=0;i<bs.length;i++)bs[i].classList.toggle('on',+bs[i].getAttribute('data-fl')===n);
+  labels.forEach(function(l){if(l.d.className.indexOf('fl')>=0){var m=/^(\d)/.exec(l.d.textContent);if(m)l.d.style.display=(+m[1]<=n)?'':'none';}});}
+setFloors(floorsN);
+document.querySelectorAll('[data-pre]').forEach(function(b){b.addEventListener('click',function(){preset(b.getAttribute('data-pre'));});});
+document.querySelectorAll('[data-fl]').forEach(function(b){b.addEventListener('click',function(){setFloors(+b.getAttribute('data-fl'));});});
+el('zin').addEventListener('click',function(){zoomAt(.75);});el('zout').addEventListener('click',function(){zoomAt(1.33);});
+el('wl').addEventListener('click',function(){wallsOn=!wallsOn;this.classList.toggle('on',wallsOn);});
+document.querySelectorAll('.zc').forEach(function(c){c.addEventListener('click',function(){preset(c.getAttribute('data-z'));});});
+
+function wallFade(){
+  wallGroups.forEach(function(w){
+    var outside=(w.n[0]!==0)?(cam.position.x*w.n[0]>Math.abs(w.c)):(cam.position.z*w.n[2]>Math.abs(w.c));
+    w.g.forEach(function(m){
+      if(!m.material.__own){m.material=m.material.clone();m.material.__own=1;m.material.transparent=true;}
+      m.visible=wallsOn;m.material.opacity=outside?.1:1;m.material.depthWrite=!outside;});
+  });
+}
+var vp=new THREE.Vector3();
+function placeLabels(){
+  var w=wrap.clientWidth,h=wrap.clientHeight;
+  labels.forEach(function(l){var p=l.follow?l.follow.position:l.pos;vp.set(p.x,l.follow?p.y+2.2:p.y,p.z).project(cam);
+    if(vp.z>1||vp.z<-1||l.d.style.display==='none'&&!l.follow){l.d.style.visibility='hidden';return;}
+    l.d.style.visibility='visible';l.d.style.transform='translate('+((vp.x*.5+.5)*w)+'px,'+((-vp.y*.5+.5)*h)+'px) translate(-50%,-50%)';});
+}
+function resize(){W=wrap.clientWidth||W;H=wrap.clientHeight||H;renderer.setSize(W,H);cam.aspect=W/H;cam.updateProjectionMatrix();}
+window.addEventListener('resize',resize);
+var last=performance.now(),fr=0;
+function loop(now){
+  var dt=Math.min(.05,(now-last)/1000);last=now;
+  if(goal){var k=Math.min(1,dt*3.2);tgt.lerp(goal.t,k);sph.th+=(goal.th-sph.th)*k;sph.ph+=(goal.ph-sph.ph)*k;sph.r+=(goal.r-sph.r)*k;
+    if(tgt.distanceTo(goal.t)<.05&&Math.abs(sph.r-goal.r)<.1){goal=null;saveCam();}}
+  for(var i=0;i<actors.length;i++){var a=actors[i];if(a.g.visible)stepActor(a,dt);}
+  updateFork(dt);updateBelt(dt);
+  applyCam();wallFade();placeLabels();
+  renderer.render(scene,cam);
+  requestAnimationFrame(loop);
+}
+window.__whTick=function(ms){loop(performance.now()+ms);};
+resize();applyCam();requestAnimationFrame(loop);
+})();
+</script>
+</body></html>
+'''
+
+
+@st.cache_resource
+def _wh_store() -> dict:
+    """Общее для всех сессий: по каждой зоне — подпись цифр и время, когда она последний раз менялась."""
+    h = {"data": {}, "lock": threading.Lock()}
+    try:
+        with open(WH_FILE, encoding="utf-8") as f:
+            h["data"] = json.load(f).get("data", {})
+    except Exception:
+        pass
+    return h
+
+
+def wh_collect() -> dict:
+    """Цифры для моделей зон из тех же источников, что и виджеты сводной (всё из кэша)."""
+    today = datetime.now(TZ).date()
+    out = {"sort": None, "hub": None, "ship": None}
+    try:                                                    # сортировка: статусы WMS SORTING / SORTED
+        d = load()
+        fr = d[["Заказ", "Статус WMS", "Штук"]].copy()
+        try:
+            no = load_new_orders()
+            no = no[~no["Заказ"].isin(d["Заказ"])]
+            if not no.empty:
+                fr = pd.concat([fr, no.rename(columns={"Статус": "Статус WMS"})[["Заказ", "Статус WMS", "Штук"]]],
+                               ignore_index=True)
+        except Exception:
+            pass
+        s_ = fr["Статус WMS"].astype(str).str.strip().str.upper().str.replace(r"[\s\-]+", "_", regex=True)
+
+        def part(name):
+            m = s_ == name
+            return int(fr.loc[m, "Штук"].sum()), int(fr.loc[m, "Заказ"].nunique())
+        sp, so = part("SORTING")
+        dp, do = part("SORTED")
+        out["sort"] = dict(sorting=sp, sorted=dp, o_sorting=so, o_sorted=do)
+    except Exception:
+        pass
+    try:                                                    # хаб: принято / не принято коробок (даты как на карточке)
+        g = hub_by_date(load_hub())
+        ds = hub_card_dates(g, today)
+        if ds:
+            out["hub"] = dict(ok=int(sum(g.loc[x, "ok"] for x in ds)), no=int(sum(g.loc[x, "no"] for x in ds)),
+                              period=fmt_date(ds[0]) if len(ds) == 1 else f"{fmt_date(ds[0])} – {fmt_date(ds[-1])}")
+    except Exception:
+        pass
+    try:                                                    # отгрузка на сегодня
+        sh = build_ship(load_ship_tabs())
+        if sh is not None and not sh.empty:
+            sd = pick_ship_date(sh, today)
+            sm = ship_summary(sh, sd)
+            out["ship"] = dict(
+                title="Отгрузка сегодня" if sd == today else f"Последняя отгрузка {fmt_date(sd)}",
+                date=sd.isoformat(), total=int(sm["total"]), done=int(sm["done"]),
+                pcs=int(sm["pcs"]), pcs_done=int(sm["pcs_done"]),
+                trips=[dict(n=str(t.get("Рейс", "")), qty=int(t.get("qty") or 0), done=bool(t.get("done")))
+                       for t in sm["trips"]])
+    except Exception:
+        pass
+    return out
+
+
+def wh_track(c: dict) -> dict:
+    """Если цифры зоны не менялись WH_IDLE_MIN минут — операций нет (в модели: люди уходят, стоит охрана).
+    Возвращает по зонам: idle, nodata, since (время последнего изменения цифр)."""
+    t = time.time()
+    sig = {}
+    if c.get("sort"):
+        x = c["sort"]
+        sig["sort"] = [x["sorting"], x["sorted"], x["o_sorting"], x["o_sorted"]]
+    if c.get("hub"):
+        sig["hub"] = [c["hub"]["ok"], c["hub"]["no"]]
+    if c.get("ship"):
+        sig["ship"] = [c["ship"]["pcs_done"], c["ship"]["done"], c["ship"]["date"]]
+    h, out, dirty = _wh_store(), {}, False
+    with h["lock"]:
+        for z in ("sort", "hub", "ship"):
+            if z not in sig:
+                out[z] = {"idle": True, "nodata": True, "since": ""}
+                continue
+            rec = h["data"].get(z)
+            if not rec or rec.get("sig") != sig[z]:
+                rec = {"sig": sig[z], "t": t}
+                h["data"][z] = rec
+                dirty = True
+            out[z] = {"idle": (t - rec["t"]) >= WH_IDLE_MIN * 60, "nodata": False,
+                      "since": datetime.fromtimestamp(rec["t"], TZ).strftime("%H:%M")}
+        if dirty:
+            try:
+                with open(WH_FILE, "w", encoding="utf-8") as f:
+                    json.dump({"data": h["data"]}, f, ensure_ascii=False)
+            except Exception:
+                pass
+    return out
+
+
+def wh_html(c: dict, tr: dict, dark: bool) -> str:
+    state = {"dark": dark, "rows": WH_ROWS, "per": WH_PER_ROW, "workers": WH_WORKERS,
+             "sort": c.get("sort"), "hub": c.get("hub"), "ship": c.get("ship"), "state": tr}
+    js = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+    return WH_HTML.replace("__STATE__", js).replace("__THEME__", "dark" if dark else "light")
+
+
+@st.fragment(run_every=60)
+def _wh_live():
+    """Окно «Модель склада»: сортировка (SORTING/SORTED), хаб (принято / не принято), ворота отгрузки (сегодня).
+    Обновляется раз в минуту; сцена перезагружается только если цифры изменились, камера при этом сохраняется."""
+    c = wh_collect()
+    tr = wh_track(c)
+    components.html(wh_html(c, tr, bool(st.session_state.dark)), height=WH_HEIGHT)
+    st.caption(f"Количество коробок на схеме пропорционально цифрам из таблиц и Metabase. "
+               f"Если цифры зоны не меняются {WH_IDLE_MIN} мин — операций нет: людей в зоне нет, стоит охрана.")
 
 
 def _cm_recent(limit: int) -> list:
@@ -4678,7 +5315,8 @@ with st.sidebar:
         st.button(p_, key=f"nav_{i_}", width="stretch",
                   type="primary" if st.session_state.get("page", PAGES[0]) == p_ else "secondary",
                   on_click=set_page, args=(p_,))
-    st.markdown("<div class='sidecard'><b><i></i>Данные актуальные</b></div>"
+    st.markdown("<div class='sidecard' title='Нажмите — 3D-модель склада'><b><i></i>Данные актуальные</b>"
+                "<span class='wh-go'>Модель склада 3D →</span></div>"
                 "<div class='contact'><div class='av'>КО</div><div class='ct'>"
                 f"<b>{esc(CONTACT_NAME)}</b>"
                 f"<a href='tel:{esc(CONTACT_PHONE)}'>{esc(CONTACT_PHONE)}</a>"
@@ -4716,18 +5354,21 @@ def _wins():
     Закрыть: крестик, клик по размытому фону или Esc."""
     st.button("Онлайн", key="onl_open", on_click=open_win, args=("onl",))
     st.button("Чат", key="chat_open", on_click=open_win, args=("chat",))
+    st.button("Склад", key="wh_open", on_click=open_win, args=("wh",))
     w = st.session_state.get("win")
-    if w not in ("chat", "onl"):
+    if w not in ("chat", "onl", "wh"):
         return
     st.markdown("<div class='mc-backdrop'></div>", unsafe_allow_html=True)
     with st.container(key=f"win_{w}"):
         c1, c2 = st.columns([8, 1], vertical_alignment="center")
         with c1:
-            st.markdown(f"<div class='win-t'>{'Чат' if w == 'chat' else 'Посетители'}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='win-t'>{ {'chat': 'Чат', 'onl': 'Посетители', 'wh': 'Модель склада · 3D'}[w] }</div>", unsafe_allow_html=True)
         with c2:
             st.button("Закрыть", key="winclose", on_click=close_win)
         if w == "chat":
             _chat_body()
+        elif w == "wh":
+            _wh_live()
         else:
             _online_body()
 
@@ -4752,7 +5393,7 @@ if(a){var tr=a.closest('tr'),nx=tr&&tr.nextElementSibling;
 if(nx&&nx.classList.contains('actrow')){var op=nx.style.display!=='none';
 nx.style.display=op?'none':'table-row';a.classList.toggle('open',!op);}return;}
 if(t.closest('.mc-backdrop')){var x2=d.querySelector('.st-key-winclose button');if(x2){x2.click();}return;}
-var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':''));
+var q=t.closest('.onl')?'.st-key-onl_open button':(t.closest('.chatbtn')?'.st-key-chat_open button':(t.closest('.brand')?'.st-key-go_home button':(t.closest('.sidecard')?'.st-key-wh_open button':'')));
 if(q){var b=d.querySelector(q);if(b){b.click();}}});
 d.addEventListener('input',function(e){var t=e.target;if(!t||!t.closest||!t.closest('.st-key-chat_msg'))return;
 var k=Date.now();if(k-(d.__tp||0)<3000)return;d.__tp=k;
