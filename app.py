@@ -21,8 +21,11 @@ comments.json (комментарии к виджетам), chat.json (сооб�
 дням» и лист «Примерный объём» — план по магазинам на 7 дней вперёд).
 Погода в Ташкенте (OpenWeather): карточка при наведении на дату вверху; фон верхней строки — анимация погоды
 (солнце / облака / дождь) и осенние листья.
-Модель склада 3D: клик по «Данные актуальные» в боковом меню (Three.js, зум колёсиком/щипком, поворот, сдвиг). Зоны: сортировка
-(мезонин 5 этажей, 6x6 паллет; SORTING/SORTED), хаб слева (принято / не принято коробок), ворота отгрузки (сегодня).
+Модель склада 3D: клик по «Данные актуальные» в боковом меню (Three.js, зум колёсиком/щипком, поворот, сдвиг). Внутри здания
+мезонин с ячеечным хранением (5 этажей = зоны 1M1…5M1 из Magnit Stock: заполнение, пустота, штуки, резерв, поиск ячейки,
+подсказка при наведении, Excel с пустыми ячейками); на мезонине только сборка (операторы с тележками). Впереди мезонина —
+сортировка (SORTING/SORTED), слева от неё хаб (принято / не принято коробок); перед хабом ворота 4–7 и газели, которые
+после отгрузки уезжают. Список всех ячеек (необязательно): wh_cells.csv рядом с app.py или cells_table в [metabase].
 Цифры зоны не менялись 30 мин -> людей нет, стоит охрана (состояние хранится в wh_activity.json).
 Комментарии хранятся во вкладке таблицы «Комментарии_app» (нужен доступ «Редактор») и живут 3 суток.
 """
@@ -188,9 +191,12 @@ COMMENTS_TAB = "Комментарии_app"        # вкладка основн
 CHAT_FILE = "chat.json"                 # сообщения чата (файл на сервере)
 WH_FILE = "wh_activity.json"            # когда в зонах склада последний раз менялись цифры (файл на сервере)
 WH_IDLE_MIN = 30                        # цифры стоят столько минут -> операций нет, в зоне только охрана
-WH_WORKERS = {"sort": 20, "hub": 5, "ship": 10}   # людей на схеме: сортировка / хаб / отгрузка
+WH_WORKERS = {"pick": 12, "sort": 20, "hub": 5, "ship": 10}   # людей на схеме: сборка на мезонине / сортировка / хаб / отгрузка
 WH_ROWS, WH_PER_ROW = 6, 6              # паллет в сортировке: рядов x паллет в ряду
-WH_HEIGHT = 680                         # высота 3D-окна, px
+WH_HEIGHT = 760                         # высота 3D-окна, px
+WH_MEZ_ZONES = ("1M1", "2M1", "3M1", "4M1", "5M1")   # зоны-ячейки мезонина (первая цифра = этаж); DMG, BP, HP и др. — не ячейки
+WH_CELL_MAX = 60000                     # предел числа ячеек, которые восстанавливаются по сетке нумерации
+WH_CELLS_FILES = ("wh_cells.csv", "wh_cells.xlsx")   # необязательный список ВСЕХ ячеек мезонина (рядом с app.py)
 CHAT_KEEP = 300                         # сколько последних сообщений хранить
 CHAT_MAX = 500                          # максимальная длина сообщения
 CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
@@ -646,7 +652,7 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .st-key-win_chat { width:min(440px, 94vw); }
 .st-key-win_onl { width:min(1000px, 96vw); }
 .st-key-win_wh { width:min(1320px, 98vw); }
-.st-key-win_wh iframe { height:min(680px, 76vh) !important; border-radius:16px; border:1px solid $line; }
+.st-key-win_wh iframe { height:min(760px, 80vh) !important; border-radius:16px; border:1px solid $line; }
 .sidecard { cursor:pointer; transition:border-color .15s, transform .15s; }
 .sidecard:hover { border-color:rgba(52,194,122,.85); transform:translateY(-1px); }
 .sidecard .wh-go { display:block; font-size:.68rem; color:$mute; margin-top:2px; }
@@ -4560,60 +4566,94 @@ def _auto_track():
 # ───────────────────────── Модель склада 3D (клик по «Данные актуальные») ─────────────────────────
 WH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--ink:#1B1B22;--mute:#5d6280;--glass:rgba(255,255,255,.82);--line:rgba(30,37,72,.18);--bg:#dfe6f1}
-body.dark{--ink:#EEF0FA;--mute:#9aa3c7;--glass:rgba(13,17,38,.78);--line:rgba(120,140,255,.22);--bg:#070A1A}
+:root{--ink:#1B1B22;--mute:#5d6280;--glass:rgba(255,255,255,.86);--line:rgba(30,37,72,.18);--bg:#dfe6f1}
+body.dark{--ink:#EEF0FA;--mute:#9aa3c7;--glass:rgba(13,17,38,.82);--line:rgba(120,140,255,.24);--bg:#070A1A}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
 #wrap{position:relative;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
 #cv,#cv canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab}
 #cv canvas:active{cursor:grabbing}
 .glass{background:var(--glass);border:1px solid var(--line);border-radius:14px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
-#cards{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:7px;width:238px;max-height:calc(100% - 20px);overflow:auto;z-index:5}
-.zc{padding:8px 11px 9px;cursor:pointer;transition:transform .15s,border-color .15s}
+#left{position:absolute;left:10px;top:10px;bottom:10px;width:268px;display:flex;flex-direction:column;gap:7px;overflow:auto;z-index:5;padding-right:2px;scrollbar-width:thin}
+#left.off{display:none}
+.big{padding:10px 12px}
+.big .h{font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--mute)}
+.big .pc{font-size:1.9rem;font-weight:800;letter-spacing:-.03em;line-height:1.1;margin:2px 0 4px}
+.big .pc small{font-size:.9rem;color:var(--mute);font-weight:700;margin-left:3px}
+.bar{height:7px;border-radius:99px;background:rgba(128,140,190,.22);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#E0338F,#8B3DFF,#3B9CFF)}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;margin-top:8px;font-size:.7rem;color:var(--mute)}
+.kv b{color:var(--ink);font-weight:800;font-variant-numeric:tabular-nums}
+.fr{padding:7px 10px 8px;cursor:pointer;transition:border-color .15s,transform .15s}
+.fr:hover{border-color:#8B3DFF;transform:translateX(2px)}
+.fr.on{border-color:#E0338F;box-shadow:0 0 0 1px #E0338F}
+.frt{display:flex;justify-content:space-between;font-size:.76rem;font-weight:800;margin-bottom:4px}
+.frt span{color:var(--mute);font-weight:700}
+.frs{font-size:.64rem;color:var(--mute);margin-top:4px;line-height:1.35}
+.frs b{color:var(--ink)}
+.sec{font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:4px 2px 0}
+.zc{padding:7px 11px 8px;cursor:pointer;transition:transform .15s,border-color .15s}
 .zc:hover{transform:translateX(2px);border-color:#8B3DFF}
-.zt{display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:.82rem;margin-bottom:4px}
+.zt{display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:.78rem;margin-bottom:3px}
 .zt i{width:9px;height:9px;border-radius:50%;background:#34C27A;box-shadow:0 0 9px #34C27A;animation:pl 1.6s infinite}
 .zc.idle .zt i{background:#F2A23D;box-shadow:0 0 9px #F2A23D;animation:none}
 .zc.nd .zt i{background:#8C93B5;box-shadow:none;animation:none}
 @keyframes pl{50%{opacity:.35}}
-.ln{display:flex;justify-content:space-between;gap:8px;font-size:.72rem;line-height:1.55}
+.ln{display:flex;justify-content:space-between;gap:8px;font-size:.68rem;line-height:1.5}
 .ln b{font-weight:700}.ln b.o{color:#F2A23D}.ln b.g{color:#34C27A}.ln b.r{color:#E5484D}.ln b.bl{color:#3B9CFF}
 .ln span{color:var(--mute);text-align:right}
-.zs{margin-top:5px;padding-top:5px;border-top:1px dashed var(--line);font-size:.68rem;color:var(--mute)}
+.zs{margin-top:4px;padding-top:4px;border-top:1px dashed var(--line);font-size:.64rem;color:var(--mute)}
 .zc.idle .zs{color:#F2A23D;font-weight:600}
-#ctl{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end;z-index:5}
+.note{padding:7px 10px;font-size:.62rem;line-height:1.4;color:var(--mute)}
+.note b{color:var(--ink)}
+.note.warn{border-color:#F2A23D;color:#F2A23D}
+#ctl{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end;z-index:5;max-width:calc(100% - 300px)}
 .row{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
 .bt{border:1px solid var(--line);background:var(--glass);color:var(--ink);border-radius:10px;padding:6px 10px;font-size:.72rem;font-weight:700;cursor:pointer;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);font-family:inherit}
 .bt:hover{border-color:#8B3DFF}.bt.on{background:linear-gradient(135deg,#8B3DFF,#E0338F);color:#fff;border-color:transparent}
 .bt.sq{width:34px;height:34px;padding:0;font-size:1.05rem}
-.cap{font-size:.62rem;color:var(--mute);text-align:right;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-#leg{position:absolute;left:10px;bottom:10px;padding:7px 11px;font-size:.66rem;color:var(--mute);display:flex;gap:11px;flex-wrap:wrap;max-width:calc(100% - 20px);z-index:5}
-#leg i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px}
-#upd{position:absolute;right:12px;bottom:12px;font-size:.62rem;color:var(--mute);z-index:5;text-align:right;line-height:1.4}
+.cap{font-size:.6rem;color:var(--mute);text-align:right;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+#top{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center}
+#q{width:min(260px,34vw);border:1px solid var(--line);background:var(--glass);color:var(--ink);border-radius:10px;padding:7px 11px;font-size:.78rem;font-family:inherit;outline:none;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#q:focus{border-color:#8B3DFF}
+#qres{font-size:.68rem;color:var(--mute);font-weight:700;white-space:nowrap}
+#leg{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);padding:7px 12px;font-size:.66rem;color:var(--mute);display:flex;gap:12px;flex-wrap:wrap;justify-content:center;max-width:calc(100% - 600px);min-width:260px;z-index:5}
+#leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+#leg .grad{display:inline-block;width:90px;height:9px;border-radius:5px;vertical-align:-1px;margin:0 5px}
+#upd{position:absolute;right:12px;bottom:10px;font-size:.6rem;color:var(--mute);z-index:5;text-align:right;line-height:1.4}
 #labels{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:3}
-.lb{position:absolute;left:0;top:0;white-space:nowrap;font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:7px;background:rgba(10,14,32,.72);color:#fff;border:1px solid rgba(255,255,255,.18);will-change:transform}
-.lb.zone{font-size:.72rem;background:linear-gradient(135deg,rgba(139,61,255,.9),rgba(224,51,143,.9))}
+.lb{position:absolute;left:0;top:0;white-space:nowrap;font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:7px;background:rgba(10,14,32,.74);color:#fff;border:1px solid rgba(255,255,255,.18);will-change:transform}
+.lb.zone{font-size:.72rem;background:linear-gradient(135deg,rgba(139,61,255,.92),rgba(224,51,143,.92))}
 .lb.zone.idle{background:rgba(60,66,90,.92)}
-.lb.mz{background:rgba(47,111,214,.9)}.lb.fl{font-size:.56rem;background:rgba(255,193,7,.9);color:#1b1b22;border:none}
-.lb.gt{font-size:.56rem;background:rgba(52,194,122,.9);border:none}.lb.guard{background:rgba(242,162,61,.95);color:#1b1b22;border:none}
+.lb.fl{font-size:.64rem;background:rgba(255,193,7,.95);color:#1b1b22;border:none}
+.lb.tr{background:rgba(52,194,122,.95);border:none;color:#06241a}
+.lb.guard{background:rgba(242,162,61,.95);color:#1b1b22;border:none}
+.lb.gt{background:rgba(255,255,255,.95);color:#1b1b22;border:none}
+#tip{position:absolute;display:none;z-index:8;pointer-events:none;padding:7px 10px;border-radius:10px;font-size:.7rem;line-height:1.45;max-width:260px;background:var(--glass);border:1px solid var(--line);box-shadow:0 8px 26px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#tip b{font-size:.76rem}#tip span{color:var(--mute)}
 #msg{display:none;position:absolute;inset:0;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:.9rem;color:var(--mute);z-index:4}
-@media(max-width:620px){#cards{width:190px}.ln{font-size:.66rem}.zt{font-size:.74rem}#leg{display:none}.bt{padding:5px 8px}}
+@media(max-width:760px){#left{width:210px}#ctl{max-width:calc(100% - 240px)}#leg{display:none}.bt{padding:5px 7px}#top{top:auto;bottom:10px}}
+@media(max-width:560px){#left{display:none}#ctl{max-width:calc(100% - 20px)}}
 </style></head>
 <body class="__THEME__">
 <div id="wrap">
  <div id="cv"></div>
  <div id="labels"></div>
- <div id="cards"></div>
+ <div id="left"></div>
+ <div id="top"><input id="q" placeholder="Найти ячейку или товар…" autocomplete="off"><span id="qres"></span></div>
  <div id="ctl">
-  <div class="row"><button class="bt sq" id="zin" title="Приблизить">+</button><button class="bt sq" id="zout" title="Отдалить">−</button></div>
+  <div class="row"><button class="bt sq" id="zin" title="Приблизить">+</button><button class="bt sq" id="zout" title="Отдалить">−</button><button class="bt sq" id="pn" title="Панель слева">☰</button></div>
   <div class="cap">Обзор</div>
-  <div class="row"><button class="bt" data-pre="all">Весь склад</button><button class="bt" data-pre="sort">Сортировка</button><button class="bt" data-pre="hub">Хаб</button><button class="bt" data-pre="ship">Ворота</button><button class="bt" data-pre="top">Сверху</button></div>
-  <div class="cap">Этажи мезонина</div>
-  <div class="row"><button class="bt" data-fl="1">1</button><button class="bt" data-fl="2">2</button><button class="bt" data-fl="3">3</button><button class="bt" data-fl="4">4</button><button class="bt" data-fl="5">5</button></div>
-  <div class="row"><button class="bt on" id="wl">Стены</button></div>
+  <div class="row"><button class="bt" data-pre="all">Весь склад</button><button class="bt" data-pre="face">Фасад</button><button class="bt" data-pre="mez">Мезонин</button><button class="bt" data-pre="sort">Сортировка</button><button class="bt" data-pre="hub">Хаб</button><button class="bt" data-pre="gate">Ворота</button><button class="bt" data-pre="top">Сверху</button></div>
+  <div class="cap">Этаж мезонина</div>
+  <div class="row" id="fls"><button class="bt on" data-fl="0">Все</button><button class="bt" data-fl="1">1</button><button class="bt" data-fl="2">2</button><button class="bt" data-fl="3">3</button><button class="bt" data-fl="4">4</button><button class="bt" data-fl="5">5</button></div>
+  <div class="cap">Раскраска ячеек</div>
+  <div class="row" id="mds"><button class="bt on" data-md="fill">Заполнение</button><button class="bt" data-md="empty">Пустота</button><button class="bt" data-md="rows">По рядам</button><button class="bt" data-md="qty">Штуки</button><button class="bt" data-md="res">Резерв</button></div>
+  <div class="row"><button class="bt" id="wl">Стены: призрак</button><button class="bt" id="ex">Разнести этажи</button></div>
  </div>
- <div id="leg" class="glass"><span><i style="background:#F2A23D"></i>SORTING</span><span><i style="background:#34C27A"></i>SORTED / принято</span><span><i style="background:#E5484D"></i>не принято</span><span><i style="background:#3B9CFF"></i>к отгрузке / в кузове</span><span id="unit"></span></div>
+ <div id="leg" class="glass"></div>
  <div id="upd"></div>
+ <div id="tip"></div>
  <div id="msg">3D не запустилось (нет WebGL или не загрузилась библиотека).<br>Цифры по зонам — слева.</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -4621,33 +4661,76 @@ html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);font-family:
 var S=__STATE__;
 var DARK=!!S.dark;
 function el(id){return document.getElementById(id);}
-function fmt(n){return String(Math.round(n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f');}
+function fmt(n){return String(Math.round(n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');}
 function rnd(a,b){return a+Math.random()*(b-a);}
 function pick(a){return a[Math.floor(Math.random()*a.length)];}
 function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 var ST=S.state||{};
 function zst(z){return ST[z]||{idle:true,min:0,nodata:true};}
+var CZ=S.cells||{zones:[],ok:false};
+var WK=S.workers||{pick:12,sort:10,hub:5,ship:6};
 
-/* ───── панели (HTML) ───── */
+/* ───── размеры здания ───── */
+var X0=-34,X1=34,Z0=-26,Z1=26,WHT=16.6,YARD=-1.1,FLH=3.0;
+var MX0=-32,MX1=32,ZA=-23.4,ZB=2.6;                 /* ячеечная область мезонина */
+var GATES=[-27,-21,-15,-9],GNUM=[4,5,6,7];
+var LIFT={x:-3.6,z:4.6};
+
+/* ───── состав: считаем ячейки ───── */
+var floors={};
+var ZN_NAMES={};
+(CZ.zones||[]).forEach(function(z){(floors[z.fl]=floors[z.fl]||[]).push(z);});
+
+/* ───── левая панель ───── */
+var FLSTAT={};
+function calcStats(){
+  var T={tot:0,occ:0,pcs:0,res:0};
+  [1,2,3,4,5].forEach(function(f){var o={tot:0,occ:0,pcs:0,res:0,zn:[]};
+    (floors[f]||[]).forEach(function(z){o.zn.push(z.z);z.c.forEach(function(c){o.tot++;if(c[3]>0){o.occ++;o.pcs+=c[3];o.res+=c[4];}});});
+    FLSTAT[f]=o;T.tot+=o.tot;T.occ+=o.occ;T.pcs+=o.pcs;T.res+=o.res;});
+  FLSTAT.T=T;
+}
+calcStats();
+function pctOf(a,b){return b?Math.round(a/b*100):0;}
 function zoneCard(key,title,lines){
   var s=zst(key),cls=s.nodata?'nd':(s.idle?'idle':'work');
-  var st=s.nodata?'нет данных':(s.idle?'🛡 нет операций с '+s.since+' (30+ мин) · охрана':'● идёт работа · '+S.workers[key]+' чел. · изм. в '+s.since);
+  var st=s.nodata?'нет данных':(s.idle?'🛡 нет операций с '+s.since+' (30+ мин) · охрана':'● идёт работа · '+(WK[key]||0)+' чел. · изм. в '+s.since);
   return '<div class="zc glass '+cls+'" data-z="'+key+'"><div class="zt"><span>'+title+'</span><i></i></div>'+lines+'<div class="zs">'+st+'</div></div>';
 }
-function buildCards(){
-  var a='',b='',c='';
-  if(S.sort){a='<div class="ln"><b class="o">SORTING</b><span>'+fmt(S.sort.sorting)+' шт · '+fmt(S.sort.o_sorting)+' зак.</span></div>'+
-    '<div class="ln"><b class="g">SORTED</b><span>'+fmt(S.sort.sorted)+' шт · '+fmt(S.sort.o_sorted)+' зак.</span></div>';}
-  if(S.hub){b='<div class="ln"><b class="g">Принято</b><span>'+fmt(S.hub.ok)+' кор.</span></div>'+
-    '<div class="ln"><b class="r">Не принято</b><span>'+fmt(S.hub.no)+' кор.</span></div>'+(S.hub.period?'<div class="ln"><b>Даты</b><span>'+S.hub.period+'</span></div>':'');}
-  if(S.ship){var p=S.ship.pcs?Math.round(S.ship.pcs_done/S.ship.pcs*100):0;
-    var tr=S.ship.trips||[],td=0;for(var i=0;i<tr.length;i++)if(tr[i].done)td++;
-    c='<div class="ln"><b class="bl">Отгружено</b><span>'+fmt(S.ship.pcs_done)+' из '+fmt(S.ship.pcs)+' шт ('+p+'%)</span></div>'+
-      '<div class="ln"><b>Рейсов</b><span>'+td+' из '+tr.length+'</span></div>';}
-  el('cards').innerHTML=zoneCard('sort','Сортировка',a)+zoneCard('hub','Хаб · приёмка',b)+zoneCard('ship',S.ship?S.ship.title:'Отгрузка сегодня',c);
+function buildLeft(){
+  var T=FLSTAT.T,h='';
+  var fp=pctOf(T.occ,T.tot);
+  if(T.tot){
+    h+='<div class="glass big"><div class="h">Заполненность ячеек мезонина</div><div class="pc">'+fp+'<small>%</small></div><div class="bar"><i style="width:'+fp+'%"></i></div>'+
+       '<div class="kv"><span>Всего ячеек <b>'+fmt(T.tot)+'</b></span><span>Занято <b>'+fmt(T.occ)+'</b></span><span>Пусто <b>'+fmt(T.tot-T.occ)+'</b></span><span>Штук <b>'+fmt(T.pcs)+'</b></span></div></div>';
+  }else{
+    h+='<div class="glass note warn">Нет данных по ячейкам: '+esc(CZ.err||'Magnit Stock из Metabase не загрузился')+'. Склад показан без заполнения.</div>';
+  }
+  h+='<div class="sec">Этажи (клик — показать этаж)</div>';
+  [5,4,3,2,1].forEach(function(f){var o=FLSTAT[f],p=pctOf(o.occ,o.tot);
+    h+='<div class="fr glass" data-f="'+f+'"><div class="frt"><b>'+f+' этаж</b><span>'+(o.zn.join(', ')||'нет ячеек')+' · '+p+'%</span></div><div class="bar"><i style="width:'+p+'%"></i></div>'+
+       '<div class="frs">занято <b>'+fmt(o.occ)+'</b> из '+fmt(o.tot)+' · пусто <b>'+fmt(o.tot-o.occ)+'</b> · '+fmt(o.pcs)+' шт</div></div>';});
+  h+='<div id="rk"></div>';
+  h+='<div class="sec">Операции</div>';
+  var a='',b='',c='',d='';
+  if(S.pick){a='<div class="ln"><b class="g">Собрано</b><span>'+fmt(S.pick.pcs_done)+' шт · '+fmt(S.pick.o_done)+' зак.</span></div><div class="ln"><b class="o">Осталось</b><span>'+fmt(S.pick.pcs_left)+' шт · '+fmt(S.pick.o_left)+' зак.</span></div>';}
+  if(S.sort){b='<div class="ln"><b class="o">SORTING</b><span>'+fmt(S.sort.sorting)+' шт · '+fmt(S.sort.o_sorting)+' зак.</span></div><div class="ln"><b class="g">SORTED</b><span>'+fmt(S.sort.sorted)+' шт · '+fmt(S.sort.o_sorted)+' зак.</span></div>';}
+  if(S.hub){c='<div class="ln"><b class="g">Принято</b><span>'+fmt(S.hub.ok)+' кор.</span></div><div class="ln"><b class="r">Не принято</b><span>'+fmt(S.hub.no)+' кор.</span></div>'+(S.hub.period?'<div class="ln"><b>Даты</b><span>'+S.hub.period+'</span></div>':'');}
+  if(S.ship){var p=S.ship.pcs?Math.round(S.ship.pcs_done/S.ship.pcs*100):0,tr=S.ship.trips||[],td=0;for(var i=0;i<tr.length;i++)if(tr[i].done)td++;
+    d='<div class="ln"><b class="bl">Отгружено</b><span>'+fmt(S.ship.pcs_done)+' из '+fmt(S.ship.pcs)+' шт ('+p+'%)</span></div><div class="ln"><b>Рейсов</b><span>'+td+' из '+tr.length+'</span></div>';}
+  h+=zoneCard('pick','Мезонин · сборка',a)+zoneCard('sort','Сортировка',b)+zoneCard('hub','Хаб · приёмка',c)+zoneCard('ship',S.ship?S.ship.title:'Ворота · отгрузка',d);
+  if(CZ.zones&&CZ.zones.length){
+    var nt='<b>Как прочитана нумерация ячеек</b><br>';
+    CZ.zones.forEach(function(z){nt+=z.z+' ('+z.fl+' эт.): рядов '+z.R+' · секций '+z.B+' · уровней '+z.L+(z.ex?' · пример '+esc(z.ex):'')+(z.note?' · <i>'+esc(z.note)+'</i>':'')+'<br>';});
+    if(CZ.other){var oz=Object.keys(CZ.other_z||{}).map(function(k){return esc(k)+' '+fmt(CZ.other_z[k]);}).join(' · ');nt+='<br>Вне ячеек мезонина (не учитываются): '+fmt(CZ.other)+' шт'+(oz?' — '+oz:'')+'.';}
+    if(!CZ.uni)nt+='<br><b>Пустые ячейки восстановлены по сетке нумерации</b> (ряд — от первой до последней секции и уровня из остатков). Для точной картины положите список всех ячеек в файл wh_cells.csv или укажите cells_table в [metabase].';
+    h+='<div class="glass note">'+nt+'</div>';
+  }
+  el('left').innerHTML=h;
 }
-buildCards();
-el('upd').innerHTML='Автообновление раз в минуту<br>Колёсико / щипок — зум · ЛКМ — поворот · ПКМ — сдвиг';
+buildLeft();
+el('upd').innerHTML='Колёсико / щипок — зум · ЛКМ — поворот · ПКМ — сдвиг · наведите на ячейку';
 
 var okGL=false;
 try{var tc=document.createElement('canvas');okGL=!!(window.WebGLRenderingContext&&(tc.getContext('webgl')||tc.getContext('experimental-webgl')));}catch(e){}
@@ -4656,220 +4739,285 @@ if(typeof THREE==='undefined'||!okGL){el('msg').style.display='flex';el('ctl').s
 /* ───── сцена ───── */
 var wrap=el('wrap'),W=wrap.clientWidth||900,H=wrap.clientHeight||600;
 var small=Math.min(window.innerWidth,window.innerHeight)<520;
-var renderer=new THREE.WebGLRenderer({antialias:!small,powerPreference:'high-performance'});
+var renderer=new THREE.WebGLRenderer({antialias:!small,powerPreference:'high-performance',preserveDrawingBuffer:false});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,small?1.5:2));
 renderer.setSize(W,H);
 renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 el('cv').appendChild(renderer.domElement);
 var scene=new THREE.Scene();
 var BG=DARK?0x070A1A:0xdfe6f1;
-scene.background=new THREE.Color(BG);scene.fog=new THREE.Fog(BG,140,360);
-var cam=new THREE.PerspectiveCamera(42,W/H,0.1,600);
-scene.add(new THREE.HemisphereLight(DARK?0xaec0ff:0xffffff,DARK?0x2a2f45:0x8d8d8d,DARK?0.55:0.75));
-scene.add(new THREE.AmbientLight(0xffffff,DARK?0.12:0.18));
-var sun=new THREE.DirectionalLight(DARK?0xc8d4ff:0xfff4e0,DARK?0.55:0.8);
-sun.position.set(-22,60,34);sun.castShadow=true;
+scene.background=new THREE.Color(BG);scene.fog=new THREE.Fog(BG,170,420);
+var cam=new THREE.PerspectiveCamera(40,W/H,0.1,700);
+scene.add(new THREE.HemisphereLight(DARK?0xaec0ff:0xffffff,DARK?0x2a2f45:0x8d8d8d,DARK?0.6:0.78));
+scene.add(new THREE.AmbientLight(0xffffff,DARK?0.16:0.2));
+var sun=new THREE.DirectionalLight(DARK?0xc8d4ff:0xfff4e0,DARK?0.6:0.85);
+sun.position.set(-30,70,60);sun.castShadow=true;
 sun.shadow.mapSize.set(small?1024:2048,small?1024:2048);
-var sc=sun.shadow.camera;sc.left=-62;sc.right=62;sc.top=46;sc.bottom=-46;sc.near=5;sc.far=150;sun.shadow.bias=-0.0006;
+var sc=sun.shadow.camera;sc.left=-62;sc.right=62;sc.top=52;sc.bottom=-52;sc.near=5;sc.far=190;sun.shadow.bias=-0.0006;
 scene.add(sun);
 
-var Wx0=-26,Wx1=26,Wz0=-18,Wz1=18,WHt=15,YARD=-1.1;
-var GATES=[2.9,6.1,9.3,12.5,15.7];
-var D=new THREE.Object3D(),CC=new THREE.Color();
+var D=new THREE.Object3D(),CC=new THREE.Color(),_V=new THREE.Vector3(),_B=new THREE.Box3(),_R=new THREE.Ray();
+function stdMat(c,o){return new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.85,metalness:.05},o||{}));}
+function box(w,h,d,col,opt){return new THREE.Mesh(new THREE.BoxGeometry(w,h,d),stdMat(col,opt));}
+function addTo(par,m,x,y,z,sh){m.position.set(x,y,z);if(sh!==false){m.castShadow=true;m.receiveShadow=true;}par.add(m);return m;}
+function add(m,x,y,z,sh){return addTo(scene,m,x,y,z,sh);}
 
-function box(w,h,d,col,opt){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial(Object.assign({color:col,roughness:.85,metalness:.05},opt||{})));return m;}
-function add(m,x,y,z,sh){m.position.set(x,y,z);if(sh!==false){m.castShadow=true;m.receiveShadow=true;}scene.add(m);return m;}
-
-/* раскладка */
-var PAL=[],L={sort:[],np:[],ac:[],stg:[]};
-var rows=S.rows||6,per=S.per||6;
-var sortZ=[],sortX=[];
-for(var r=0;r<rows;r++)sortZ.push((r-(rows-1)/2)*5.5);
-for(var j=0;j<per;j++)sortX.push(7+(j-(per-1)/2)*4);
-for(r=0;r<rows;r++)for(j=0;j<per;j++)L.sort.push({x:sortX[j],z:sortZ[r]});
-var HZ=[];for(var k=0;k<7;k++)HZ.push(-16.2+2.3*k);
-for(k=0;k<7;k++){L.np.push({x:-14.0,z:HZ[k]});L.np.push({x:-17.0,z:HZ[k]});L.ac.push({x:-20.6,z:HZ[k]});L.ac.push({x:-23.4,z:HZ[k]});}
-var SZ=[];for(k=0;k<8;k++)SZ.push(2.0+2.2*k);
-for(k=0;k<8;k++)for(j=0;j<3;j++)L.stg.push({x:-21+3*j,z:SZ[k]});
-
-/* ───── пол ───── */
-function floorTex(){
-  var P=30,w=(Wx1-Wx0)*P,h=(Wz1-Wz0)*P,c=document.createElement('canvas');c.width=w;c.height=h;var g=c.getContext('2d');
-  function X(x){return (x-Wx0)*P;}function Zc(z){return (z-Wz0)*P;}
-  g.fillStyle=DARK?'#464c5e':'#a8acb5';g.fillRect(0,0,w,h);
-  for(var i=0;i<5000;i++){g.fillStyle='rgba('+(DARK?'255,255,255':'0,0,0')+','+(Math.random()*.05)+')';g.fillRect(Math.random()*w,Math.random()*h,rnd(1,3),rnd(1,3));}
-  g.strokeStyle='rgba(0,0,0,.22)';g.lineWidth=1.5;
-  for(var x=Wx0+6;x<Wx1;x+=6){g.beginPath();g.moveTo(X(x),0);g.lineTo(X(x),h);g.stroke();}
-  for(var z=Wz0+6;z<Wz1;z+=6){g.beginPath();g.moveTo(0,Zc(z));g.lineTo(w,Zc(z));g.stroke();}
-  function zone(x0,z0,x1,z1,fill,line,lab){g.fillStyle=fill;g.fillRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.strokeStyle=line;g.lineWidth=5;g.setLineDash([22,12]);g.strokeRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.setLineDash([]);
-    g.fillStyle=line;g.globalAlpha=.55;g.font='800 34px sans-serif';g.textAlign='left';g.fillText(lab,X(x0)+14,Zc(z1)-14);g.globalAlpha=1;}
-  zone(-25.6,-17.6,-12.4,-1.0,'rgba(59,156,255,.10)','#3B9CFF','ХАБ · ПРИЁМКА');
-  zone(-25.6,1.0,-12.4,17.6,'rgba(242,162,61,.10)','#F2A23D','ОТГРУЗКА');
-  zone(-8.8,-17.6,25.6,17.6,'rgba(52,194,122,.07)','#34C27A','СОРТИРОВКА · МЕЗОНИН');
-  g.strokeStyle='#e9e9e9';g.lineWidth=4;g.setLineDash([28,20]);g.beginPath();g.moveTo(X(-10.9),Zc(-17));g.lineTo(X(-10.9),Zc(17));g.stroke();g.setLineDash([]);
-  /* места под паллеты */
-  g.lineWidth=3;
-  function spot(p,col){g.strokeStyle=col;g.strokeRect(X(p.x-.7),Zc(p.z-.5),1.4*P,1.0*P);}
-  L.sort.forEach(function(p){spot(p,'#f1c40f');});L.np.forEach(function(p){spot(p,'#ff6b6b');});
-  L.ac.forEach(function(p){spot(p,'#5ad6a0');});L.stg.forEach(function(p){spot(p,'#6ab3ff');});
-  /* проходы */
-  g.fillStyle='rgba(241,196,15,.55)';
-  for(var r=0;r<sortZ.length;r++){g.fillRect(X(-5.4),Zc(sortZ[r]+1.8)-2,(sortX[sortX.length-1]+3-(-5.4))*P,4);}
-  var t=new THREE.CanvasTexture(c);t.anisotropy=4;return t;
-}
-var floor=new THREE.Mesh(new THREE.PlaneGeometry(Wx1-Wx0,Wz1-Wz0),new THREE.MeshStandardMaterial({map:floorTex(),roughness:.92}));
-floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
-var yard=new THREE.Mesh(new THREE.PlaneGeometry(400,400),new THREE.MeshStandardMaterial({color:DARK?0x1b1f2c:0x7d828d,roughness:1}));
-yard.rotation.x=-Math.PI/2;yard.position.y=YARD;yard.receiveShadow=true;scene.add(yard);
-/* разметка двора */
-(function(){var c=document.createElement('canvas');c.width=512;c.height=512;var g=c.getContext('2d');g.fillStyle='rgba(0,0,0,0)';g.clearRect(0,0,512,512);
-  g.fillStyle='#e8e8e8';for(var i=0;i<5;i++){g.fillRect(i*100+30,0,6,512);}
-  var t=new THREE.CanvasTexture(c);var m=new THREE.Mesh(new THREE.PlaneGeometry(16,40),new THREE.MeshBasicMaterial({map:t,transparent:true,opacity:.35}));
-  m.rotation.x=-Math.PI/2;m.position.set(-33,YARD+0.02,9.3);scene.add(m);})();
-
-/* ───── инстансы ───── */
-function Inst(geo,mat,cap){this.m=new THREE.InstancedMesh(geo,mat,cap);this.n=0;this.cap=cap;this.m.castShadow=true;this.m.receiveShadow=true;this.m.frustumCulled=false;scene.add(this.m);}
-Inst.prototype.add=function(x,y,z,sx,sy,sz,ry,col){if(this.n>=this.cap)return;D.position.set(x,y,z);D.rotation.set(0,ry||0,0);D.scale.set(sx,sy,sz);D.updateMatrix();this.m.setMatrixAt(this.n,D.matrix);if(col!==undefined){CC.setHex(col);this.m.setColorAt(this.n,CC);}this.n++;};
+/* инстансы */
+function Inst(geo,mat,cap,par,shadow){this.m=new THREE.InstancedMesh(geo,mat,Math.max(1,cap));this.n=0;this.cap=Math.max(1,cap);this.m.castShadow=!!shadow;this.m.receiveShadow=!!shadow;this.m.frustumCulled=false;(par||scene).add(this.m);}
+Inst.prototype.add=function(x,y,z,sx,sy,sz,ry,col){if(this.n>=this.cap)return -1;D.position.set(x,y,z);D.rotation.set(0,ry||0,0);D.scale.set(sx,sy,sz);D.updateMatrix();this.m.setMatrixAt(this.n,D.matrix);if(col!==undefined){CC.setHex(col);this.m.setColorAt(this.n,CC);}return this.n++;};
+Inst.prototype.color=function(i,col){CC.setHex(col);this.m.setColorAt(i,CC);};
 Inst.prototype.done=function(){this.m.count=this.n;this.m.instanceMatrix.needsUpdate=true;if(this.m.instanceColor)this.m.instanceColor.needsUpdate=true;};
 var UB=new THREE.BoxGeometry(1,1,1);
+
 function cardTex(){var c=document.createElement('canvas');c.width=128;c.height=128;var g=c.getContext('2d');
   g.fillStyle='#f0f0f0';g.fillRect(0,0,128,128);
-  for(var i=0;i<400;i++){g.fillStyle='rgba(0,0,0,'+Math.random()*.06+')';g.fillRect(Math.random()*128,Math.random()*128,2,2);}
+  for(var i=0;i<300;i++){g.fillStyle='rgba(0,0,0,'+Math.random()*.06+')';g.fillRect(Math.random()*128,Math.random()*128,2,2);}
   g.fillStyle='#cfcfcf';g.fillRect(56,0,16,128);g.fillStyle='#fff';g.fillRect(14,20,28,22);g.fillStyle='#777';g.fillRect(18,25,20,2);g.fillRect(18,31,14,2);
   g.strokeStyle='rgba(0,0,0,.25)';g.lineWidth=3;g.strokeRect(1.5,1.5,125,125);return new THREE.CanvasTexture(c);}
 var CT=cardTex();
 var matBox=new THREE.MeshStandardMaterial({map:CT,roughness:.9});
-var matWood=new THREE.MeshStandardMaterial({color:0xb98b55,roughness:.95});
-var matSteel=new THREE.MeshStandardMaterial({color:0x2f6fd6,roughness:.5,metalness:.4});
-var matBeam=new THREE.MeshStandardMaterial({color:0xff8a1f,roughness:.5,metalness:.3});
-var palI=new Inst(UB,matWood,1000),bx=new Inst(UB,matBox,2200),cargo=new Inst(UB,matBox,1600);
-var BW=.58,BH=.38,BD=.38;
-function palletAt(p){
-  palI.add(p.x,.05,p.z-.35,1.2,.1,.1,0);palI.add(p.x,.05,p.z,1.2,.1,.1,0);palI.add(p.x,.05,p.z+.35,1.2,.1,.1,0);
-  for(var i=0;i<5;i++)palI.add(p.x,.122,p.z-.34+i*.17,1.2,.044,.12,0);
-}
-function boxOn(p,k,col){
-  var layer=Math.floor(k/4),s=k%4;
-  bx.add(p.x+(s%2?.3:-.3)+rnd(-.015,.015),.144+BH/2+layer*BH,p.z+(s<2?-.2:.2)+rnd(-.015,.015),BW,BH,BD,rnd(-.04,.04),col);
-}
-var CAPP=20;
-L.sort.concat(L.np,L.ac,L.stg).forEach(palletAt);palI.done();
-
-/* единица: сколько штук в одной коробке на схеме */
-var U={};
-var cs=S.sort?(S.sort.sorting+S.sort.sorted):0;U.sort=Math.max(1,Math.ceil(cs/(L.sort.length*CAPP*.8)));
-var hmax=S.hub?Math.max(S.hub.ok/(L.ac.length*CAPP*.9),S.hub.no/(L.np.length*CAPP*.9)):0;U.hub=Math.max(1,Math.ceil(hmax));
-var rem=S.ship?Math.max(0,S.ship.pcs-S.ship.pcs_done):0;U.ship=Math.max(1,Math.ceil(Math.max(rem,S.ship?S.ship.pcs_done:0)/(L.stg.length*CAPP*.9)));
-el('unit').textContent='1 коробка на схеме: сортировка ≈ '+U.sort+' шт · хаб ≈ '+U.hub+' кор. · отгрузка ≈ '+U.ship+' шт';
+var matWood=stdMat(0xb98b55,{roughness:.95});
+var matSteel=stdMat(0x2f6fd6,{roughness:.5,metalness:.4});
+var matBeam=stdMat(0xff8a1f,{roughness:.5,metalness:.3});
 var CO={orange:0xF2A23D,green:0x34C27A,red:0xE5484D,blue:0x3B9CFF};
-var nSortOr=0,nSortGr=0;
-if(S.sort){nSortOr=Math.round(S.sort.sorting/U.sort);nSortGr=Math.round(S.sort.sorted/U.sort);}
-var capS=L.sort.length*CAPP;if(nSortOr+nSortGr>capS){var f=capS/(nSortOr+nSortGr);nSortOr=Math.floor(nSortOr*f);nSortGr=Math.floor(nSortGr*f);}
-function fillList(list,n,col,fromEnd){var left=n;for(var i=0;i<list.length&&left>0;i++){var p=list[fromEnd?list.length-1-i:i];var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(p,q,col);left-=c;}}
-/* SORTING (оранжевые) заполняют паллеты с начала, SORTED (зелёные) — с конца */
-var sortOrCnt=nSortOr;
-(function(){var left=nSortOr,i,p;for(i=0;i<L.sort.length&&left>0;i++){p=L.sort[i];var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(p,q,CO.orange);left-=c;}
-  left=nSortGr;for(i=0;i<L.sort.length&&left>0;i++){p=L.sort[L.sort.length-1-i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.green);left-=c;}})();
-var nOk=S.hub?Math.round(S.hub.ok/U.hub):0,nNo=S.hub?Math.round(S.hub.no/U.hub):0;
-fillList(L.ac,nOk,CO.green,false);fillList(L.np,nNo,CO.red,false);
-var nRem=Math.min(L.stg.length*CAPP,Math.round(rem/U.ship));fillList(L.stg,nRem,CO.blue,false);
 
-/* ───── стены ───── */
-var wallMats=[],wallGroups=[];
-function wallMat(){var m=new THREE.MeshStandardMaterial({color:DARK?0x39405a:0xe9ecf1,roughness:.9,transparent:true});wallMats.push(m);return m;}
-function wallBox(w,h,d,x,y,z,mat,grp){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.castShadow=false;m.receiveShadow=true;scene.add(m);grp.push(m);return m;}
-var wm=wallMat(),gL=[],gB=[],gR=[],gF=[];
-var th=WHt-YARD;
-wallBox(.4,th,Wz1-Wz0,Wx1,YARD+th/2,0,wm,gR);
-wallBox(Wx1-Wx0,th,.4,0,YARD+th/2,Wz0,wm,gB);
-wallBox(Wx1-Wx0,th,.4,0,YARD+th/2,Wz1,wm,gF);
-(function(){var edges=[Wz0],i;for(i=0;i<GATES.length;i++){edges.push(GATES[i]-1.3,GATES[i]+1.3);}edges.push(Wz1);
-  for(i=0;i<edges.length;i+=2){var a=edges[i],b=edges[i+1];if(b-a>.01)wallBox(.4,th,b-a,Wx0,YARD+th/2,(a+b)/2,wm,gL);}
-  for(i=0;i<GATES.length;i++){wallBox(.4,WHt-3.4,2.6,Wx0,3.4+(WHt-3.4)/2,GATES[i],wm,gL);wallBox(.4,-YARD,2.6,Wx0,YARD/2,GATES[i],wm,gL);}})();
-wallGroups=[{g:gL,n:[-1,0,0],c:Wx0},{g:gB,n:[0,0,-1],c:Wz0},{g:gR,n:[1,0,0],c:Wx1},{g:gF,n:[0,0,1],c:Wz1}];
-/* цоколь и окна */
-var winMat=new THREE.MeshStandardMaterial({color:0xbcd7ff,emissive:DARK?0x2a4a80:0x6f8fb8,emissiveIntensity:.6,roughness:.3});
-for(var wi=0;wi<9;wi++){var w1=new THREE.Mesh(new THREE.BoxGeometry(3.2,1.3,.1),winMat);w1.position.set(-20+wi*5.6,12.6,Wz0+.25);scene.add(w1);}
-for(wi=0;wi<6;wi++){var w2=new THREE.Mesh(new THREE.BoxGeometry(.1,1.3,3.2),winMat);w2.position.set(Wx1-.25,12.6,-14+wi*5.6);scene.add(w2);}
-/* ворота */
+/* ───── пол и двор ───── */
+function floorTex(){
+  var P=22,w=(X1-X0)*P,h=(Z1-Z0)*P,c=document.createElement('canvas');c.width=w;c.height=h;var g=c.getContext('2d');
+  function X(x){return (x-X0)*P;}function Zc(z){return (z-Z0)*P;}
+  g.fillStyle=DARK?'#444a5c':'#a9adb6';g.fillRect(0,0,w,h);
+  for(var i=0;i<4000;i++){g.fillStyle='rgba('+(DARK?'255,255,255':'0,0,0')+','+(Math.random()*.05)+')';g.fillRect(Math.random()*w,Math.random()*h,rnd(1,3),rnd(1,3));}
+  g.strokeStyle='rgba(0,0,0,.2)';g.lineWidth=1.2;
+  for(var x=X0+6;x<X1;x+=6){g.beginPath();g.moveTo(X(x),0);g.lineTo(X(x),h);g.stroke();}
+  for(var z=Z0+6;z<Z1;z+=6){g.beginPath();g.moveTo(0,Zc(z));g.lineTo(w,Zc(z));g.stroke();}
+  function zone(x0,z0,x1,z1,fill,line,lab){g.fillStyle=fill;g.fillRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.strokeStyle=line;g.lineWidth=4;g.setLineDash([18,10]);g.strokeRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.setLineDash([]);
+    g.fillStyle=line;g.globalAlpha=.6;g.font='800 26px sans-serif';g.textAlign='left';g.fillText(lab,X(x0)+12,Zc(z1)-12);g.globalAlpha=1;}
+  zone(MX0-.9,ZA-1,MX1+.9,ZB+1.1,'rgba(139,61,255,.07)','#8B3DFF','МЕЗОНИН · ЯЧЕЕЧНОЕ ХРАНЕНИЕ (1 этаж)');
+  zone(-3.2,6.2,33,25.4,'rgba(52,194,122,.07)','#34C27A','СОРТИРОВКА');
+  zone(-32.6,6.2,-4.6,25.4,'rgba(59,156,255,.08)','#3B9CFF','ХАБ · ВОРОТА');
+  g.strokeStyle='#f1c40f';g.lineWidth=4;g.setLineDash([22,14]);g.beginPath();g.moveTo(X(-33),Zc(5));g.lineTo(X(33),Zc(5));g.stroke();g.setLineDash([]);
+  var t=new THREE.CanvasTexture(c);t.anisotropy=4;return t;
+}
+var floorM=new THREE.Mesh(new THREE.PlaneGeometry(X1-X0,Z1-Z0),new THREE.MeshStandardMaterial({map:floorTex(),roughness:.92}));
+floorM.rotation.x=-Math.PI/2;floorM.receiveShadow=true;scene.add(floorM);
+var yard=new THREE.Mesh(new THREE.PlaneGeometry(500,500),new THREE.MeshStandardMaterial({color:DARK?0x1b1f2c:0x7d828d,roughness:1}));
+yard.rotation.x=-Math.PI/2;yard.position.y=YARD;yard.receiveShadow=true;scene.add(yard);
+(function(){ /* разметка двора перед воротами: полосы стоянки */
+  var c=document.createElement('canvas');c.width=1024;c.height=512;var g=c.getContext('2d');
+  g.strokeStyle='#e8e8e8';g.lineWidth=5;
+  GATES.forEach(function(gx){var px=(gx-(-34))/(68)*1024;g.beginPath();g.moveTo(px-62,0);g.lineTo(px-62,300);g.moveTo(px+62,0);g.lineTo(px+62,300);g.stroke();});
+  g.fillStyle='rgba(255,220,0,.75)';for(var i=0;i<16;i++){g.fillRect(i*64+8,420,36,8);}
+  var t=new THREE.CanvasTexture(c);var m=new THREE.Mesh(new THREE.PlaneGeometry(68,34),new THREE.MeshBasicMaterial({map:t,transparent:true,opacity:.55,depthWrite:false}));
+  m.rotation.x=-Math.PI/2;m.position.set(0,YARD+0.02,Z1+17);scene.add(m);})();
+(function(){ /* соседние здания для контекста */
+  [[-95,-30,34,18,50],[100,-10,40,14,70],[-90,70,30,12,40],[96,80,46,16,36]].forEach(function(b){var m=box(b[2],b[3],b[4],DARK?0x232842:0xc9ced9,{roughness:1});add(m,b[0],YARD+b[3]/2,b[1],false);});
+})();
+
+/* ───── стены (три режима) ───── */
+var FADE=[],wallMode=1;
+function fadeMat(col,op,extra){var m=stdMat(col,Object.assign({transparent:true},extra||{}));return {m:m,base:op===undefined?1:op};}
+function wallPiece(w,h,d,x,y,z,col,base){var mm=fadeMat(col||(DARK?0x3b4260:0xe7e9ee),base===undefined?1:base,{roughness:.9});
+  var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mm.m);m.position.set(x,y,z);m.receiveShadow=true;scene.add(m);FADE.push({o:m,mat:mm.m,base:mm.base});return m;}
+var th=WHT-YARD,yc=YARD+th/2;
+wallPiece(.5,th,Z1-Z0,X0,yc,0);wallPiece(.5,th,Z1-Z0,X1,yc,0);wallPiece(X1-X0,th,.5,0,yc,Z0);
+(function(){ /* фасад с воротами */
+  var edges=[X0];GATES.forEach(function(g){edges.push(g-1.75,g+1.75);});edges.push(X1);
+  for(var i=0;i<edges.length;i+=2){var a=edges[i],b=edges[i+1];if(b-a>.01)wallPiece(b-a,th,.5,(a+b)/2,yc,Z1);}
+  GATES.forEach(function(g){wallPiece(3.5,WHT-4.0,.5,g,4.0+(WHT-4.0)/2,Z1);wallPiece(3.5,-YARD,.5,g,YARD/2,Z1);});
+})();
+/* ленточные окна (как на фото): два ряда, тёмная вертикальная вставка */
+var winMat=stdMat(0x2a3a58,{emissive:DARK?0x1b3560:0x4a6a9a,emissiveIntensity:.55,roughness:.25,metalness:.3,transparent:true});
+(function(){
+  var xs=[];for(var x=-31;x<=31;x+=5.2){if(x>5.4&&x<11.2)continue;xs.push(x);}
+  [8.4,12.4].forEach(function(y){xs.forEach(function(x){var w=box(3.6,1.3,.12,0x2a3a58,{emissive:DARK?0x1b3560:0x4a6a9a,emissiveIntensity:.5,roughness:.25,metalness:.3,transparent:true});
+    w.position.set(x,y,Z1+.3);scene.add(w);FADE.push({o:w,mat:w.material,base:1});});});
+  [[-31,8.4],[-31,12.4]].forEach(function(){});
+  var tw=box(1.9,15.2,.2,0x1a2238,{emissive:0x0a1226,roughness:.2,metalness:.5,transparent:true});tw.position.set(8.3,YARD+7.6,Z1+.32);scene.add(tw);FADE.push({o:tw,mat:tw.material,base:1});
+  var side=box(.12,1.3,2.4,0x2a3a58,{emissive:0x4a6a9a,emissiveIntensity:.5,transparent:true});
+  for(var z=-16;z<=16;z+=6){[8.4,12.4].forEach(function(y){var w=side.clone();w.material=side.material.clone();w.position.set(X1+.3,y,z);scene.add(w);FADE.push({o:w,mat:w.material,base:1});});}
+})();
+function plateTex(n){var c=document.createElement('canvas');c.width=128;c.height=128;var g=c.getContext('2d');g.fillStyle='#f4f4f4';g.fillRect(0,0,128,128);g.strokeStyle='#222';g.lineWidth=6;g.strokeRect(5,5,118,118);g.fillStyle='#111';g.font='900 90px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(String(n),64,70);return new THREE.CanvasTexture(c);}
+/* парапет и кровельный карниз */
+(function(){var c=box(X1-X0+.8,.5,.9,DARK?0x2a3050:0xc9ccd4);c.position.set(0,WHT+.2,Z1);scene.add(c);var c2=c.clone();c2.position.z=Z0;scene.add(c2);})();
+
+/* ворота, номера, огни */
 var doors=[],lamps=[];
-GATES.forEach(function(z,i){
-  var d=box(2.6,3.2,.12,0xaeb4c0,{metalness:.3});add(d,Wx0+.15,1.6,z,false);doors.push(d);
-  for(var s=0;s<7;s++){var gr=box(2.62,.03,.14,0x7a8190);gr.position.set(0,-1.25+s*.45,0);d.add(gr);}
-  var lm=new THREE.MeshBasicMaterial({color:0xff4d4d});var lp=new THREE.Mesh(new THREE.SphereGeometry(.14,10,8),lm);lp.position.set(Wx0+.3,3.7,z);scene.add(lp);lamps.push(lm);
-  var bump=box(.3,.5,.4,0x111111);add(bump,Wx0-.3,-.25,z-1.0,false);var bump2=box(.3,.5,.4,0x111111);add(bump2,Wx0-.3,-.25,z+1.0,false);
+GATES.forEach(function(gx,i){
+  var d=box(3.3,3.8,.14,0xaeb4c0,{metalness:.3});add(d,gx,1.9,Z1-.3,false);doors.push(d);
+  for(var s=0;s<8;s++){var gr=box(3.32,.035,.16,0x7a8190);gr.position.set(0,-1.7+s*.48,0);d.add(gr);}
+  var pl=new THREE.Mesh(new THREE.PlaneGeometry(1.3,1.3),new THREE.MeshBasicMaterial({map:plateTex(GNUM[i])}));pl.position.set(gx,5.0,Z1+.27);scene.add(pl);
+  var lm=new THREE.MeshBasicMaterial({color:0xff4d4d});var lp=new THREE.Mesh(new THREE.SphereGeometry(.15,10,8),lm);lp.position.set(gx+1.9,4.2,Z1+.3);scene.add(lp);lamps.push(lm);
+  [-1.3,1.3].forEach(function(o){add(box(.4,.5,.4,0x111111),gx+o,-.55,Z1+.3,false);});     /* отбойники */
+  var lv=box(3.2,.1,1.4,0x7c8394);add(lv,gx,-.1,Z1-.5,false);                                 /* доклевеллер */
 });
-/* фермы и светильники */
-for(var tx=-24;tx<=24;tx+=8){var tr=box(.25,.5,36,DARK?0x1b1f2e:0x4a4f5e);tr.position.set(tx,14.6,0);scene.add(tr);}
-var lampMat=new THREE.MeshBasicMaterial({color:DARK?0xdfe8ff:0xffffff});
-for(tx=-24;tx<=24;tx+=8)for(var tz=-12;tz<=12;tz+=12){var lm2=new THREE.Mesh(new THREE.BoxGeometry(.5,.08,3),lampMat);lm2.position.set(tx+4,14.2,tz);scene.add(lm2);}
 
-/* ───── мезонин: 5 этажей ───── */
-var MX=[-9,-1,7,15,23],MZ=[-15.85,-10.35,-4.85,.65,6.15,11.65,17.15],DECKS=[3,6,9,12];
-var col=new Inst(UB,matSteel,MX.length*MZ.length);
-MX.forEach(function(x){MZ.forEach(function(z){col.add(x,6.1,z,.3,12.2,.3,0);});});col.done();
-var beams=new Inst(UB,matBeam,DECKS.length*(MZ.length+MX.length+2)+8);
-DECKS.forEach(function(y){MZ.forEach(function(z){beams.add(7.9,y-.12,z,34.2,.22,.18,0);});MX.concat([25]).forEach(function(x){beams.add(x,y-.12,0,.18,.22,36,0);});});beams.done();
-var deckGroups=[];
-var gratTex=(function(){var c=document.createElement('canvas');c.width=64;c.height=64;var g=c.getContext('2d');g.fillStyle='#8e97a8';g.fillRect(0,0,64,64);g.strokeStyle='rgba(20,24,36,.7)';g.lineWidth=3;for(var i=0;i<64;i+=8){g.beginPath();g.moveTo(i,0);g.lineTo(i,64);g.stroke();g.beginPath();g.moveTo(0,i);g.lineTo(64,i);g.stroke();}var t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(70,72);return t;})();
-DECKS.forEach(function(y,di){
-  var grp=new THREE.Group();scene.add(grp);deckGroups.push(grp);
-  var deck=new THREE.Mesh(new THREE.BoxGeometry(34.2,.1,36),new THREE.MeshStandardMaterial({map:gratTex,transparent:true,opacity:.28,depthWrite:false,roughness:.6}));
-  deck.position.set(7.9,y,0);deck.receiveShadow=false;grp.add(deck);
-  var pts=[],yy=y+1.1,x0=-9.2,x1=25.1,z0=-18,z1=18;
-  [[x0,z0,x1,z0],[x1,z0,x1,z1],[x1,z1,x0,z1],[x0,z1,x0,z0]].forEach(function(s){pts.push(s[0],yy,s[1],s[2],yy,s[3]);pts.push(s[0],y+.55,s[1],s[2],y+.55,s[3]);});
-  var lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
-  grp.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xffc107})));
-  /* стеллажи и коробки на этаже */
-  var sh=new Inst(UB,matBeam,140),db=new Inst(UB,matBox,360);grp.add(sh.m);grp.add(db.m);
-  var cards=[0xc9a36b,0xd8b98a,0xb98f5a,0xe0c9a0];
-  for(var zi=1;zi<MZ.length-1;zi++){var rz=MZ[zi]+1.3;
-    for(var xs=-5;xs<22;xs+=4.4){if(Math.random()<.22)continue;
-      sh.add(xs+1.8,y+.5,rz,3.6,.05,.9,0);sh.add(xs+1.8,y+1.35,rz,3.6,.05,.9,0);
-      sh.add(xs,y+.9,rz-.4,.06,1.8,.06,0);sh.add(xs+3.6,y+.9,rz-.4,.06,1.8,.06,0);
-      for(var sl=0;sl<2;sl++){var by=y+(sl?1.35:.5)+.025+.19,n=Math.floor(rnd(2,6));
-        for(var q=0;q<n;q++)db.add(xs+.4+q*.62,by,rz+rnd(-.1,.1),.5,.38,.5,rnd(-.05,.05),pick(cards));}}}
-  sh.done();db.done();
+/* ───── мезонин: каркас ───── */
+var colPos=[];for(var cx=-30;cx<=30;cx+=10)for(var cz=-22;cz<=2;cz+=8)colPos.push([cx,cz]);
+var colI=new Inst(UB,matSteel,colPos.length*3,scene,false);
+colPos.forEach(function(p){colI.add(p[0],7.5,p[1],.32,15,.32,0);});colI.done();
+
+/* ───── этажи мезонина ───── */
+var gratTex=(function(){var c=document.createElement('canvas');c.width=64;c.height=64;var g=c.getContext('2d');g.fillStyle='#8e97a8';g.fillRect(0,0,64,64);g.strokeStyle='rgba(20,24,36,.7)';g.lineWidth=3;for(var i=0;i<64;i+=8){g.beginPath();g.moveTo(i,0);g.lineTo(i,64);g.stroke();g.beginPath();g.moveTo(0,i);g.lineTo(64,i);g.stroke();}var t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(66,28);return t;})();
+var EMP_MAT=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.30,depthWrite:false});
+var OCC_MAT=new THREE.MeshStandardMaterial({color:0xffffff,roughness:.55,metalness:.1});
+var FL={},FLG=[];
+var MODE='fill',SELF=0,EXPL=0,EXPLT=0,HL=null;
+var allCells=[];
+var QMAX=1;
+(function(){var q=[];(CZ.zones||[]).forEach(function(z){z.c.forEach(function(c){if(c[3]>0)q.push(c[3]);});});q.sort(function(a,b){return a-b;});QMAX=q.length?Math.max(1,q[Math.min(q.length-1,Math.floor(q.length*.95))]):1;})();
+
+function buildFloor(f){
+  var zs=floors[f]||[];
+  var g=new THREE.Group();scene.add(g);
+  var F={f:f,g:g,zs:zs,cells:[],blocks:[],racks:[],occ:null,emp:null,baseY:(f-1)*FLH,occMap:[],empMap:[]};
+  FL[f]=F;FLG.push(F);
+  g.position.y=F.baseY;
+  if(f>1){
+    var deck=new THREE.Mesh(new THREE.BoxGeometry(MX1-MX0+2.6,.14,ZB-ZA+2.6),new THREE.MeshStandardMaterial({map:gratTex,transparent:true,opacity:.34,depthWrite:false,roughness:.6}));
+    deck.position.set(0,-.07,(ZA+ZB)/2);deck.receiveShadow=true;g.add(deck);F.deck=deck;
+    var pts=[],yy=1.1,x0=MX0-1.3,x1=MX1+1.3,z0=ZA-1.3,z1=ZB+1.3;
+    [[x0,z0,x1,z0],[x1,z0,x1,z1],[x1,z1,x0,z1],[x0,z1,x0,z0]].forEach(function(s){pts.push(s[0],yy,s[1],s[2],yy,s[3]);pts.push(s[0],.5,s[1],s[2],.5,s[3]);});
+    var lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+    g.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xffc107})));
+  }
+  /* раскладка блоков */
+  var tot=0;zs.forEach(function(z){tot+=Math.max(z.c.length,1);});
+  var shelves=[],ups=[],placed=[];
+  var cur=MX0,D_=ZB-ZA,Wall=MX1-MX0;
+  zs.forEach(function(z,zi){
+    var share=Math.max(z.c.length,1)/Math.max(tot,1);
+    var bw=zs.length===1?Wall:Math.max(10,Wall*share);
+    var bx0=cur+1.2,Wb=bw-2.4;cur+=bw;
+    var R=Math.max(1,z.R),B=Math.max(1,z.B),L=Math.max(1,Math.min(z.L,10));
+    var pz=2.5,nz=Math.max(1,Math.floor((D_-0.8)/pz)+1),sections=Math.ceil(R/nz);nz=Math.ceil(R/sections);
+    var gap=1.6,Wsec=(Wb-(sections-1)*gap)/sections;
+    var cw=Math.max(.1,Math.min(.95,Wsec/B)),ch=Math.max(.24,Math.min(.62,2.5/L)),cd=.8;
+    var blk={z:z,x0:bx0,x1:bx0+Wb,cw:cw,ch:ch,L:L,R:R,B:B,pz:pz,nz:nz,sections:sections,Wsec:Wsec,xa:bx0-.8,rackPos:[]};
+    F.blocks.push(blk);
+    for(var r=0;r<R;r++){
+      var sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
+      var zc0=ZA+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz;
+      var rx0=bx0+sec*(Wsec+gap),len=B*cw;
+      blk.rackPos.push({x:rx0+len/2,z:rz,x0:rx0,len:len});
+      for(var l=0;l<=L;l++)shelves.push([rx0+len/2,.1+ch*l-.025,rz,len,.045,cd+.12]);
+      var step=Math.max(1,Math.round(4/Math.max(cw,.3)));
+      for(var u=0;u<=B;u+=step){ups.push([rx0+u*cw,(L*ch+.2)/2,rz-cd/2-.04,L*ch+.2]);ups.push([rx0+u*cw,(L*ch+.2)/2,rz+cd/2+.04,L*ch+.2]);}
+      ups.push([rx0+len,(L*ch+.2)/2,rz-cd/2-.04,L*ch+.2]);ups.push([rx0+len,(L*ch+.2)/2,rz+cd/2+.04,L*ch+.2]);
+    }
+    z.c.forEach(function(c){
+      var r=c[0],sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
+      var zc0=ZA+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz,rx0=bx0+sec*(Wsec+gap);
+      var o={bi:F.blocks.length-1,zone:z.z,f:f,r:r,b:c[1],l:Math.min(c[2],L-1),q:c[3],res:c[4],ns:c[5],code:c[6],det:c[7],ids:(c[8]||'').toLowerCase(),
+             x:rx0+cw*(c[1]+.5),y:.1+ch*(Math.min(c[2],L-1)+.5),z:rz,cw:cw,ch:ch,cd:cd,blk:blk,hl:false,inst:-1,mesh:null};
+      placed.push(o);
+    });
+  });
+  /* каркас стеллажей */
+  var shI=new Inst(UB,matBeam,shelves.length,g,false);shelves.forEach(function(s){shI.add(s[0],s[1],s[2],s[3],s[4],s[5],0);});shI.done();F.shelf=shI;
+  var upI=new Inst(UB,matSteel,ups.length,g,false);ups.forEach(function(u){upI.add(u[0],u[1],u[2],.07,u[3],.07,0);});upI.done();F.ups=upI;
+  /* ячейки */
+  var nOcc=0;placed.forEach(function(o){if(o.q>0)nOcc++;});
+  F.occ=new Inst(UB,OCC_MAT,nOcc,g,false);F.emp=new Inst(UB,EMP_MAT,placed.length-nOcc,g,false);
+  placed.forEach(function(o){
+    if(o.q>0){o.inst=F.occ.add(o.x,o.y,o.z,o.cw*.86,o.ch*.82,o.cd*.9,0,0x34C27A);F.occMap[o.inst]=o;o.mesh=F.occ;}
+    else{o.inst=F.emp.add(o.x,o.y,o.z,o.cw*.86,o.ch*.82,o.cd*.9,0,0xE5484D);F.empMap[o.inst]=o;o.mesh=F.emp;}
+    F.cells.push(o);allCells.push(o);
+  });
+  F.occ.done();F.emp.done();
+  /* статистика по стеллажам */
+  F.blocks.forEach(function(b){b.stat=[];for(var r=0;r<b.R;r++)b.stat.push({t:0,o:0});});
+  F.cells.forEach(function(o){var s=o.blk.stat[o.r];if(s){s.t++;if(o.q>0)s.o++;}});
+  /* стеллажи на этаже: тележки/подписи */
+  F.label={pos:new THREE.Vector3(MX1+1.6,.4,ZA),el:null};
+  return F;
+}
+[1,2,3,4,5].forEach(buildFloor);FLG.forEach(buildRowIndex);
+
+/* ───── подъёмник ───── */
+var lift=new THREE.Group();scene.add(lift);
+(function(){var py=(5*FLH)/2;[[-1,-1],[1,-1],[-1,1],[1,1]].forEach(function(o){var p=box(.14,5*FLH,.14,0x8a93a8);p.position.set(LIFT.x+o[0]*1.1,py,LIFT.z+o[1]*1.1);scene.add(p);});
+  var cab=box(2.0,2.4,2.0,0xc9d3ea,{transparent:true,opacity:.55});lift.add(cab);cab.position.y=1.3;lift.position.set(LIFT.x,0,LIFT.z);})();
+
+/* ───── сортировка (впереди мезонина, справа) и хаб (слева) ───── */
+var palI=new Inst(UB,matWood,900,scene,true),bx=new Inst(UB,matBox,2600,scene,false);
+var BW=.58,BH=.38,BD=.38,CAPP=20;
+function palletAt(p){palI.add(p.x,.05,p.z-.35,1.2,.1,.1,0);palI.add(p.x,.05,p.z,1.2,.1,.1,0);palI.add(p.x,.05,p.z+.35,1.2,.1,.1,0);for(var i=0;i<5;i++)palI.add(p.x,.122,p.z-.34+i*.17,1.2,.044,.12,0);}
+function boxOn(p,k,col){var layer=Math.floor(k/4),s=k%4;bx.add(p.x+(s%2?.3:-.3)+rnd(-.015,.015),.144+BH/2+layer*BH,p.z+(s<2?-.2:.2)+rnd(-.015,.015),BW,BH,BD,rnd(-.04,.04),col);}
+var LS=[],LNP=[],LAC=[],LSTG=[];
+var rows=S.rows||6,per=S.per||6;
+for(var r_=0;r_<rows;r_++)for(var j_=0;j_<per;j_++)LS.push({x:3.2+j_*4.4,z:11.2+r_*2.4});
+for(var k_=0;k_<4;k_++)for(var m_=0;m_<2;m_++){LNP.push({x:-30.2+k_*2.8,z:10.0+m_*2.4});LAC.push({x:-17.6+k_*2.8,z:10.0+m_*2.4});}
+GATES.forEach(function(gx){[[-1,19.8],[1,19.8],[-1,22.2],[1,22.2]].forEach(function(o){LSTG.push({x:gx+o[0]*1.05,z:o[1]});});});
+LS.concat(LNP,LAC,LSTG).forEach(palletAt);palI.done();
+/* единицы масштаба */
+var U={};
+var cs=S.sort?(S.sort.sorting+S.sort.sorted):0;U.sort=Math.max(1,Math.ceil(cs/(LS.length*CAPP*.8)));
+var hmax=S.hub?Math.max(S.hub.ok/(LAC.length*CAPP*.9),S.hub.no/(LNP.length*CAPP*.9)):0;U.hub=Math.max(1,Math.ceil(hmax));
+var rem=S.ship?Math.max(0,S.ship.pcs-S.ship.pcs_done):0;U.ship=Math.max(1,Math.ceil(rem/(LSTG.length*CAPP*.9)));
+function fillList(list,n,col){var left=n;for(var i=0;i<list.length&&left>0;i++){var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(list[i],q,col);left-=c;}}
+(function(){var nOr=S.sort?Math.round(S.sort.sorting/U.sort):0,nGr=S.sort?Math.round(S.sort.sorted/U.sort):0,cap=LS.length*CAPP;
+  if(nOr+nGr>cap){var f=cap/(nOr+nGr);nOr=Math.floor(nOr*f);nGr=Math.floor(nGr*f);}
+  var left=nOr,i,p,c,q;for(i=0;i<LS.length&&left>0;i++){p=LS[i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.orange);left-=c;}
+  left=nGr;for(i=0;i<LS.length&&left>0;i++){p=LS[LS.length-1-i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.green);left-=c;}})();
+fillList(LAC,S.hub?Math.round(S.hub.ok/U.hub):0,CO.green);fillList(LNP,S.hub?Math.round(S.hub.no/U.hub):0,CO.red);
+fillList(LSTG,Math.min(LSTG.length*CAPP,Math.round(rem/U.ship)),CO.blue);
+bx.done();
+/* конвейер от мезонина к сортировке */
+var belt=box(36,.12,.9,0x2c2f3a);add(belt,15,.9,7.6);
+add(box(36,.18,.06,0xb0b6c4),15,1.02,7.15,false);add(box(36,.18,.06,0xb0b6c4),15,1.02,8.05,false);
+var legI=new Inst(UB,matSteel,30,scene,false);for(var lx=-2;lx<=32;lx+=3)legI.add(lx,.45,7.6,.06,.9,.7,0);legI.done();
+var cbox=new Inst(UB,matBox,40,scene,false),cbPos=[];
+for(var ci=0;ci<20;ci++)cbPos.push({x:-2+ci*1.75,c:ci%3===0?CO.orange:0xd9b98a});
+for(ci=0;ci<cbPos.length;ci++)cbox.add(cbPos[ci].x,1.15,7.6,.5,.34,.4,0,cbPos[ci].c);cbox.done();
+function cbUpdate(){for(var i=0;i<cbPos.length;i++){D.position.set(cbPos[i].x,1.15,7.6);D.rotation.set(0,0,0);D.scale.set(.5,.34,.4);D.updateMatrix();cbox.m.setMatrixAt(i,D.matrix);}cbox.m.instanceMatrix.needsUpdate=true;}
+
+/* ───── газели у ворот ───── */
+var TCAP=135;
+function Gazelle(color){
+  var g=new THREE.Group();
+  function P(w,h,d,col,x,y,z,opt){var m=box(w,h,d,col,opt);m.position.set(x,y,z);m.castShadow=true;g.add(m);return m;}
+  P(2.0,.28,6.4,0x20242e,0,.55,3.2);                                          /* рама */
+  P(2.2,.1,4.3,0xd9dde6,0,.92,2.15);                                          /* пол кузова */
+  var gl={transparent:true,opacity:.2,depthWrite:false,roughness:.3};
+  P(.06,2.2,4.3,0xeef2fa,1.1,2.05,2.15,gl);P(.06,2.2,4.3,0xeef2fa,-1.1,2.05,2.15,gl);P(2.2,.06,4.3,0xeef2fa,0,3.15,2.15,gl);
+  P(2.2,2.2,.08,0xe8ecf4,0,2.05,4.3);                                          /* передняя стенка кузова */
+  [[-1,1],[1,1]].forEach(function(o){P(.05,2.1,1.1,0xe8ecf4,o[0]*1.17,2.0,.6);});   /* открытые задние двери */
+  P(2.0,1.55,1.5,color,0,1.62,5.15);                                           /* кабина */
+  P(2.0,.85,.75,color,0,1.2,6.1);                                              /* капот */
+  P(1.8,.7,.06,0x1a2538,0,1.95,5.93);                                          /* стекло */
+  P(1.6,.3,.05,0x30343f,0,.9,6.5);                                             /* бампер */
+  P(.35,.14,.05,0xfff3b0,.7,1.1,6.49,{emissive:0xfff3b0});P(.35,.14,.05,0xfff3b0,-.7,1.1,6.49,{emissive:0xfff3b0});
+  [[.95,.9],[-.95,.9],[.95,5.4],[-.95,5.4]].forEach(function(p){var w=new THREE.Mesh(new THREE.CylinderGeometry(.4,.4,.28,14),stdMat(0x15171d,{roughness:.9}));w.rotation.z=Math.PI/2;w.position.set(p[0],.4,p[1]);w.castShadow=true;g.add(w);});
+  var cg=new Inst(UB,matBox,TCAP,g,false);g.userData.cargo=cg;
+  return g;
+}
+function fillTruck(t,n){var cg=t.userData.cargo;cg.n=0;n=Math.min(TCAP,Math.max(0,Math.round(n)));
+  for(var q=0;q<n;q++){var sl=Math.floor(q/15),rest=q%15,ly=Math.floor(rest/3),ix=rest%3;cg.add((ix-1)*.64,1.0+BH/2+ly*BH,3.95-sl*.42,BW,BH,.4,0,CO.blue);}cg.done();}
+var trips=((S.ship&&S.ship.trips)||[]).slice();
+var pend=trips.filter(function(t){return !t.done;}),dn=trips.filter(function(t){return t.done;});
+var shownT=[],tQueue0=[];
+if(dn.length&&pend.length>=GATES.length){shownT=[dn[dn.length-1]].concat(pend.slice(0,GATES.length-1));tQueue0=pend.slice(GATES.length-1);} /* ворота 4: уезжает последний отгруженный рейс, на его место подъедет следующий */
+else{shownT=pend.slice(0,GATES.length);if(shownT.length<GATES.length)dn.slice(-(GATES.length-shownT.length)).forEach(function(t){shownT.push(t);});tQueue0=pend.slice(GATES.length);}
+var maxQ=1;trips.forEach(function(t){if(t.qty>maxQ)maxQ=t.qty;});
+var UT=Math.max(1,Math.ceil(maxQ/TCAP)),prog=S.ship&&S.ship.pcs?S.ship.pcs_done/S.ship.pcs:0;
+var trucks=[],truckCols=[0xf2f4f8,0x2d62c8,0xf2f4f8,0xd9e2f6],tQueue=[],tCnt=0;
+var ZD=Z1+.6;
+shownT.forEach(function(t,i){
+  var gz=GATES[i],gt=Gazelle(truckCols[i%truckCols.length]);
+  gt.position.set(gz,YARD,ZD);scene.add(gt);
+  var full=clamp(Math.round(t.qty/UT),12,TCAP),n=t.done?full:Math.round(full*prog);
+  fillTruck(gt,n);
+  var tr={g:gt,gate:i,t:t,state:t.done?'wait':'dock',z:ZD,delay:2.5+i*3.2,speed:0,label:null};
+  trucks.push(tr);
 });
-/* лестница на первый этаж мезонина */
-var stairs=new Inst(UB,matBeam,20);
-for(var st=0;st<16;st++)stairs.add(-8.2,.1+st*.19,-17.4+st*.28,1.1,.06,.3,0);stairs.done();
-
-/* ───── конвейер сортировки ───── */
-var belt=box(.9,.12,33,0x2c2f3a);add(belt,-7,.9,0);
-var railA=box(.06,.18,33,0xb0b6c4);add(railA,-7.45,1.02,0);var railB=box(.06,.18,33,0xb0b6c4);add(railB,-6.55,1.02,0);
-var legI=new Inst(UB,matSteel,24);for(var lz=-16;lz<=16;lz+=3)legI.add(-7,.45,lz,.7,.9,.06,0);legI.done();
-var cbox=new Inst(UB,matBox,20),cbPos=[];
-for(var ci=0;ci<18;ci++)cbPos.push({z:-16+ci*1.8,c:ci%3===0?CO.orange:0xd9b98a});
-function cbUpdate(){for(var i=0;i<cbPos.length;i++){var b=cbPos[i];D.position.set(-7,1.15,b.z);D.rotation.set(0,0,0);D.scale.set(.5,.34,.4);D.updateMatrix();cbox.m.setMatrixAt(i,D.matrix);}cbox.m.instanceMatrix.needsUpdate=true;}
-for(ci=0;ci<cbPos.length;ci++)cbox.add(-7,1.15,cbPos[ci].z,.5,.34,.4,0,cbPos[ci].c);cbox.done();
-
-/* ───── грузовики у ворот ───── */
-var trips=(S.ship&&S.ship.trips)||[];
-var pend=trips.filter(function(t){return !t.done;}),shown=pend.length?pend:trips.slice(-GATES.length);
-var loading=pend.length>0;
-if(S.ship&&!trips.length){shown=[{n:'1'},{n:'2'},{n:'3'}];loading=true;}
-shown=shown.slice(0,GATES.length);
-var truckCols=[0xeeeeee,0x2d62c8,0xc83a3a,0xe9e9e9,0x2f9e6b];
-var capT=14*5*4;
-var loadedBoxes=S.ship?Math.round(S.ship.pcs_done/U.ship):0;
-var perTruck=shown.length?Math.min(capT,Math.round(loadedBoxes/shown.length)):0;
-shown.forEach(function(t,i){
-  var z=GATES[i],bc=truckCols[i%truckCols.length];
-  var bed=box(9.4,.2,2.5,0x4a4f5e);add(bed,-31.9,-.1,z);
-  var sm=new THREE.MeshStandardMaterial({color:0xdfe6f0,transparent:true,opacity:.22,roughness:.4,depthWrite:false});
-  [-1.25,1.25].forEach(function(o){var sd=new THREE.Mesh(new THREE.BoxGeometry(9.4,2.8,.05),sm);sd.position.set(-31.9,1.4,z+o);scene.add(sd);});
-  var rf=new THREE.Mesh(new THREE.BoxGeometry(9.4,.05,2.5),sm);rf.position.set(-31.9,2.8,z);scene.add(rf);
-  add(box(.08,2.8,2.5,bc),-36.6,1.4,z);
-  add(box(2.2,2.7,2.4,bc),-38.2,1.25,z);
-  var wsh=box(.05,1.0,2.0,0x1b2538);add(wsh,-39.3,1.9,z,false);
-  var ax=[-33.6,-34.9,-38.2];ax.forEach(function(x){[-1.2,1.2].forEach(function(o){var w=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.36,14),new THREE.MeshStandardMaterial({color:0x15171d,roughness:.9}));w.rotation.x=Math.PI/2;w.position.set(x,-.6,z+o);w.castShadow=true;scene.add(w);});});
-  var n=perTruck;
-  for(var q=0;q<n;q++){var col_=Math.floor(q/20),rest=q%20,ly=Math.floor(rest/5),iz=rest%5;
-    cargo.add(-36.1+col_*.6,.2+BH/2+ly*BH,z+(iz-2)*.46,BW,BH,.4,0,CO.blue);}
-});
-cargo.done();
-GATES.forEach(function(z,i){var has=i<shown.length;doors[i].position.y=has&&loading?4.9:1.6;lamps[i].color.setHex(!has?0xff4d4d:(loading?0x34C27A:0xF2A23D));});
+GATES.forEach(function(z,i){var tr=trucks[i];var has=!!tr&&!tr.t.done;doors[i].position.y=has?5.3:1.9;lamps[i].color.setHex(tr?(tr.t.done?0xF2A23D:0x34C27A):0xff4d4d);});
+var loadingOn=trucks.some(function(t){return !t.t.done;});tQueue=tQueue0.slice();
+function spawnTruck(gi,t){
+  var gt=Gazelle(truckCols[(tCnt++)%truckCols.length]);gt.position.set(GATES[gi],YARD,Z1+95);scene.add(gt);
+  var full=clamp(Math.round(t.qty/UT),12,TCAP);fillTruck(gt,Math.round(full*prog));
+  var tr={g:gt,gate:gi,t:t,state:'arrive',z:Z1+95,delay:0,speed:7,label:null};
+  tr.label=mkLabel('Рейс '+(t.n||'')+' · '+fmt(t.qty)+' шт',null,'tr',gt);tr.label.dy=3.9;trucks.push(tr);
+}
 
 /* ───── люди ───── */
 var gLeg=new THREE.BoxGeometry(.16,.82,.2);gLeg.translate(0,-.41,0);
@@ -4877,191 +5025,525 @@ var gArm=new THREE.BoxGeometry(.11,.58,.12);gArm.translate(0,-.29,0);
 var gTor=new THREE.BoxGeometry(.44,.6,.26),gHead=new THREE.SphereGeometry(.125,12,10);
 var gHat=new THREE.SphereGeometry(.14,12,8,0,Math.PI*2,0,Math.PI/2),gBrim=new THREE.CylinderGeometry(.17,.17,.02,14);
 var gStrip=new THREE.BoxGeometry(.45,.06,.27),gCar=new THREE.BoxGeometry(.5,.34,.34);
+var gCartB=new THREE.BoxGeometry(.8,.06,.55),gCartH=new THREE.BoxGeometry(.8,.5,.04);
 var skins=[0xf0c9a0,0xd9a77c,0xb07d55,0x8d5a3a];
-var mats={};function M(c,o){var k=c+(o?'e':'');if(!mats[k])mats[k]=new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.8},o||{}));return mats[k];}
-function Person(vest,hat,pants){
+var mats={};function M(c,o){var k=c+(o?'e':'');if(!mats[k])mats[k]=stdMat(c,Object.assign({roughness:.8},o||{}));return mats[k];}
+function Person(vest,hat,pants,cart){
   var g=new THREE.Group();
-  var P=function(geo,mat,x,y,z){var m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);m.castShadow=true;g.add(m);return m;};
+  var P=function(geo,mat,x,y,z,sh){var m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);if(sh!==false)m.castShadow=true;g.add(m);return m;};
   var pm=M(pants||0x2b3245);
   var legL=P(gLeg,pm,-.1,.85,0),legR=P(gLeg,pm,.1,.85,0);
   P(gTor,M(vest),0,1.15,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.27,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.03,0);
   var armL=P(gArm,M(vest),-.28,1.42,0),armR=P(gArm,M(vest),.28,1.42,0);
   P(gHead,M(pick(skins)),0,1.57,0);P(gHat,M(hat),0,1.6,0);P(gBrim,M(hat),0,1.605,.02);
   var cb=new THREE.Mesh(gCar,matBox.clone());cb.material.color.setHex(0xe8a24a);cb.position.set(0,1.0,.38);cb.castShadow=true;cb.visible=false;g.add(cb);
-  return {g:g,legL:legL,legR:legR,armL:armL,armR:armR,cb:cb};
+  var cartBoxes=[];
+  if(cart){ /* тележка с платформой и ручкой, толкает перед собой */
+    var cg=new THREE.Group();cg.position.set(0,0,.95);g.add(cg);
+    var pl=new THREE.Mesh(gCartB,M(0x5d6b86,{metalness:.4}));pl.position.set(0,.3,0);pl.castShadow=true;cg.add(pl);
+    var hd=new THREE.Mesh(gCartH,M(0x8a93a8,{metalness:.4}));hd.position.set(0,.6,-.26);cg.add(hd);
+    [[-.34,-.22],[.34,-.22],[-.34,.22],[.34,.22]].forEach(function(o){var w=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,.04,8),M(0x15171d));w.rotation.z=Math.PI/2;w.position.set(o[0],.07,o[1]);cg.add(w);});
+    for(var q=0;q<4;q++){var bb=new THREE.Mesh(gCar,matBox.clone());bb.material.color.setHex(q%2?0xe8a24a:0xd9b98a);bb.scale.set(.7,.8,.8);bb.position.set(q%2?.2:-.2,.51+Math.floor(q/2)*.28,0);bb.visible=false;cg.add(bb);cartBoxes.push(bb);}
+  }
+  return {g:g,legL:legL,legR:legR,armL:armL,armR:armR,cb:cb,cartBoxes:cartBoxes,nc:0};
 }
 var actors=[],guards=[];
-function mkActor(zone,vest,hat,x,z,cfg){
-  var p=Person(vest,hat);p.zone=zone;p.g.position.set(x,0,z);scene.add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.2,1.55);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);actors.push(p);return p;}
-function setCarry(p,v,colr){p.carry=v;p.cb.visible=v;if(v&&colr!==undefined)p.cb.material.color.setHex(colr);}
-
-/* маршруты */
-function planSort(a){var r=a.cfg.row,lane=sortZ[r]+1.8,j=Math.floor(Math.random()*sortX.length),px=sortX[j];
-  a.route=[{x:-5.7+rnd(-.2,.2),z:lane,act:'pick',dur:1.0,c:CO.orange},{x:px,z:lane},{x:px,z:sortZ[r]+1.05,act:'put',dur:1.1},{x:px,z:lane}];}
-function planHub(a){var za=pick(HZ),zb=pick(HZ);
-  a.route=[{x:-15.5,z:za,act:'pick',dur:1.0,c:CO.red},{x:-15.5,z:za+1.15},{x:-18.8,z:za+1.15},{x:-22.0,z:za+1.15},{x:-22.0,z:zb,act:'put',dur:1.0},{x:-22.0,z:zb+1.15},{x:-18.8,z:zb+1.15}];}
-function planShip(a){var za=pick(SZ),gi=a.cfg.gate%Math.max(1,GATES.length),gz=GATES[gi];
-  if(!loading||gi>=shown.length){a.route=[{x:-19.5,z:za,act:'wait',dur:rnd(2,5)},{x:-19.5,z:za+1.1},{x:-16.5,z:za+1.1},{x:-16.5,z:pick(SZ)}];return;}
-  a.route=[{x:-19.5,z:za,act:'pick',dur:.9,c:CO.blue},{x:-19.5,z:za+1.1},{x:-23.8,z:za+1.1},{x:-23.8,z:gz},{x:-28.5,z:gz,act:'put',dur:1.0},{x:-23.8,z:gz}];}
+function mkActor(zone,vest,hat,x,z,cfg,parent,cart){
+  var p=Person(vest,hat,null,cart);p.zone=zone;p.g.position.set(x,0,z);(parent||scene).add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.1,1.5);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);p.n=0;actors.push(p);return p;}
+function setCarry(p,v,colr){p.carry=v;if(!p.cartBoxes.length){p.cb.visible=v;if(v&&colr!==undefined)p.cb.material.color.setHex(colr);}}
+function setCart(p,k){p.nc=k;p.cartBoxes.forEach(function(b,i){b.visible=i<k;});}
+/* сборщики на этажах мезонина */
+var pickFloors=[1,2,3,4,5].filter(function(f){return floors[f]&&floors[f].length;});
+if(!pickFloors.length)pickFloors=[1,2,3,4,5];
+function floorAt(i){return FL[pickFloors[i%pickFloors.length]];}
+function randCell(F){var occ=F.cells.filter(function(c){return c.q>0;});var pool=occ.length?occ:F.cells;return pool.length?pick(pool):null;}
+function planPick(a){
+  var F=a.F,p=a.g.position;
+  if(a.n>=a.need){ /* отвезти собранное: подъёмник / конвейер к сортировке */
+    a.n=0;a.need=2+Math.floor(Math.random()*3);
+    a.route=[{x:a.xa,z:p.z},{x:a.xa,z:3.3},{x:LIFT.x-1.3,z:3.3},{x:LIFT.x-1.3,z:3.6,act:'put',dur:1.0}];
+    if(F.f===1)a.route.push({x:LIFT.x-1.3,z:5.2},{x:-1.4,z:6.2,act:'put',dur:1.1},{x:-1.4,z:3.3});
+    return;
+  }
+  var c=randCell(F);
+  if(!c){a.route=[{x:p.x,z:p.z,act:'wait',dur:3}];return;}
+  var tz=c.z+1.15,xa=c.blk.xa;
+  a.route=[{x:a.xa,z:p.z},{x:a.xa,z:3.3},{x:xa,z:3.3},{x:xa,z:tz},{x:c.x,z:tz,act:'pick',dur:1.1,face:c.z-tz}];
+  a.xa=xa;
+}
+for(var pi=0;pi<WK.pick;pi++){
+  var F_=floorAt(pi),cl=randCell(F_),sx=cl?cl.blk.xa:-32,a_=mkActor('pick',0xF2A23D,pick([0xffffff,0xf5d142]),sx,3.3,{},F_.g,true);
+  a_.F=F_;a_.xa=sx;a_.need=2+Math.floor(Math.random()*3);a_.pickP=true;
+}
+function planSort(a){var r=a.cfg.row,lane=11.2+r*2.4+1.2,j=Math.floor(Math.random()*per),px=3.2+j*4.4;
+  a.route=[{x:-1.4,z:lane,act:'pick',dur:1.0,c:CO.orange},{x:px,z:lane},{x:px,z:lane-.7,act:'put',dur:1.1},{x:px,z:lane}];}
+function planHub(a){var za=pick([10.0,12.4]),zb=pick([10.0,12.4]),sg=pick(GATES);
+  a.route=[{x:-16.2+rnd(-1,1),z:za+1.2,act:'pick',dur:1.0,c:CO.red},{x:-16.2,z:15.5},{x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.blue},{x:sg,z:15.5},{x:-24,z:15.5},{x:-24,z:zb+1.2,act:'put',dur:.8}];}
+function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi],tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
+  if(!tr||tr.t.done||tr.state!=='dock'){a.route=[{x:gx,z:17.4,act:'wait',dur:rnd(2,5)},{x:gx+2.2,z:17.4}];return;}
+  a.route=[{x:gx,z:18.4,act:'pick',dur:.9,c:CO.blue},{x:gx+1.9,z:18.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:18.4}];}
 function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
 var PLAN={sort:planSort,hub:planHub,ship:planShip};
-var rowsAssign=[];for(var ai=0;ai<S.workers.sort;ai++)rowsAssign.push(ai%rows);
-for(ai=0;ai<S.workers.sort;ai++){var rr=rowsAssign[ai];mkActor('sort',0xF2A23D,pick([0xffffff,0xf5d142]),rnd(-5,16),sortZ[rr]+1.8,{row:rr});}
-for(ai=0;ai<S.workers.hub;ai++)mkActor('hub',0x3B9CFF,0xffffff,-15.5,pick(HZ),{});
-for(ai=0;ai<S.workers.ship;ai++)mkActor('ship',0xD7E83A,pick([0xffffff,0xf5d142]),rnd(-22,-17),pick(SZ),{gate:ai});
-/* охрана: по одному человеку на зону */
-function mkGuard(zone,way){var p=Person(0x1a2030,0x141824,0x141824);p.zone=zone;p.g.position.set(way[0][0],0,way[0][1]);scene.add(p.g);p.ph=0;p.speed=.6;p.route=[];p.wait=0;p.cfg={way:way,i:0};p.yaw=0;
+for(var ai=0;ai<WK.sort;ai++)mkActor('sort',0xD7E83A,pick([0xffffff,0xf5d142]),rnd(-1,28),11.2+(ai%rows)*2.4+1.2,{row:ai%rows});
+for(ai=0;ai<WK.hub;ai++)mkActor('hub',0x3B9CFF,0xffffff,-16,15.5,{});
+for(ai=0;ai<WK.ship;ai++)mkActor('ship',0xff9a3d,pick([0xffffff,0xf5d142]),GATES[ai%4],17.5,{gate:ai});
+function mkGuard(zone,way,parent){var p=Person(0x1a2030,0x141824,0x141824,false);p.zone=zone;p.g.position.set(way[0][0],0,way[0][1]);(parent||scene).add(p.g);p.ph=0;p.speed=.6;p.route=[];p.wait=0;p.cfg={way:way,i:0};p.yaw=0;
   var cone=new THREE.Mesh(new THREE.ConeGeometry(.9,3.4,16,1,true),new THREE.MeshBasicMaterial({color:0xfff2a8,transparent:true,opacity:.16,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
   cone.rotation.x=-Math.PI/2+.25;cone.position.set(0,1.1,1.8);p.g.add(cone);
-  var cap=new THREE.Mesh(new THREE.BoxGeometry(.3,.05,.34),M(0x141824));cap.position.set(0,1.7,.06);p.g.add(cap);
   p.guard=true;p.g.visible=false;guards.push(p);actors.push(p);return p;}
-var gdSort=mkGuard('sort',[[-5,-2],[-5,8],[3,10],[3,-2]]);
-var gdHub=mkGuard('hub',[[-18.8,-14],[-18.8,-4],[-14,-3]]);
-var gdShip=mkGuard('ship',[[-23.8,4],[-23.8,14],[-18,16],[-18,4]]);
-
-/* погрузчик в проходе */
-var fork=new THREE.Group();(function(){
-  var b=box(1.1,.9,1.8,0xf2b01e);b.position.set(0,.7,-.2);fork.add(b);
-  var cab=box(1.0,.05,1.0,0x222222);cab.position.set(0,1.9,-.25);fork.add(cab);
-  [[-.5,-.7],[.5,-.7],[-.5,.1],[.5,.1]].forEach(function(p){var po=box(.05,1.0,.05,0x222222);po.position.set(p[0],1.4,p[1]);fork.add(po);});
-  var mast=box(.08,2.6,.08,0x333333);mast.position.set(-.3,1.5,.85);fork.add(mast);var mast2=mast.clone();mast2.position.x=.3;fork.add(mast2);
-  var f1=box(.1,.05,1.1,0x555555);f1.position.set(-.3,.25,1.4);fork.add(f1);var f2=f1.clone();f2.position.x=.3;fork.add(f2);
-  [[-.55,-.75],[.55,-.75],[-.55,.35],[.55,.35]].forEach(function(p){var w=new THREE.Mesh(new THREE.CylinderGeometry(.22,.22,.18,12),M(0x15171d));w.rotation.z=Math.PI/2;w.position.set(p[0],.22,p[1]);fork.add(w);});
-  var dr=Person(0xD7E83A,0xffffff);dr.g.position.set(0,.45,-.25);dr.g.scale.set(.85,.85,.85);dr.legL.rotation.x=-1.4;dr.legR.rotation.x=-1.4;fork.add(dr.g);
-  var pl=new THREE.Group();var pb=box(1.2,.12,.8,0xb98b55);pl.add(pb);for(var q=0;q<8;q++){var bb=new THREE.Mesh(new THREE.BoxGeometry(.5,.36,.36),matBox.clone());bb.material.color.setHex(q<4?CO.green:CO.orange);bb.position.set(q%2?.28:-.28,.24+Math.floor(q/4)*.37,q%4<2?-.18:.18);pl.add(bb);}
-  pl.position.set(0,.55,1.45);pl.rotation.y=Math.PI/2;fork.add(pl);fork.userData.pl=pl;
-  fork.traverse(function(o){if(o.isMesh)o.castShadow=true;});})();
-scene.add(fork);var FK={z:-12,dir:1,turn:0,y:0};fork.position.set(-10.9,0,-12);
+var gdPick=mkGuard('pick',[[-28,3.3],[0,3.3],[28,3.3],[0,3.3]],FL[1].g);
+var gdSort=mkGuard('sort',[[0,9],[14,9],[28,9],[14,26.5-2],[0,16]]);
+var gdHub=mkGuard('hub',[[-28,16],[-18,16],[-8,16],[-18,12]]);
+var gdShip=mkGuard('ship',[[-28,20],[-9,20],[-9,24],[-28,24]]);
+/* затемнение зон без операций */
+function dim(x0,z0,x1,z1){var m=new THREE.Mesh(new THREE.PlaneGeometry(x1-x0,z1-z0),new THREE.MeshBasicMaterial({color:0x05070f,transparent:true,opacity:.32,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set((x0+x1)/2,.04,(z0+z1)/2);scene.add(m);return m;}
+var dimZ={sort:dim(-3.2,6.2,33,25.4),hub:dim(-32.6,6.2,-4.6,17),ship:dim(-32.6,17,-4.6,25.4)};
+['sort','hub','ship'].forEach(function(z){dimZ[z].visible=!!zst(z).idle;});
+actors.forEach(function(a){var z_=zst(a.zone);a.g.visible=z_.nodata?false:(a.guard?z_.idle:!z_.idle);});
+var beltActive=!zst('sort').idle;
 
 /* ───── подписи ───── */
 var labels=[],lbEl=el('labels');
-function mkLabel(txt,pos,cls,fn){var d=document.createElement('div');d.className='lb '+(cls||'');d.innerHTML=txt;lbEl.appendChild(d);var o={d:d,pos:pos,fn:fn};labels.push(o);return o;}
-var lbSort=mkLabel('',new THREE.Vector3(7,.3,17.9),'zone'),lbHub=mkLabel('',new THREE.Vector3(-19,.3,-17.7),'zone'),lbShip=mkLabel('',new THREE.Vector3(-25.5,4.4,9.3),'zone');
-mkLabel('МЕЗОНИН · 5 этажей',new THREE.Vector3(7,13.2,0),'mz');
-DECKS.forEach(function(y,i){mkLabel((i+2)+' этаж',new THREE.Vector3(24.6,y+.4,-17.6),'fl');});
-mkLabel('1 этаж · сортировка',new THREE.Vector3(24.6,.4,-17.6),'fl');
-GATES.forEach(function(z,i){mkLabel('Ворота '+(i+1),new THREE.Vector3(Wx0+.4,3.95,z),'gt');});
-var lbG1=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard'),lbG2=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard'),lbG3=mkLabel('🛡 охрана',new THREE.Vector3(0,2.2,0),'guard');
-lbG1.follow=gdSort.g;lbG2.follow=gdHub.g;lbG3.follow=gdShip.g;
-function zoneLabel(k,t){var s=zst(k);return t+' · '+(s.nodata?'нет данных':(s.idle?'🛡 охрана':S.workers[k]+' чел.'));}
-lbSort.d.textContent=zoneLabel('sort','СОРТИРОВКА');lbHub.d.textContent=zoneLabel('hub','ХАБ');lbShip.d.textContent=zoneLabel('ship','ОТГРУЗКА');
-[[lbSort,'sort'],[lbHub,'hub'],[lbShip,'ship']].forEach(function(x){if(zst(x[1]).idle)x[0].d.classList.add('idle');});
+function mkLabel(txt,pos,cls,follow){var d=document.createElement('div');d.className='lb '+(cls||'');d.innerHTML=txt;lbEl.appendChild(d);var o={d:d,pos:pos,follow:follow||null};labels.push(o);return o;}
+function zoneLabel(k,t){var s=zst(k);return t+' · '+(s.nodata?'нет данных':(s.idle?'🛡 охрана':(WK[k]||0)+' чел.'));}
+var lbSort=mkLabel(zoneLabel('sort','СОРТИРОВКА'),new THREE.Vector3(15,.3,25.3),'zone'),
+    lbHub=mkLabel(zoneLabel('hub','ХАБ'),new THREE.Vector3(-18,.3,8.2),'zone'),
+    lbShip=mkLabel(zoneLabel('ship','ОТГРУЗКА'),new THREE.Vector3(-18,.3,24.6),'zone'),
+    lbPick=mkLabel(zoneLabel('pick','МЕЗОНИН · СБОРКА'),new THREE.Vector3(0,17.4,ZB),'zone');
+[[lbSort,'sort'],[lbHub,'hub'],[lbShip,'ship'],[lbPick,'pick']].forEach(function(x){if(zst(x[1]).idle)x[0].d.classList.add('idle');});
+GATES.forEach(function(gx,i){mkLabel('Ворота '+GNUM[i],new THREE.Vector3(gx,6.2,Z1+.3),'gt');});
+var floorLabels=[];
+[1,2,3,4,5].forEach(function(f){var o=FLSTAT[f];var lb=mkLabel(f+' эт · '+(o.zn.join('+')||'—')+' · '+pctOf(o.occ,o.tot)+'%',new THREE.Vector3(MX1+1.8,0,ZB-1),'fl');lb.f=f;floorLabels.push(lb);});
+var guardLb=[mkLabel('🛡 охрана',null,'guard',gdPick.g),mkLabel('🛡 охрана',null,'guard',gdSort.g),mkLabel('🛡 охрана',null,'guard',gdHub.g),mkLabel('🛡 охрана',null,'guard',gdShip.g)];
+['pick','sort','hub','ship'].forEach(function(z,i){var q=zst(z);guardLb[i].d.style.display=(q.idle&&!q.nodata)?'':'none';});
+trucks.forEach(function(tr){tr.label=mkLabel('Рейс '+(tr.t.n||'')+' · '+fmt(tr.t.qty)+' шт'+(tr.t.done?' · отгружен':''),null,'tr',tr.g);tr.label.dy=3.9;});
+if(tQueue0.length)mkLabel('в очереди рейсов: '+tQueue0.length,new THREE.Vector3(-18,.2,34),'gt');
 
-/* затемнение зон без операций */
-function dim(x0,z0,x1,z1){var m=new THREE.Mesh(new THREE.PlaneGeometry(x1-x0,z1-z0),new THREE.MeshBasicMaterial({color:0x05070f,transparent:true,opacity:.34,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set((x0+x1)/2,.03,(z0+z1)/2);scene.add(m);return m;}
-var dimZ={sort:dim(-8.8,-17.6,25.6,17.6),hub:dim(-25.6,-17.6,-12.4,-1),ship:dim(-25.6,1,-12.4,17.6)};
-['sort','hub','ship'].forEach(function(z){var idle=zst(z).idle;dimZ[z].visible=idle;});
-actors.forEach(function(a){var z_=zst(a.zone);a.g.visible=z_.nodata?false:(a.guard?z_.idle:!z_.idle);});
-function gOn(z){var q=zst(z);return q.idle&&!q.nodata;}lbG1.d.style.display=gOn('sort')?'':'none';lbG2.d.style.display=gOn('hub')?'':'none';lbG3.d.style.display=gOn('ship')?'':'none';
-var forkActive=!(zst('sort').idle&&zst('ship').idle);
-fork.userData.pl.visible=forkActive;
-var beltActive=!zst('sort').idle;
+/* ───── раскраска ───── */
+var RAMP=[[0,0x2b3a8f],[.35,0x8B3DFF],[.7,0xE0338F],[1,0xF2A23D]];
+function rampCol(t){t=clamp(t,0,1);for(var i=1;i<RAMP.length;i++){if(t<=RAMP[i][0]){var a=RAMP[i-1],b=RAMP[i],k=(t-a[0])/(b[0]-a[0]);return new THREE.Color(a[1]).lerp(new THREE.Color(b[1]),k).getHex();}}return RAMP[RAMP.length-1][1];}
+function fillCol(p){ /* 0..1 -> красный → янтарный → зелёный */
+  p=clamp(p,0,1);var A=new THREE.Color(0xE5484D),B=new THREE.Color(0xF2A23D),C=new THREE.Color(0x34C27A);
+  return (p<.5?A.lerp(B,p*2):B.lerp(C,(p-.5)*2)).getHex();}
+function rowPct(c){var s=c.blk&&c.blk.stat[c.r];return s&&s.t?s.o/s.t:0;}
+function cellColor(c){
+  if(HL){return c.hl?0x00E5FF:(c.q>0?(DARK?0x2c3454:0xb9c0d6):0x888888);}
+  if(c.q<=0)return 0;
+  if(MODE==='fill')return 0x34C27A;
+  if(MODE==='empty')return DARK?0x2c3454:0xb9c0d6;
+  if(MODE==='rows')return fillCol(rowPct(c));
+  if(MODE==='qty')return rampCol(Math.log(1+c.q)/Math.log(1+QMAX));
+  var sh=c.q?c.res/c.q:0;if(sh<=0)return 0x4c6a8c;return new THREE.Color(0x34C27A).lerp(new THREE.Color(0xE0338F),clamp(sh,0,1)).getHex();
+}
+function emptyColor(c){
+  if(HL)return 0x555a70;
+  if(MODE==='fill')return 0xE5484D;
+  if(MODE==='empty')return 0xFF2D55;
+  if(MODE==='rows')return fillCol(rowPct(c));
+  return 0x6b7390;
+}
+function recolor(){
+  FLG.forEach(function(F){
+    F.cells.forEach(function(c){if(c.q>0)F.occ.color(c.inst,cellColor(c));else F.emp.color(c.inst,emptyColor(c));});
+    if(F.occ.m.instanceColor)F.occ.m.instanceColor.needsUpdate=true;if(F.emp.m.instanceColor)F.emp.m.instanceColor.needsUpdate=true;});
+  EMP_MAT.opacity=HL?.12:(MODE==='fill'?.30:(MODE==='empty'?.92:(MODE==='rows'?.45:.18)));
+  buildLegend();
+}
+function buildLegend(){
+  var h='',T=FLSTAT.T;
+  if(HL){h='<span><i style="background:#00E5FF"></i>найдено</span><span><i style="background:'+(DARK?'#2c3454':'#b9c0d6')+'"></i>остальные занятые</span>';}
+  else if(MODE==='fill'){h='<span><i style="background:#34C27A"></i>занята: '+fmt(T.occ)+'</span><span><i style="background:#E5484D;opacity:.5"></i>пустая: '+fmt(T.tot-T.occ)+'</span>';}
+  else if(MODE==='empty'){h='<span><i style="background:#FF2D55"></i>пустая: '+fmt(T.tot-T.occ)+'</span><span><i style="background:'+(DARK?'#2c3454':'#b9c0d6')+'"></i>занята</span>';}
+  else if(MODE==='rows'){h='<span>ряд пустой<span class="grad" style="background:linear-gradient(90deg,#E5484D,#F2A23D,#34C27A)"></span>ряд полный</span>';}
+  else if(MODE==='qty'){h='<span>мало<span class="grad" style="background:linear-gradient(90deg,#2b3a8f,#8B3DFF,#E0338F,#F2A23D)"></span>много (до '+fmt(QMAX)+' шт)</span><span><i style="background:#6b7390;opacity:.5"></i>пустая</span>';}
+  else{h='<span><i style="background:#4c6a8c"></i>без резерва</span><span>резерв<span class="grad" style="background:linear-gradient(90deg,#34C27A,#E0338F)"></span>почти весь</span><span><i style="background:#6b7390;opacity:.5"></i>пустая</span>';}
+  h+='<span><i style="background:#F2A23D"></i>SORTING</span><span><i style="background:#34C27A"></i>SORTED / принято</span><span><i style="background:#E5484D"></i>не принято</span><span><i style="background:#3B9CFF"></i>к отгрузке</span>';
+  el('leg').innerHTML=h;
+}
+recolor();
 
-/* ───── движение ───── */
-var WALL_BOUND=null;
+/* ───── движение людей ───── */
 function stepActor(a,dt){
   if(a.wait>0){a.wait-=dt;a.moving=false;}
   else{
-    if(!a.route.length){if(a.guard)planGuard(a);else PLAN[a.zone](a);}
+    if(!a.route.length){if(a.guard)planGuard(a);else if(a.pickP)planPick(a);else PLAN[a.zone](a);}
     var t=a.route[0],p=a.g.position,dx=t.x-p.x,dz=t.z-p.z,d=Math.hypot(dx,dz),sp=a.speed*dt;
     if(d<=sp+.02){p.x=t.x;p.z=t.z;a.route.shift();a.moving=false;
-      if(t.act==='pick'){setCarry(a,true,t.c);a.wait=t.dur;}else if(t.act==='put'){setCarry(a,false);a.wait=t.dur;}else if(t.act==='wait'){a.wait=t.dur;}}
+      if(t.act==='pick'){if(a.pickP){a.n++;setCart(a,Math.min(4,a.nc+1));}else setCarry(a,true,t.c);a.wait=t.dur;if(t.face!==undefined){a.yaw=t.face>0?0:Math.PI;a.g.rotation.y=a.yaw;}}
+      else if(t.act==='put'){if(a.pickP)setCart(a,0);else setCarry(a,false);a.wait=t.dur;}
+      else if(t.act==='wait'){a.wait=t.dur;}}
     else{p.x+=dx/d*sp;p.z+=dz/d*sp;a.moving=true;var ty=Math.atan2(dx,dz),dy=ty-a.yaw;while(dy>Math.PI)dy-=6.283;while(dy<-Math.PI)dy+=6.283;a.yaw+=dy*Math.min(1,dt*8);a.g.rotation.y=a.yaw;}
   }
   var sw=0;if(a.moving){a.ph+=dt*a.speed*4.6;sw=Math.sin(a.ph)*.7;}
   a.legL.rotation.x=sw;a.legR.rotation.x=-sw;
-  if(a.carry){a.armL.rotation.x=a.armR.rotation.x=-1.25;}else{a.armL.rotation.x=-sw*.8;a.armR.rotation.x=sw*.8;}
+  if(a.carry&&!a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.25;}else if(a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.0;}else{a.armL.rotation.x=-sw*.8;a.armR.rotation.x=sw*.8;}
   a.g.position.y=a.moving?Math.abs(Math.sin(a.ph))*.03:0;
 }
-function updateFork(dt){
-  if(!forkActive){return;}
-  FK.z+=FK.dir*dt*2.2*(FK.turn>0?0:1);
-  if(FK.turn>0){FK.turn-=dt;fork.rotation.y+=FK.dir*-dt*Math.PI*1.2;if(FK.turn<=0){fork.rotation.y=FK.dir>0?0:Math.PI;}}
-  else if(FK.z>13&&FK.dir>0){FK.dir=-1;FK.turn=1.4;fork.userData.pl.visible=false;}
-  else if(FK.z<-12&&FK.dir<0){FK.dir=1;FK.turn=1.4;fork.userData.pl.visible=true;}
-  fork.position.set(FK.dir>0?-10.9:-10.3,0,FK.z);
+function updateTrucks(dt){
+  trucks.forEach(function(tr){
+    if(tr.state==='arrive'){tr.speed=Math.max(1.3,Math.min(7.5,(tr.z-ZD)*.55));tr.z-=tr.speed*dt;
+      if(tr.z<=ZD+.03){tr.z=ZD;tr.state='dock';doors[tr.gate].position.y=5.3;lamps[tr.gate].color.setHex(0x34C27A);}tr.g.position.z=tr.z;}
+    if(tr.state==='gone'&&tr.respawn!==undefined){tr.respawn-=dt;if(tr.respawn<=0){tr.respawn=undefined;if(tQueue.length)spawnTruck(tr.gate,tQueue.shift());}}
+    if(tr.state==='wait'){tr.delay-=dt;if(tr.delay<=0){tr.state='leave';tr.speed=0;doors[tr.gate].position.y=5.3;lamps[tr.gate].color.setHex(0xF2A23D);}}
+    else if(tr.state==='leave'){tr.speed=Math.min(7.5,tr.speed+dt*3.2);tr.z+=tr.speed*dt;tr.g.position.z=tr.z;if(tr.z>Z1+95){tr.state='gone';tr.g.visible=false;if(tr.label)tr.label.d.style.display='none';doors[tr.gate].position.y=1.9;lamps[tr.gate].color.setHex(0xff4d4d);tr.respawn=tQueue.length?2.5:undefined;}}
+  });
 }
-function updateBelt(dt){
-  if(!beltActive)return;
-  for(var i=0;i<cbPos.length;i++){cbPos[i].z+=dt*.45;if(cbPos[i].z>16)cbPos[i].z=-16;}cbUpdate();
-}
+function updateBelt(dt){if(!beltActive)return;for(var i=0;i<cbPos.length;i++){cbPos[i].x+=dt*.5;if(cbPos[i].x>32)cbPos[i].x=-2;}
+  for(i=0;i<cbPos.length;i++){D.position.set(cbPos[i].x,1.15,7.6);D.rotation.set(0,0,0);D.scale.set(.5,.34,.4);D.updateMatrix();cbox.m.setMatrixAt(i,D.matrix);}cbox.m.instanceMatrix.needsUpdate=true;}
+var liftT=0;
+function updateLift(dt){liftT+=dt*.22;var k=(Math.sin(liftT)*.5+.5);lift.position.y=k*4*FLH*(1+EXPL*1.1);}
 
 /* ───── камера ───── */
-var tgt=new THREE.Vector3(-2,2,0),sph={th:-.5,ph:1.0,r:78},goal=null;
+var tgt=new THREE.Vector3(0,3,2),sph={th:.5,ph:.95,r:105},goal=null;
+var PRE={all:[new THREE.Vector3(0,3,2),.5,.95,105],face:[new THREE.Vector3(-8,4,26),.18,1.3,58],mez:[new THREE.Vector3(0,6,-10),.35,1.02,66],
+  sort:[new THREE.Vector3(15,1,16),.35,.85,38],hub:[new THREE.Vector3(-18,1,15),-.35,.9,36],gate:[new THREE.Vector3(-18,1,28),.3,1.18,32],top:[new THREE.Vector3(0,0,0),0,.1,105]};
 try{var sv=window.parent.__whcam;if(sv){tgt.set(sv.x,sv.y,sv.z);sph.th=sv.th;sph.ph=sv.ph;sph.r=sv.r;}}catch(e){}
 function saveCam(){try{window.parent.__whcam={x:tgt.x,y:tgt.y,z:tgt.z,th:sph.th,ph:sph.ph,r:sph.r};}catch(e){}}
 function applyCam(){var sp=Math.sin(sph.ph),cp=Math.cos(sph.ph);cam.position.set(tgt.x+sph.r*sp*Math.sin(sph.th),tgt.y+sph.r*cp,tgt.z+sph.r*sp*Math.cos(sph.th));cam.lookAt(tgt);}
-function limit(){sph.ph=clamp(sph.ph,.06,1.52);sph.r=clamp(sph.r,2.5,150);tgt.x=clamp(tgt.x,-45,36);tgt.z=clamp(tgt.z,-30,30);tgt.y=clamp(tgt.y,0,14);}
+function limit(){sph.ph=clamp(sph.ph,.06,1.54);sph.r=clamp(sph.r,2.5,190);tgt.x=clamp(tgt.x,-60,60);tgt.z=clamp(tgt.z,-45,70);tgt.y=clamp(tgt.y,0,40);}
 var ray=new THREE.Raycaster(),ndc=new THREE.Vector2(),plane=new THREE.Plane(new THREE.Vector3(0,1,0),0);
 function groundPt(cx,cy,y){var r=renderer.domElement.getBoundingClientRect();ndc.set((cx-r.left)/r.width*2-1,-((cy-r.top)/r.height)*2+1);ray.setFromCamera(ndc,cam);plane.constant=-y;var o=new THREE.Vector3();return ray.ray.intersectPlane(plane,o)?o:null;}
-function zoomAt(f,cx,cy){var old=sph.r,nr=clamp(old*f,2.5,150);
+function zoomAt(f,cx,cy){var old=sph.r,nr=clamp(old*f,2.5,190);
   if(cx!==undefined){var p=groundPt(cx,cy,tgt.y);if(p){var k=1-nr/old;tgt.x+=(p.x-tgt.x)*k;tgt.z+=(p.z-tgt.z)*k;}}
   sph.r=nr;limit();goal=null;saveCam();}
 function panBy(dx,dy){var s=sph.r*.0017,rx=Math.cos(sph.th),rz=-Math.sin(sph.th),fx=-Math.sin(sph.th),fz=-Math.cos(sph.th);
   tgt.x+=(-dx*rx+dy*fx)*s;tgt.z+=(-dx*rz+dy*fz)*s;limit();goal=null;}
-var cvs=renderer.domElement,ptrs={},pinch=0,lastTap=0;
+function flyTo(t,th,ph,r){goal={t:t.clone(),th:th,ph:ph,r:r};}
+var cvs=renderer.domElement,ptrs={},pinch=0,lastTap=0,moved=0;
 cvs.addEventListener('contextmenu',function(e){e.preventDefault();});
-cvs.addEventListener('pointerdown',function(e){cvs.setPointerCapture(e.pointerId);ptrs[e.pointerId]={x:e.clientX,y:e.clientY,b:e.button};goal=null;
+cvs.addEventListener('pointerdown',function(e){cvs.setPointerCapture(e.pointerId);ptrs[e.pointerId]={x:e.clientX,y:e.clientY,b:e.button};goal=null;moved=0;
   var ks=Object.keys(ptrs);if(ks.length===2){var a=ptrs[ks[0]],b=ptrs[ks[1]];pinch=Math.hypot(a.x-b.x,a.y-b.y);}
-  var now=Date.now();if(now-lastTap<320&&ks.length===1){var p=groundPt(e.clientX,e.clientY,0);if(p){flyTo(new THREE.Vector3(p.x,1,p.z),sph.th,Math.min(sph.ph,1.1),13);}}lastTap=now;});
-cvs.addEventListener('pointermove',function(e){var p=ptrs[e.pointerId];if(!p)return;var dx=e.clientX-p.x,dy=e.clientY-p.y;
+  var now=Date.now();if(now-lastTap<320&&ks.length===1){var p=groundPt(e.clientX,e.clientY,tgt.y);if(p){flyTo(new THREE.Vector3(p.x,tgt.y,p.z),sph.th,Math.min(sph.ph,1.1),Math.max(14,sph.r*.5));}}lastTap=now;});
+cvs.addEventListener('pointermove',function(e){var p=ptrs[e.pointerId];
+  if(!p){hoverAt(e.clientX,e.clientY);return;}
+  var dx=e.clientX-p.x,dy=e.clientY-p.y;moved+=Math.abs(dx)+Math.abs(dy);hideTip();
   var ks=Object.keys(ptrs);
   if(ks.length>=2){var a=ptrs[ks[0]],b=ptrs[ks[1]];p.x=e.clientX;p.y=e.clientY;var d=Math.hypot(a.x-b.x,a.y-b.y);if(pinch>0){zoomAt(pinch/d,(a.x+b.x)/2,(a.y+b.y)/2);}pinch=d;panBy(dx/2,dy/2);}
   else if(p.b===2||e.shiftKey||e.ctrlKey){panBy(dx,dy);p.x=e.clientX;p.y=e.clientY;}
   else{sph.th-=dx*.0065;sph.ph-=dy*.005;limit();p.x=e.clientX;p.y=e.clientY;}});
 function up(e){delete ptrs[e.pointerId];pinch=0;saveCam();}
-cvs.addEventListener('pointerup',up);cvs.addEventListener('pointercancel',up);
+cvs.addEventListener('pointerup',up);cvs.addEventListener('pointercancel',up);cvs.addEventListener('pointerleave',hideTip);
 cvs.addEventListener('wheel',function(e){e.preventDefault();var f=Math.exp(clamp(e.deltaY,-120,120)*.0013);zoomAt(f,e.clientX,e.clientY);},{passive:false});
-function flyTo(t,th,ph,r){goal={t:t.clone(),th:th,ph:ph,r:r};}
-var PRE={all:[new THREE.Vector3(-2,2,0),-.5,1.0,78],sort:[new THREE.Vector3(7,1.2,0),-.3,.85,38],hub:[new THREE.Vector3(-19,1,-9.5),.5,.9,24],ship:[new THREE.Vector3(-24,1,9.5),1.15,.95,26],top:[new THREE.Vector3(0,0,0),0,.1,82]};
-function preset(k){var p=PRE[k];flyTo(p[0],p[1],p[2],p[3]);if(k==='sort')setFloors(1);if(k==='all')setFloors(5);}
-/* этажи и стены */
-var floorsN=5,wallsOn=true;
-try{if(window.parent.__whfl)floorsN=window.parent.__whfl;}catch(e){}
-function setFloors(n){floorsN=n;try{window.parent.__whfl=n;}catch(e){}deckGroups.forEach(function(g,i){g.visible=(i+2)<=n;});
-  var bs=document.querySelectorAll('[data-fl]');for(var i=0;i<bs.length;i++)bs[i].classList.toggle('on',+bs[i].getAttribute('data-fl')===n);
-  labels.forEach(function(l){if(l.d.className.indexOf('fl')>=0){var m=/^(\d)/.exec(l.d.textContent);if(m)l.d.style.display=(+m[1]<=n)?'':'none';}});}
-setFloors(floorsN);
-document.querySelectorAll('[data-pre]').forEach(function(b){b.addEventListener('click',function(){preset(b.getAttribute('data-pre'));});});
-document.querySelectorAll('[data-fl]').forEach(function(b){b.addEventListener('click',function(){setFloors(+b.getAttribute('data-fl'));});});
-el('zin').addEventListener('click',function(){zoomAt(.75);});el('zout').addEventListener('click',function(){zoomAt(1.33);});
-el('wl').addEventListener('click',function(){wallsOn=!wallsOn;this.classList.toggle('on',wallsOn);});
-document.querySelectorAll('.zc').forEach(function(c){c.addEventListener('click',function(){preset(c.getAttribute('data-z'));});});
 
-function wallFade(){
-  wallGroups.forEach(function(w){
-    var outside=(w.n[0]!==0)?(cam.position.x*w.n[0]>Math.abs(w.c)):(cam.position.z*w.n[2]>Math.abs(w.c));
-    w.g.forEach(function(m){
-      if(!m.material.__own){m.material=m.material.clone();m.material.__own=1;m.material.transparent=true;}
-      m.visible=wallsOn;m.material.opacity=outside?.1:1;m.material.depthWrite=!outside;});
-  });
+/* ───── подсказка по ячейке ───── */
+var tipEl=el('tip'),lastHover=0,hoverCell=null;
+function hideTip(){tipEl.style.display='none';hoverCell=null;}
+function buildRowIndex(F){
+  var m={};F.cells.forEach(function(c){var k=c.bi+'_'+c.r,o=m[k];
+    if(!o){o=m[k]={min:new THREE.Vector3(1e9,1e9,1e9),max:new THREE.Vector3(-1e9,-1e9,-1e9),cells:[]};}
+    o.cells.push(c);
+    o.min.min(_V.set(c.x-c.cw*.45,c.y-c.ch*.45,c.z-c.cd*.5));o.max.max(_V.set(c.x+c.cw*.45,c.y+c.ch*.45,c.z+c.cd*.5));});
+  F.rowIdx=Object.keys(m).map(function(k){return m[k];});
 }
+function pickCell(cx,cy){
+  var r=renderer.domElement.getBoundingClientRect();ndc.set((cx-r.left)/r.width*2-1,-((cy-r.top)/r.height)*2+1);ray.setFromCamera(ndc,cam);
+  var best=null,bd=1e9;
+  FLG.forEach(function(F){if(!F.g.visible||!F.rowIdx)return;
+    _R.copy(ray.ray);_R.origin.y-=F.g.position.y;
+    F.rowIdx.forEach(function(row){
+      if(!_R.intersectsBox(_B.set(row.min,row.max)))return;
+      row.cells.forEach(function(c){
+        _B.min.set(c.x-c.cw*.43,c.y-c.ch*.41,c.z-c.cd*.45);_B.max.set(c.x+c.cw*.43,c.y+c.ch*.41,c.z+c.cd*.45);
+        var p=_R.intersectBox(_B,_V);if(p){var d=p.distanceTo(_R.origin);if(d<bd){bd=d;best=c;}}});});});
+  return best;
+}
+function hoverAt(cx,cy){
+  var now=performance.now();if(now-lastHover<50)return;lastHover=now;
+  var c=pickCell(cx,cy),r=renderer.domElement.getBoundingClientRect();
+  if(!c){hideTip();return;}
+  hoverCell=c;
+  var rk=(c.blk.z.rk&&c.blk.z.rk[c.r])||(c.r+1),rs=c.blk.stat[c.r]||{t:0,o:0};
+  var t='<b>'+esc(c.code)+'</b><br><span>'+c.f+' этаж · зона '+esc(c.zone)+' · ряд '+esc(rk)+' · секц. '+(c.b+1)+' · ур. '+(c.l+1)+'</span><br>';
+  if(c.q>0){t+='Остаток <b>'+fmt(c.q)+'</b> шт'+(c.res>0?' · резерв '+fmt(c.res):'')+'<br><span>позиций (SKU): '+c.ns+'</span>'+(c.det?'<br>'+esc(c.det):'');}
+  else t+='<b style="color:#E5484D">Ячейка пустая</b>';
+  t+='<br><span>ряд заполнен на '+(rs.t?Math.round(rs.o/rs.t*100):0)+'% ('+rs.o+' из '+rs.t+')</span>';
+  tipEl.innerHTML=t;tipEl.style.display='block';
+  var w=tipEl.offsetWidth,h=tipEl.offsetHeight,x=cx-r.left+14,y=cy-r.top+14;
+  if(x+w>r.width-6)x=cx-r.left-w-14;if(y+h>r.height-6)y=cy-r.top-h-14;
+  tipEl.style.left=Math.max(4,x)+'px';tipEl.style.top=Math.max(4,y)+'px';
+}
+
+/* ───── этажи, режимы, стены, поиск ───── */
+function floorCenter(f){var F=FL[f];return new THREE.Vector3(0,F.g.position.y+.8,(ZA+ZB)/2);}
+function setFloor(n){
+  SELF=n;
+  FLG.forEach(function(F){F.g.visible=(n===0||F.f===n);});
+  colI.m.visible=(n===0&&EXPL<.05);
+  [].forEach.call(document.querySelectorAll('[data-fl]'),function(b){b.classList.toggle('on',+b.getAttribute('data-fl')===n);});
+  [].forEach.call(document.querySelectorAll('.fr'),function(b){b.classList.toggle('on',+b.getAttribute('data-f')===n);});
+  floorLabels.forEach(function(l){l.d.style.display=(n===0||l.f===n)?'':'none';});
+  if(n>0){var c=floorCenter(n);flyTo(new THREE.Vector3(c.x,c.y,c.z+1),.25,1.05,50);}
+  showRacks();
+}
+function showRacks(){
+  var box_=el('rk');if(!box_)return;
+  if(!SELF){box_.innerHTML='';return;}
+  var F=FL[SELF],list=[];
+  F.blocks.forEach(function(b,bi){for(var r=0;r<b.R;r++){var s=b.stat[r];if(s&&s.t)list.push({b:b,bi:bi,r:r,t:s.t,e:s.t-s.o});}});
+  list.sort(function(a,b){return (b.e/b.t)-(a.e/a.t)||b.e-a.e;});
+  var h='<div class="sec">'+SELF+' этаж · самые пустые ряды (клик — показать)</div><div class="glass note">';
+  if(!list.length)h+='нет ячеек';
+  list.slice(0,8).forEach(function(x,i){var p=b_pct(x);h+='<div class="ln" data-rk="'+x.bi+'_'+x.r+'" style="cursor:pointer"><b>'+esc(x.b.z.z)+' · ряд '+esc((x.b.z.rk&&x.b.z.rk[x.r])||(x.r+1))+'</b><span>пусто '+x.e+' из '+x.t+' ('+p+'%)</span></div>';});
+  box_.innerHTML=h+'</div>';
+}
+function b_pct(x){return Math.round(x.e/x.t*100);}
+function setMode(m){MODE=m;[].forEach.call(document.querySelectorAll('[data-md]'),function(b){b.classList.toggle('on',b.getAttribute('data-md')===m);});recolor();}
+function applyWalls(){
+  var lab=['Стены: сплошные','Стены: призрак','Стены: скрыты'][wallMode];el('wl').textContent=lab;
+  FADE.forEach(function(w){var m=w.mat;if(wallMode===0){w.o.visible=true;m.opacity=w.base;m.depthWrite=true;}else if(wallMode===1){w.o.visible=true;m.opacity=w.base*.13;m.depthWrite=false;}else{w.o.visible=false;}m.needsUpdate=true;});
+}
+applyWalls();
+function runSearch(q){
+  q=(q||'').trim().toLowerCase();
+  allCells.forEach(function(c){c.hl=false;});
+  var res=el('qres');
+  if(q.length<2){HL=null;res.textContent='';recolor();return;}
+  var n=0,byF={};
+  allCells.forEach(function(c){if(c.code.toLowerCase().indexOf(q)>=0||c.ids.indexOf(q)>=0||(c.det||'').toLowerCase().indexOf(q)>=0){c.hl=true;n++;byF[c.f]=(byF[c.f]||0)+1;}});
+  HL=n?true:null;if(!n){res.textContent='не найдено';recolor();return;}
+  var fs=Object.keys(byF);res.textContent='найдено ячеек: '+n+' ('+fs.map(function(f){return f+' эт: '+byF[f];}).join(', ')+')';
+  recolor();
+  var bf=+fs.sort(function(a,b){return byF[b]-byF[a];})[0];
+  if(fs.length===1)setFloor(bf);
+  var sx=0,sz=0,k=0;FL[bf].cells.forEach(function(c){if(c.hl){sx+=c.x;sz+=c.z;k++;}});
+  if(k)flyTo(new THREE.Vector3(sx/k,FL[bf].g.position.y+1,sz/k),.2,1.0,Math.min(48,10+Math.sqrt(k)*2));
+}
+var qT=null;el('q').addEventListener('input',function(){clearTimeout(qT);var v=this.value;qT=setTimeout(function(){runSearch(v);},250);});
+el('q').addEventListener('keydown',function(e){e.stopPropagation();});
+function preset(k){var p=PRE[k];flyTo(p[0],p[1],p[2],p[3]);if(k==='face'){wallMode=0;applyWalls();}if(k==='all'||k==='mez'){if(SELF)setFloor(0);}}
+[].forEach.call(document.querySelectorAll('[data-pre]'),function(b){b.addEventListener('click',function(){preset(b.getAttribute('data-pre'));});});
+[].forEach.call(document.querySelectorAll('[data-fl]'),function(b){b.addEventListener('click',function(){setFloor(+b.getAttribute('data-fl'));});});
+[].forEach.call(document.querySelectorAll('[data-md]'),function(b){b.addEventListener('click',function(){setMode(b.getAttribute('data-md'));});});
+el('zin').addEventListener('click',function(){zoomAt(.75);});el('zout').addEventListener('click',function(){zoomAt(1.33);});
+el('wl').addEventListener('click',function(){wallMode=(wallMode+1)%3;applyWalls();});
+el('ex').addEventListener('click',function(){EXPLT=EXPLT?0:1;this.classList.toggle('on',!!EXPLT);colI.m.visible=(SELF===0&&!EXPLT);});
+el('pn').addEventListener('click',function(){el('left').classList.toggle('off');resize();});
+el('left').addEventListener('click',function(e){
+  var t=e.target;if(!t.closest)return;
+  var rk=t.closest('[data-rk]');
+  if(rk&&SELF){var pr=rk.getAttribute('data-rk').split('_'),b=FL[SELF].blocks[+pr[0]],rp=b.rackPos[+pr[1]];flyTo(new THREE.Vector3(rp.x,FL[SELF].g.position.y+1,rp.z),.15,1.1,Math.max(9,Math.min(26,rp.len*.55)));return;}
+  var f=t.closest('.fr');if(f){var n=+f.getAttribute('data-f');setFloor(SELF===n?0:n);return;}
+  var z=t.closest('.zc');if(z){var k=z.getAttribute('data-z');preset(({pick:'mez',sort:'sort',hub:'hub',ship:'gate'})[k]||'all');}
+});
+if(small)el('left').classList.add('off');
+if(window.innerWidth<760&&window.innerWidth>=560)el('left').classList.remove('off');
+
+/* ───── кадр ───── */
 var vp=new THREE.Vector3();
 function placeLabels(){
   var w=wrap.clientWidth,h=wrap.clientHeight;
-  labels.forEach(function(l){var p=l.follow?l.follow.position:l.pos;vp.set(p.x,l.follow?p.y+2.2:p.y,p.z).project(cam);
-    if(vp.z>1||vp.z<-1||l.d.style.display==='none'&&!l.follow){l.d.style.visibility='hidden';return;}
+  labels.forEach(function(l){
+    if(l.f){var F=FL[l.f];l.pos.y=F.g.position.y+.4;}
+    var p=l.follow?l.follow.position:l.pos;if(!p){l.d.style.visibility='hidden';return;}
+    var wp=new THREE.Vector3();if(l.follow){l.follow.getWorldPosition(wp);wp.y+=(l.dy||2.3);}else wp.copy(p);
+    vp.copy(wp).project(cam);
+    if(vp.z>1||vp.z<-1||l.d.style.display==='none'){l.d.style.visibility='hidden';return;}
     l.d.style.visibility='visible';l.d.style.transform='translate('+((vp.x*.5+.5)*w)+'px,'+((-vp.y*.5+.5)*h)+'px) translate(-50%,-50%)';});
 }
-function resize(){W=wrap.clientWidth||W;H=wrap.clientHeight||H;renderer.setSize(W,H);cam.aspect=W/H;cam.updateProjectionMatrix();}
+function resize(){W=wrap.clientWidth||W;H=wrap.clientHeight||H;renderer.setSize(W,H);cam.aspect=W/H; var off=(el('left').classList.contains('off')||W<560)?0:Math.round(Math.min(150,W*.11)); if(off)cam.setViewOffset(W,H,-off,0,W,H);else cam.clearViewOffset();cam.updateProjectionMatrix();}
 window.addEventListener('resize',resize);
-var last=performance.now(),fr=0;
+var last=performance.now();
 function loop(now){
   var dt=Math.min(.05,(now-last)/1000);last=now;
   if(goal){var k=Math.min(1,dt*3.2);tgt.lerp(goal.t,k);sph.th+=(goal.th-sph.th)*k;sph.ph+=(goal.ph-sph.ph)*k;sph.r+=(goal.r-sph.r)*k;
     if(tgt.distanceTo(goal.t)<.05&&Math.abs(sph.r-goal.r)<.1){goal=null;saveCam();}}
-  for(var i=0;i<actors.length;i++){var a=actors[i];if(a.g.visible)stepActor(a,dt);}
-  updateFork(dt);updateBelt(dt);
-  applyCam();wallFade();placeLabels();
+  if(Math.abs(EXPL-EXPLT)>.002){EXPL+=(EXPLT-EXPL)*Math.min(1,dt*3);FLG.forEach(function(F){F.g.position.y=F.baseY*(1+EXPL*1.1);});}
+  for(var i=0;i<actors.length;i++){var a=actors[i];if(a.g.visible){if(a.pickP&&!a.F.g.visible)continue;stepActor(a,dt);}}
+  updateTrucks(dt);updateBelt(dt);updateLift(dt);
+  applyCam();placeLabels();
   renderer.render(scene,cam);
   requestAnimationFrame(loop);
 }
 window.__whTick=function(ms){loop(performance.now()+ms);};
-resize();applyCam();requestAnimationFrame(loop);
+resize();applyCam();setFloor(0);requestAnimationFrame(loop);
+window.__wh={sim:function(sec){for(var t=0;t<sec;t+=.05)updateTrucks(.05);},trucks:function(){return trucks.map(function(t){return t.gate+':'+t.state+':'+(t.t.n||'')+':'+Math.round(t.z);});},setFloor:setFloor,preset:preset,setMode:setMode,wall:function(m){wallMode=m;applyWalls();},cam:function(){return {tgt:tgt.toArray(),sph:sph};},stats:function(){return {cells:allCells.length,FLSTAT:FLSTAT};},search:runSearch,expl:function(v){EXPLT=v;},info:function(){return renderer.info.render;}};
 })();
 </script>
 </body></html>
 '''
+
+
+# ───────────────────────── Ячейки мезонина для 3D-модели ─────────────────────────
+def _nat(s: str) -> list:
+    """Ключ естественной сортировки: «2» < «10», «A» < «B»."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.findall(r"\d+|\D+", str(s))]
+
+
+def _cell_segs(code: str, zone: str) -> list:
+    """Штрихкод ячейки -> список сегментов без префикса зоны: «1M1-05-12-3» -> ['05', '12', '3']."""
+    s = re.sub(r"\s+", "", str(code).upper())
+    z = zkey(zone)
+    if z and s.startswith(z):
+        s = s[len(z):]
+    return [t for t in re.split(r"[^0-9A-ZА-ЯЁ]+", s) if t]
+
+
+def _wh_master_cells():
+    """Полный список ячеек мезонина (чтобы пустые ячейки были настоящими, а не восстановленными по сетке).
+    Источники по порядку: Metabase (Secrets [metabase] cells_table = <ID таблицы ячеек>), затем файл wh_cells.csv /
+    wh_cells.xlsx рядом с app.py (колонка с кодом ячейки или первая колонка). None — списка нет."""
+    raw = None
+    try:
+        cfg, _, _ = _mb_cfg()
+        if int(cfg.get("cells_table", 0) or 0):
+            raw = mb_table("cells_table", 0)
+    except Exception:
+        raw = None
+    if raw is None:
+        for fn in WH_CELLS_FILES:
+            try:
+                p = Path(__file__).with_name(fn)
+                if p.exists():
+                    raw = pd.read_csv(p, dtype=str, sep=None, engine="python") if fn.endswith(".csv") \
+                        else pd.read_excel(p, dtype=str)
+                    break
+            except Exception:
+                raw = None
+    if raw is None or raw.empty:
+        return None
+    cols = {_nk(c): c for c in raw.columns}
+    col = _mpick(cols, "cellbarcode", "barcode", "ячейка", "штрихкод", "code", "cell", "name") or raw.columns[0]
+    out = {str(x).strip() for x in raw[col].dropna() if str(x).strip()}
+    return out or None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def wh_cells() -> dict:
+    """Ячейки мезонина (зоны WH_MEZ_ZONES: 1M1…5M1, номер этажа — первая цифра) из Magnit Stock.
+    Остальные зоны (DMG, BP, HP, 1M2 …) к ячейкам не относятся и идут отдельной строкой «вне ячеек».
+    Возвращает {ok, err, uni, other, other_z, zones: [{z, fl, R, B, L, ex, rk, c: [[ряд, секция, уровень, шт, резерв,
+    позиций, код, товары, поиск], …]}]}. «uni»: True — пустые ячейки взяты из полного списка, False — восстановлены по
+    сетке нумерации (каждый ряд от первой до последней секции/уровня, которые встретились в остатках)."""
+    out = dict(ok=False, err="", uni=False, other=0, other_z={}, zones=[], total=0)
+    try:
+        m = magnit_norm(load_magnit())
+    except Exception as e:
+        out["err"] = str(e)[:200]
+        return out
+    if m.empty or not m["cell"].astype(bool).any():
+        out["err"] = "В Magnit Stock нет колонки с ячейками или она пустая."
+        return out
+    m = m.copy()
+    m["zk"] = m["zone"].map(zkey)
+    keys = {zkey(z): z for z in WH_MEZ_ZONES}
+    mez = m[m["zk"].isin(keys) & (m["cell"] != "")]
+    oth = m[~m["zk"].isin(keys)]
+    out["other"] = int(oth["loc"].sum())
+    out["other_z"] = {str(k) or "?": int(v) for k, v in
+                      oth.groupby(oth["zone"].replace("", "?"))["loc"].sum().sort_values(ascending=False).head(14).items()}
+    master = _wh_master_cells()
+    out["uni"] = bool(master)
+    for zk_, zname in keys.items():
+        sub = mez[mez["zk"] == zk_]
+        mc = {c for c in (master or ()) if zkey(c.split("-")[0]) == zk_} if master else set()
+        if sub.empty and not mc:
+            continue
+        # по ячейкам: штуки, резерв, позиции, топ-3 товара, ключи поиска
+        sub = sub.sort_values("loc", ascending=False)
+        g = sub.groupby("cell", sort=False)
+        agg = pd.DataFrame({"q": g["loc"].sum(), "res": g["res"].sum(), "ns": g["sku"].nunique()})
+        top = sub.groupby("cell", sort=False).head(3)
+        det = (top["name"].str.slice(0, 46) + " × " + top["loc"].round().astype(int).astype(str)) \
+            .groupby(top["cell"]).agg(" · ".join)
+        key_ = (sub["sku"] + " " + sub["ext"] + " " + sub["wms"]).str.lower()
+        ids = key_.groupby(sub["cell"], sort=False).agg(lambda s: " ".join(dict.fromkeys(" ".join(s.head(6)).split()))[:90])
+        agg["det"], agg["ids"] = det, ids
+        agg = agg.fillna({"det": "", "ids": ""})
+        aggd = {c: (float(a), float(b), int(n_), d_, i_) for c, a, b, n_, d_, i_ in
+                zip(agg.index, agg["q"], agg["res"], agg["ns"], agg["det"], agg["ids"])}
+        codes = set(agg.index) | mc
+        segs = {c: _cell_segs(c, zname) for c in codes}
+        cnt = pd.Series([len(v) for v in segs.values()]).value_counts()
+        nseg = int(cnt.index[0]) if len(cnt) else 0
+        seq = nseg <= 1                                  # нумерацию разобрать не удалось — раскладываем по порядку
+        order = sorted(codes, key=_nat)
+        if seq:
+            rows_ = {c: (i // 24, i % 24, 0) for i, c in enumerate(order)}
+            rk, R, B, L = [f"{j + 1}" for j in range((len(order) + 23) // 24)], max(1, (len(order) + 23) // 24), 24, 1
+            note = "нумерация не распознана, ячейки расставлены по порядку"
+        else:
+            def fit(v):
+                v = list(v)[:max(nseg, 2)] if nseg >= 2 else list(v)
+                return v + [""] * (max(nseg, 2) - len(v))
+            P = {c: fit(segs[c]) for c in codes}
+            if nseg == 2:
+                rowk = {c: (P[c][0],) for c in codes}
+                bayv = {c: P[c][1] for c in codes}
+                levv = {c: "" for c in codes}
+            else:
+                nb = len({P[c][-2] for c in codes})
+                nl = len({P[c][-1] for c in codes})
+                lev_last = not (nb < nl and nb <= 12)    # уровней обычно мало: меньшая из двух последних частей
+                rowk = {c: tuple(P[c][:-2]) for c in codes}
+                bayv = {c: P[c][-2 if lev_last else -1] for c in codes}
+                levv = {c: P[c][-1 if lev_last else -2] for c in codes}
+            rks = sorted({rowk[c] for c in codes}, key=lambda t: [_nat(x) for x in t])
+            bays = sorted({bayv[c] for c in codes}, key=_nat)
+            levs = sorted({levv[c] for c in codes}, key=_nat)
+            ri, bi, li = ({k: i for i, k in enumerate(x)} for x in (rks, bays, levs))
+            rows_ = {c: (ri[rowk[c]], bi[bayv[c]], li[levv[c]]) for c in codes}
+            rk, R, B, L = ["-".join(t) for t in rks], len(rks), len(bays), len(levs)
+            note = ""
+            if not master:                               # пустые ячейки восстанавливаем: ряд от 0 до крайней секции/уровня
+                mxb, mxl = {}, {}
+                for c, (r_, b_, l_) in rows_.items():
+                    mxb[r_] = max(mxb.get(r_, 0), b_)
+                    mxl[r_] = max(mxl.get(r_, 0), l_)
+                have = set(rows_.values())
+                extra = [(r_, b_, l_) for r_ in mxb for b_ in range(mxb[r_] + 1) for l_ in range(mxl[r_] + 1)
+                         if (r_, b_, l_) not in have]
+                if len(extra) + len(rows_) <= WH_CELL_MAX:
+                    for r_, b_, l_ in extra:
+                        rows_[f"~{r_}.{b_}.{l_}"] = (r_, b_, l_)
+        cl = []
+        for c, (r_, b_, l_) in rows_.items():
+            if c in aggd:
+                q, rs_, ns_, dt_, id_ = aggd[c]
+                cl.append([r_, b_, l_, int(round(q)) if q > 0 else 0, int(round(max(0.0, rs_))) if q > 0 else 0,
+                           ns_ if q > 0 else 0, c, dt_ if q > 0 else "", id_ if q > 0 else ""])
+            elif c.startswith("~"):                      # восстановленная пустая ячейка (кода нет)
+                cl.append([r_, b_, l_, 0, 0, 0, f"{zname}-{rk[r_]}-{b_ + 1}-{l_ + 1}?", "", ""])
+            else:                                        # есть в списке ячеек, остатка нет
+                cl.append([r_, b_, l_, 0, 0, 0, c, "", ""])
+        cl.sort(key=lambda x: (x[0], x[1], x[2]))
+        fl_m = re.match(r"\d", zname)
+        out["zones"].append(dict(z=zname, fl=int(fl_m.group()) if fl_m else 1, R=R, B=B, L=L, rk=rk, note=note,
+                                 ex=next((x[6] for x in cl if x[3] > 0), ""), c=cl))
+    out["zones"].sort(key=lambda z: z["fl"])
+    out["total"] = sum(len(z["c"]) for z in out["zones"])
+    out["ok"] = bool(out["zones"])
+    if not out["ok"]:
+        out["err"] = "В остатках нет ячеек зон " + ", ".join(WH_MEZ_ZONES) + "."
+    return out
+
+
+def wh_cells_frames(cz: dict) -> dict:
+    """Таблицы для Excel: сводка по зонам, по рядам, пустые ячейки, занятые ячейки."""
+    zs, rs, em, oc = [], [], [], []
+    for z in cz.get("zones", []):
+        t = o = pcs = rv = 0
+        per = {}
+        for r_, b_, l_, q, res, ns, code, det, _ids in z["c"]:
+            t += 1
+            p = per.setdefault(r_, [0, 0])
+            p[0] += 1
+            if q > 0:
+                o += 1
+                pcs += q
+                rv += res
+                p[1] += 1
+                oc.append({"Зона": z["z"], "Ряд": z["rk"][r_] if r_ < len(z["rk"]) else r_ + 1, "Ячейка": code,
+                           "Штук": q, "Резерв": res, "Позиций": ns, "Товары": det})
+            else:
+                em.append({"Зона": z["z"], "Этаж": z["fl"], "Ряд": z["rk"][r_] if r_ < len(z["rk"]) else r_ + 1,
+                           "Ячейка": code})
+        zs.append({"Зона": z["z"], "Этаж": z["fl"], "Ячеек": t, "Занято": o, "Пусто": t - o,
+                   "Заполнено, %": round(o / t * 100, 1) if t else 0, "Штук": pcs, "Резерв": rv})
+        for r_, (tt, oo) in sorted(per.items()):
+            rs.append({"Зона": z["z"], "Ряд": z["rk"][r_] if r_ < len(z["rk"]) else r_ + 1, "Ячеек": tt, "Занято": oo,
+                       "Пусто": tt - oo, "Заполнено, %": round(oo / tt * 100, 1) if tt else 0})
+    return {"Сводка по зонам": pd.DataFrame(zs), "Ряды": pd.DataFrame(rs),
+            "Пустые ячейки": pd.DataFrame(em), "Занятые ячейки": pd.DataFrame(oc)}
 
 
 @st.cache_resource
@@ -5079,7 +5561,18 @@ def _wh_store() -> dict:
 def wh_collect() -> dict:
     """Цифры для моделей зон из тех же источников, что и виджеты сводной (всё из кэша)."""
     today = datetime.now(TZ).date()
-    out = {"sort": None, "hub": None, "ship": None}
+    out = {"pick": None, "sort": None, "hub": None, "ship": None}
+    try:                                                    # сборка на мезонине: собрано / осталось (ближайший рабочий день)
+        dp = load()
+        ds_ = sorted(x for x in dp["Дата"].unique() if pd.notna(x))
+        if ds_:
+            day = today if today in ds_ else next((x for x in reversed(ds_) if x <= today), ds_[0])
+            q = dp[dp["Дата"] == day]
+            out["pick"] = dict(date=day.isoformat(), pcs_done=int(q.loc[q["Собран"], "Штук"].sum()),
+                               o_done=int(q["Собран"].sum()), pcs_left=int(q.loc[~q["Собран"], "Штук"].sum()),
+                               o_left=int((~q["Собран"]).sum()))
+    except Exception:
+        pass
     try:                                                    # сортировка: статусы WMS SORTING / SORTED
         d = load()
         fr = d[["Заказ", "Статус WMS", "Штук"]].copy()
@@ -5130,6 +5623,8 @@ def wh_track(c: dict) -> dict:
     Возвращает по зонам: idle, nodata, since (время последнего изменения цифр)."""
     t = time.time()
     sig = {}
+    if c.get("pick"):
+        sig["pick"] = [c["pick"]["pcs_done"], c["pick"]["o_done"], c["pick"]["date"]]
     if c.get("sort"):
         x = c["sort"]
         sig["sort"] = [x["sorting"], x["sorted"], x["o_sorting"], x["o_sorted"]]
@@ -5139,7 +5634,7 @@ def wh_track(c: dict) -> dict:
         sig["ship"] = [c["ship"]["pcs_done"], c["ship"]["done"], c["ship"]["date"]]
     h, out, dirty = _wh_store(), {}, False
     with h["lock"]:
-        for z in ("sort", "hub", "ship"):
+        for z in ("pick", "sort", "hub", "ship"):
             if z not in sig:
                 out[z] = {"idle": True, "nodata": True, "since": ""}
                 continue
@@ -5159,21 +5654,31 @@ def wh_track(c: dict) -> dict:
     return out
 
 
-def wh_html(c: dict, tr: dict, dark: bool) -> str:
+def wh_html(c: dict, tr: dict, dark: bool, cz: dict = None) -> str:
     state = {"dark": dark, "rows": WH_ROWS, "per": WH_PER_ROW, "workers": WH_WORKERS,
-             "sort": c.get("sort"), "hub": c.get("hub"), "ship": c.get("ship"), "state": tr}
-    js = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+             "pick": c.get("pick"), "sort": c.get("sort"), "hub": c.get("hub"), "ship": c.get("ship"), "state": tr,
+             "cells": cz or {"ok": False, "zones": [], "err": "нет данных"}}
+    js = json.dumps(state, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     return WH_HTML.replace("__STATE__", js).replace("__THEME__", "dark" if dark else "light")
 
 
 @st.fragment(run_every=60)
 def _wh_live():
-    """Окно «Модель склада»: сортировка (SORTING/SORTED), хаб (принято / не принято), ворота отгрузки (сегодня).
-    Обновляется раз в минуту; сцена перезагружается только если цифры изменились, камера при этом сохраняется."""
+    """Окно «Модель склада»: ячейки мезонина 1M1–5M1 (заполняемость / пустота), сортировка впереди мезонина,
+    хаб слева, ворота с газелями. Обновляется раз в минуту; сцена перезагружается только если данные изменились,
+    камера при этом сохраняется."""
     c = wh_collect()
     tr = wh_track(c)
-    components.html(wh_html(c, tr, bool(st.session_state.dark)), height=WH_HEIGHT)
-    st.caption(f"Количество коробок на схеме пропорционально цифрам из таблиц и Metabase. "
+    try:
+        cz = wh_cells()
+    except Exception as e:
+        cz = {"ok": False, "zones": [], "err": str(e)[:160]}
+    components.html(wh_html(c, tr, bool(st.session_state.dark), cz), height=WH_HEIGHT)
+    if cz.get("ok"):
+        xl_button("Скачать Excel: заполняемость ячеек мезонина", lambda: to_xlsx(wh_cells_frames(cz)),
+                  f"yacheyki_mezonin_{datetime.now(TZ):%Y%m%d_%H%M}.xlsx", "dl_wh_cells")
+    st.caption(f"Ячейки мезонина — зоны {', '.join(WH_MEZ_ZONES)} из Magnit Stock (DMG, BP, HP и прочие зоны к ячейкам не относятся). "
+               f"Количество коробок в сортировке, хабе и у ворот пропорционально цифрам из таблиц и Metabase. "
                f"Если цифры зоны не меняются {WH_IDLE_MIN} мин — операций нет: людей в зоне нет, стоит охрана.")
 
 
