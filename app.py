@@ -199,6 +199,22 @@ WH_HEIGHT = 760                         # высота 3D-окна, px
 WH_MEZ_ZONES = ("1M1", "2M1", "3M1", "4M1", "5M1")   # зоны-ячейки мезонина (первая цифра = этаж); DMG, BP, HP и др. — не ячейки
 WH_CELL_MAX = 60000                     # предел числа ячеек, которые восстанавливаются по сетке нумерации
 WH_CELLS_FILES = ("wh_cells.csv", "wh_cells.xlsx")   # необязательный список ВСЕХ ячеек мезонина (рядом с app.py)
+WH_PAL_PREFIX = "HP"                    # паллетный мезонин: ШК ячеек в остатках начинается с HP (HP-ряд-место-уровень)
+WH_PAL_ROWS = (("9", 63), ("10", 63), ("11", 63), ("12", 33))   # ряды паллетного мезонина и число мест в ряду (схема Excel)
+WH_PAL_L = 6                            # уровней по высоте
+WH_PAL_AISLES = (33, 3)                 # поперечный проезд («Карный проезд») после 33-го места, шириной 3 колонки; ещё один — в конце ряда
+# схема этажей 2–5 (Excel «Все этажи мезонина кроме 1 этаж»): зона -> (название, секций в ряду, ячеек по уровням снизу вверх,
+# ряды с «подъёмом для персонала» вместо стеллажей, {ряд: (секция от, секция до)} — вместо стеллажей лестница)
+WH_SCHEME = {
+    "A": ("Зона А", 12, (1, 2, 4, 4, 4), (4, 5, 10, 11), {}),
+    "B": ("Зона Б", 12, (2, 2, 4, 4, 4, 4), (), {}),
+    "C": ("Зона С", 13, (2, 2, 4, 4, 4, 4), (), {}),
+    "D": ("Зона D", 10, (2, 2, 4, 4, 4, 4), (), {2: (7, 9), 11: (7, 9)}),
+    "H": ("Зона H/D", 1, (2, 2, 4, 4, 4, 4), (), {}),
+}
+WH_SCH_ROWS = 14
+WH_SCH_ZMAP = {"A": "A", "А": "A", "B": "B", "Б": "B", "В": "B", "C": "C", "С": "C", "D": "D", "Д": "D",
+               "H": "H", "Н": "H", "HD": "H", "НД": "H"}
 CHAT_KEEP = 300                         # сколько последних сообщений хранить
 CHAT_MAX = 500                          # максимальная длина сообщения
 CHAT_TYPING_SEC = 4                     # сколько секунд после последнего нажатия клавиши горит «печатает…»
@@ -4663,9 +4679,9 @@ body.dark .glass{box-shadow:0 12px 34px rgba(0,0,0,.45),inset 0 1px 0 rgba(160,1
  <div id="ctl">
   <div class="row"><button class="bt sq" id="zin" title="Приблизить">+</button><button class="bt sq" id="zout" title="Отдалить">−</button><button class="bt sq" id="pn" title="Панель слева">☰</button></div>
   <div class="cap">Обзор</div>
-  <div class="row"><button class="bt" data-pre="all">Весь склад</button><button class="bt" data-pre="face">Фасад</button><button class="bt" data-pre="mez">Мезонин</button><button class="bt" data-pre="sort">Сортировка</button><button class="bt" data-pre="hub">Хаб</button><button class="bt" data-pre="gate">Ворота</button><button class="bt" data-pre="top">Сверху</button></div>
+  <div class="row"><button class="bt" data-pre="all">Весь склад</button><button class="bt" data-pre="face">Фасад</button><button class="bt" data-pre="mez">Мезонин</button><button class="bt" data-pre="pal">Паллетный мезонин</button><button class="bt" data-pre="sort">Сортировка</button><button class="bt" data-pre="hub">Хаб</button><button class="bt" data-pre="gate">Ворота</button><button class="bt" data-pre="top">Сверху</button></div>
   <div class="cap">Этаж мезонина</div>
-  <div class="row" id="fls"><button class="bt on" data-fl="0">Все</button><button class="bt" data-fl="1">1</button><button class="bt" data-fl="2">2</button><button class="bt" data-fl="3">3</button><button class="bt" data-fl="4">4</button><button class="bt" data-fl="5">5</button></div>
+  <div class="row" id="fls"><button class="bt on" data-fl="0">Все</button><button class="bt" data-fl="1">1</button><button class="bt" data-fl="2">2</button><button class="bt" data-fl="3">3</button><button class="bt" data-fl="4">4</button><button class="bt" data-fl="5">5</button><button class="bt" data-fl="6">Паллетный</button></div>
   <div class="cap">Раскраска ячеек</div>
   <div class="row" id="mds"><button class="bt on" data-md="fill">Заполнение</button><button class="bt" data-md="empty">Пустота</button><button class="bt" data-md="rows">По рядам</button><button class="bt" data-md="qty">Штуки</button><button class="bt" data-md="res">Резерв</button></div>
   <div class="row"><button class="bt" id="tour">Облёт 360°</button><button class="bt" id="wl">Стены: призрак</button><button class="bt" id="ex">Разнести этажи</button></div>
@@ -4691,7 +4707,7 @@ var CZ=S.cells||{zones:[],ok:false};
 var WK=S.workers||{pick:12,sort:10,hub:5,ship:6};
 
 /* ───── размеры здания ───── */
-var X0=-34,X1=34,Z0=-26,Z1=26,WHT=16.6,YARD=-1.1,FLH=3.0;
+var X0=-34,X1=34,Z0=-40,Z1=26,WHT=16.6,YARD=-1.1,FLH=3.0;
 var SCX=[6.0,12.6,19.2,25.8],SCZ=[13.6,18.4,23.2],RCV={x:4.5,z:5.0};  /* сортировка: паллеты крестом (5 шт.), центры кластеров */
 var MX0=-32,MX1=32,ZA=-23.4,ZB=2.6;                 /* ячеечная область мезонина */
 var GATES=[-27,-21,-15,-9],GNUM=[4,5,6,7];
@@ -4706,9 +4722,9 @@ var ZN_NAMES={};
 var FLSTAT={};
 function calcStats(){
   var T={tot:0,occ:0,pcs:0,res:0};
-  [1,2,3,4,5].forEach(function(f){var o={tot:0,occ:0,pcs:0,res:0,zn:[]};
+  [1,2,3,4,5,6].forEach(function(f){var o={tot:0,occ:0,pcs:0,res:0,zn:[]};
     (floors[f]||[]).forEach(function(z){o.zn.push(z.z);z.c.forEach(function(c){o.tot++;if(c[3]>0){o.occ++;o.pcs+=c[3];o.res+=c[4];}});});
-    FLSTAT[f]=o;T.tot+=o.tot;T.occ+=o.occ;T.pcs+=o.pcs;T.res+=o.res;});
+    FLSTAT[f]=o;if(f<6){T.tot+=o.tot;T.occ+=o.occ;T.pcs+=o.pcs;T.res+=o.res;}});
   FLSTAT.T=T;
 }
 calcStats();
@@ -4728,8 +4744,8 @@ function buildLeft(){
     h+='<div class="glass note warn">Нет данных по ячейкам: '+esc(CZ.err||'Magnit Stock из Metabase не загрузился')+'. Склад показан без заполнения.</div>';
   }
   h+='<div class="sec">Этажи (клик — показать этаж)</div>';
-  [5,4,3,2,1].forEach(function(f){var o=FLSTAT[f],p=pctOf(o.occ,o.tot);
-    h+='<div class="fr glass" data-f="'+f+'"><div class="frt"><b>'+f+' этаж</b><span>'+(o.zn.join(', ')||'нет ячеек')+' · '+p+'%</span></div><div class="bar"><i style="width:'+p+'%"></i></div>'+
+  [6,5,4,3,2,1].forEach(function(f){var o=FLSTAT[f],p=pctOf(o.occ,o.tot);
+    h+='<div class="fr glass" data-f="'+f+'"><div class="frt"><b>'+(f===6?'Паллетный мезонин':f+' этаж')+'</b><span>'+(o.zn.join(', ')||'нет ячеек')+' · '+p+'%</span></div><div class="bar"><i style="width:'+p+'%"></i></div>'+
        '<div class="frs">занято <b>'+fmt(o.occ)+'</b> из '+fmt(o.tot)+' · пусто <b>'+fmt(o.tot-o.occ)+'</b> · '+fmt(o.pcs)+' шт</div></div>';});
   h+='<div id="rk"></div>';
   h+='<div class="sec">Операции</div>';
@@ -4742,7 +4758,7 @@ function buildLeft(){
   h+=zoneCard('pick','Мезонин · сборка',a)+zoneCard('sort','Сортировка',b)+zoneCard('hub','Хаб · приёмка',c)+zoneCard('ship',S.ship?S.ship.title:'Ворота · отгрузка',d);
   if(CZ.zones&&CZ.zones.length){
     var nt='<b>Как прочитана нумерация ячеек</b><br>';
-    CZ.zones.forEach(function(z){nt+=z.z+' ('+z.fl+' эт.): рядов '+z.R+' · секций '+z.B+' · уровней '+z.L+(z.ex?' · пример '+esc(z.ex):'')+(z.note?' · <i>'+esc(z.note)+'</i>':'')+'<br>';});
+    CZ.zones.forEach(function(z){nt+=z.z+' ('+(z.pal?'паллетный':z.fl+' эт.')+'): рядов '+z.R+' · '+(z.pal?'колонок ':'бейов ')+z.B+' · уровней '+z.L+(z.ex?' · пример '+esc(z.ex):'')+(z.note?' · <i>'+esc(z.note)+'</i>':'')+'<br>';});
     if(CZ.other){var oz=Object.keys(CZ.other_z||{}).map(function(k){return esc(k)+' '+fmt(CZ.other_z[k]);}).join(' · ');nt+='<br>Вне ячеек мезонина (не учитываются): '+fmt(CZ.other)+' шт'+(oz?' — '+oz:'')+'.';}
     if(CZ.skip)nt+='<br>Не учитываются (не ячейки мезонина): 1ZZ, ECO — '+fmt(CZ.skip)+' шт.';
     if(!CZ.uni)nt+='<br><b>Пустые ячейки восстановлены по сетке нумерации</b> (ряд — от первой до последней секции и уровня из остатков). Для точной картины положите список всех ячеек в файл wh_cells.csv или укажите cells_table в [metabase].';
@@ -4814,6 +4830,7 @@ function floorTex(){
   function zone(x0,z0,x1,z1,fill,line,lab){g.fillStyle=fill;g.fillRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.strokeStyle=line;g.lineWidth=4;g.setLineDash([18,10]);g.strokeRect(X(x0),Zc(z0),(x1-x0)*P,(z1-z0)*P);g.setLineDash([]);
     g.fillStyle=line;g.globalAlpha=.6;g.font='800 26px sans-serif';g.textAlign='left';g.fillText(lab,X(x0)+12,Zc(z1)-12);g.globalAlpha=1;}
   zone(MX0-.9,ZA-1,MX1+.9,ZB+1.1,'rgba(139,61,255,.07)','#8B3DFF','МЕЗОНИН · ЯЧЕЕЧНОЕ ХРАНЕНИЕ (1 этаж)');
+  zone(MX0-.9,Z0+.2,MX1+.9,Z0+13.6,'rgba(255,152,0,.08)','#FF9800','ПАЛЛЕТНЫЙ МЕЗОНИН · HP · 4 ряда × 6 уровней');
   zone(-3.2,6.2,33,25.4,'rgba(52,194,122,.07)','#34C27A','СОРТИРОВКА');
   zone(-32.6,6.2,-4.6,25.4,'rgba(59,156,255,.08)','#3B9CFF','ХАБ · ВОРОТА');
   g.strokeStyle='#f2c500';g.lineWidth=5;g.setLineDash([]);
@@ -4823,7 +4840,7 @@ function floorTex(){
   var t=new THREE.CanvasTexture(c);t.anisotropy=4;return t;
 }
 var floorM=new THREE.Mesh(new THREE.PlaneGeometry(X1-X0,Z1-Z0),new THREE.MeshStandardMaterial({map:floorTex(),roughness:.92}));
-floorM.rotation.x=-Math.PI/2;floorM.receiveShadow=true;scene.add(floorM);
+floorM.rotation.x=-Math.PI/2;floorM.position.z=(Z0+Z1)/2;floorM.receiveShadow=true;scene.add(floorM);
 var yard=new THREE.Mesh(new THREE.PlaneGeometry(500,500),new THREE.MeshStandardMaterial({color:DARK?0x1b1f2c:0x7d828d,roughness:1}));
 yard.rotation.x=-Math.PI/2;yard.position.y=YARD;yard.receiveShadow=true;scene.add(yard);
 (function(){ /* разметка двора перед воротами: полосы стоянки */
@@ -4843,7 +4860,7 @@ function fadeMat(col,op,extra){var m=stdMat(col,Object.assign({transparent:true}
 function wallPiece(w,h,d,x,y,z,col,base){var mm=fadeMat(col||(DARK?0x3b4260:0xe7e9ee),base===undefined?1:base,{roughness:.9});
   var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mm.m);m.position.set(x,y,z);m.receiveShadow=true;scene.add(m);FADE.push({o:m,mat:mm.m,base:mm.base});return m;}
 var th=WHT-YARD,yc=YARD+th/2;
-wallPiece(.5,th,Z1-Z0,X0,yc,0);wallPiece(.5,th,Z1-Z0,X1,yc,0);wallPiece(X1-X0,th,.5,0,yc,Z0);
+wallPiece(.5,th,Z1-Z0,X0,yc,(Z0+Z1)/2);wallPiece(.5,th,Z1-Z0,X1,yc,(Z0+Z1)/2);wallPiece(X1-X0,th,.5,0,yc,Z0);
 (function(){ /* фасад с воротами */
   var edges=[X0];GATES.forEach(function(g){edges.push(g-1.75,g+1.75);});edges.push(X1);
   for(var i=0;i<edges.length;i+=2){var a=edges[i],b=edges[i+1];if(b-a>.01)wallPiece(b-a,th,.5,(a+b)/2,yc,Z1);}
@@ -4858,7 +4875,7 @@ var winMat=stdMat(0x2a3a58,{emissive:DARK?0x1b3560:0x4a6a9a,emissiveIntensity:.5
   [[-31,8.4],[-31,12.4]].forEach(function(){});
   var tw=box(1.9,15.2,.2,0x1a2238,{emissive:0x0a1226,roughness:.2,metalness:.5,transparent:true});tw.position.set(8.3,YARD+7.6,Z1+.32);scene.add(tw);FADE.push({o:tw,mat:tw.material,base:1});
   var side=box(.12,1.3,2.4,0x2a3a58,{emissive:0x4a6a9a,emissiveIntensity:.5,transparent:true});
-  for(var z=-16;z<=16;z+=6){[8.4,12.4].forEach(function(y){var w=side.clone();w.material=side.material.clone();w.position.set(X1+.3,y,z);scene.add(w);FADE.push({o:w,mat:w.material,base:1});});}
+  for(var z=-34;z<=16;z+=6){[8.4,12.4].forEach(function(y){var w=side.clone();w.material=side.material.clone();w.position.set(X1+.3,y,z);scene.add(w);FADE.push({o:w,mat:w.material,base:1});});}
 })();
 function plateTex(n){var c=document.createElement('canvas');c.width=128;c.height=128;var g=c.getContext('2d');g.fillStyle='#f4f4f4';g.fillRect(0,0,128,128);g.strokeStyle='#222';g.lineWidth=6;g.strokeRect(5,5,118,118);g.fillStyle='#111';g.font='900 90px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(String(n),64,70);return new THREE.CanvasTexture(c);}
 /* парапет и кровельный карниз */
@@ -4893,10 +4910,10 @@ var QMAX=1;
 function buildFloor(f){
   var zs=floors[f]||[];
   var g=new THREE.Group();scene.add(g);
-  var F={f:f,g:g,zs:zs,cells:[],blocks:[],racks:[],occ:null,emp:null,baseY:(f-1)*FLH,occMap:[],empMap:[]};
+  var F={f:f,g:g,zs:zs,cells:[],blocks:[],racks:[],occ:null,emp:null,baseY:f===6?0:(f-1)*FLH,occMap:[],empMap:[]};
   FL[f]=F;FLG.push(F);
   g.position.y=F.baseY;
-  if(f>1){
+  if(f>1&&f<6){
     var deck=new THREE.Mesh(new THREE.BoxGeometry(MX1-MX0+2.6,.14,ZB-ZA+2.6),new THREE.MeshStandardMaterial({map:gratTex,transparent:true,opacity:.34,depthWrite:false,roughness:.6}));
     deck.position.set(0,-.07,(ZA+ZB)/2);deck.receiveShadow=true;g.add(deck);F.deck=deck;
     var pts=[],yy=1.1,x0=MX0-1.3,x1=MX1+1.3,z0=ZA-1.3,z1=ZB+1.3;
@@ -4907,22 +4924,24 @@ function buildFloor(f){
   /* раскладка блоков */
   var tot=0;zs.forEach(function(z){tot+=Math.max(z.c.length,1);});
   var shelves=[],ups=[],placed=[];
-  var cur=MX0,D_=ZB-ZA,Wall=MX1-MX0;
+  var za_=(f===6)?Z0+.8:ZA,cur=MX0,D_=(f===6)?12.4:ZB-ZA,Wall=MX1-MX0,stairs=[];
   zs.forEach(function(z,zi){
     var share=Math.max(z.c.length,1)/Math.max(tot,1);
     var bw=zs.length===1?Wall:Math.max(10,Wall*share);
     var bx0=cur+1.2,Wb=bw-2.4;cur+=bw;
     var R=Math.max(1,z.R),B=Math.max(1,z.B),L=Math.max(1,Math.min(z.L,10));
-    var pz=2.5,nz=Math.max(1,Math.floor((D_-0.8)/pz)+1),sections=Math.ceil(R/nz);nz=Math.ceil(R/sections);
+    var pz=z.pal?3.6:2.5,nz=Math.max(1,Math.floor((D_-0.8)/pz)+1),sections=Math.ceil(R/nz);nz=Math.ceil(R/sections);if(z.pal){nz=R;sections=1;}
     var gap=.2,Wsec=(Wb-(sections-1)*gap)/sections;
-    var cw=Math.max(.1,Math.min(1.15,Wsec/B)),secOff=Math.max(0,(Wb-(sections*B*cw+(sections-1)*gap))/2),secX=function(sc){return bx0+secOff+sc*(B*cw+gap);},ch=Math.max(.24,Math.min(.62,2.5/L)),cd=.8;
-    var blk={z:z,x0:bx0,x1:bx0+Wb,cw:cw,ch:ch,L:L,R:R,B:B,pz:pz,nz:nz,sections:sections,Wsec:Wsec,xa:bx0-.8,rackPos:[]};
+    var cw=Math.max(.1,Math.min(1.15,Wsec/B)),secOff=Math.max(0,(Wb-(sections*B*cw+(sections-1)*gap))/2),secX=function(sc){return bx0+secOff+sc*(B*cw+gap);},ch=z.pal?1.35:Math.max(.24,Math.min(.62,2.5/L)),cd=z.pal?1.15:.8;
+    var blk={z:z,x0:bx0,x1:bx0+Wb,cw:cw,ch:ch,L:L,R:R,B:B,pz:pz,nz:nz,sections:sections,Wsec:Wsec,xa:bx0-.8,rackPos:[],rx0:secX(0)};
     F.blocks.push(blk);
     for(var r=0;r<R;r++){
       var sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
-      var zc0=ZA+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz;
+      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz;
       var rx0=secX(sec),len=B*cw;
       blk.rackPos.push({x:rx0+len/2,z:rz,x0:rx0,len:len});
+      if(z.off&&z.off.indexOf(r)>=0){stairs.push([rx0+len/2,rz,len,L*ch,.95,0xFF8A3D,.5]);continue;}      /* ряд занят подъёмом для персонала */
+      (z.gap||[]).forEach(function(gp){if(gp[0]===r)stairs.push([rx0+(gp[1]+gp[2]+1)/2*cw,rz,(gp[2]-gp[1]+1)*cw,L*ch*.9,.95,0xFFC107,.9]);});   /* лестница вместо стеллажей */
       for(var l=0;l<=L;l++)shelves.push([rx0+len/2,.1+ch*l-.025,rz,len,.045,cd+.12]);
       var step=Math.max(1,Math.round(4/Math.max(cw,.3)));
       for(var u=0;u<=B;u+=step){ups.push([rx0+u*cw,(L*ch+.2)/2,rz-cd/2-.04,L*ch+.2]);ups.push([rx0+u*cw,(L*ch+.2)/2,rz+cd/2+.04,L*ch+.2]);}
@@ -4930,12 +4949,13 @@ function buildFloor(f){
     }
     z.c.forEach(function(c){
       var r=c[0],sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
-      var zc0=ZA+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz,rx0=secX(sec);
-      var o={bi:F.blocks.length-1,zone:z.z,f:f,r:r,b:c[1],l:Math.min(c[2],L-1),q:c[3],res:c[4],ns:c[5],code:c[6],det:c[7],ids:(c[8]||'').toLowerCase(),
-             x:rx0+cw*(c[1]+.5),y:.1+ch*(Math.min(c[2],L-1)+.5),z:rz,cw:cw,ch:ch,cd:cd,blk:blk,hl:false,inst:-1,mesh:null};
+      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz,rx0=secX(sec);
+      var spn=c[9]||1;var o={bi:F.blocks.length-1,zone:z.z,f:f,r:r,b:c[1],l:Math.min(c[2],L-1),q:c[3],res:c[4],ns:c[5],code:c[6],det:c[7],ids:(c[8]||'').toLowerCase(),
+             x:rx0+cw*(c[1]+spn/2),y:.1+ch*(Math.min(c[2],L-1)+.5),z:rz,cw:cw*spn,ch:ch,cd:cd,blk:blk,hl:false,inst:-1,mesh:null};
       placed.push(o);
     });
   });
+  stairs.forEach(function(s){var m=box(s[2],s[3],s[4],s[5],{transparent:true,opacity:s[6]});m.position.set(s[0],s[3]/2+.1,s[1]);g.add(m);});
   /* каркас стеллажей */
   var shI=new Inst(UB,matBeam,shelves.length,g,false);shelves.forEach(function(s){shI.add(s[0],s[1],s[2],s[3],s[4],s[5],0);});shI.done();F.shelf=shI;
   var upI=new Inst(UB,matSteel,ups.length,g,false);ups.forEach(function(u){upI.add(u[0],u[1],u[2],.07,u[3],.07,0);});upI.done();F.ups=upI;
@@ -4955,7 +4975,7 @@ function buildFloor(f){
   F.label={pos:new THREE.Vector3(MX1+1.6,.4,ZA),el:null};
   return F;
 }
-[1,2,3,4,5].forEach(buildFloor);FLG.forEach(buildRowIndex);
+[1,2,3,4,5,6].forEach(buildFloor);FLG.forEach(buildRowIndex);
 
 
 /* ───── сортировка (впереди мезонина, справа) и хаб (слева) ───── */
@@ -5160,7 +5180,31 @@ var lbSort=mkLabel(zoneLabel('sort','СОРТИРОВКА'),new THREE.Vector3(15
 [[lbSort,'sort'],[lbHub,'hub'],[lbShip,'ship'],[lbPick,'pick']].forEach(function(x){if(zst(x[1]).idle)x[0].d.classList.add('idle');});
 GATES.forEach(function(gx,i){mkLabel('Ворота '+GNUM[i],new THREE.Vector3(gx,6.2,Z1+.3),'gt');});
 var floorLabels=[];
-[1,2,3,4,5].forEach(function(f){var o=FLSTAT[f];var lb=mkLabel(f+' эт · '+(o.zn.join('+')||'—')+' · '+pctOf(o.occ,o.tot)+'%',new THREE.Vector3(MX1+1.8,0,ZB-1),'fl');lb.f=f;floorLabels.push(lb);});
+[1,2,3,4,5,6].forEach(function(f){var o=FLSTAT[f];var lb=mkLabel((f===6?'Паллетный мезонин':f+' эт')+' · '+(o.zn.join('+')||'—')+' · '+pctOf(o.occ,o.tot)+'%',new THREE.Vector3(MX1+1.8,0,f===6?Z0+3:ZB-1),'fl');lb.f=f;floorLabels.push(lb);});
+/* ───── паллетный мезонин (сзади) и схема этажей 2–5: проезды, оборудование, подписи зон ───── */
+(function(){
+  var F6=FL[6];
+  if(F6&&F6.blocks.length){
+    var b=F6.blocks[0],cxp=function(c){return b.rx0+b.cw*(c+.5);},zc=Z0+7,zr=function(r){return b.rackPos[r].z;};
+    function put(m,x,y,z){m.position.set(x,y,z);F6.g.add(m);return m;}
+    (b.z.aisles||[]).forEach(function(a,i){var x0=b.rx0+b.cw*a[0],x1=b.rx0+b.cw*(a[1]+1);
+      put(box(x1-x0,.03,12.4,0xffc107,{transparent:true,opacity:.28}),(x0+x1)/2,.03,zc);
+      F6.lab=F6.lab||[];var lb=mkLabel('Карный проезд',new THREE.Vector3((x0+x1)/2,.4,zc),'fl');lb.f=6;floorLabels.push(lb);});
+    var caps=b.z.caps||[];
+    b.z.rk.forEach(function(r,i){var lb=mkLabel(r+' ряд · '+(caps[i]||'')+' мест',new THREE.Vector3(MX0-2.2,b.ch*3,zr(i)),'fl');lb.f=6;floorLabels.push(lb);});
+    var zf=Z0+13.0;                                                         /* у переднего края: оборудование (колонки схемы 57–68) */
+    [57,58,59].forEach(function(c){put(box(.8,.9,.6,0x3B9CFF),cxp(c),.45,zf);});
+    var l1=mkLabel('Хайман, сканер',new THREE.Vector3(cxp(58),1.4,zf),'fl');l1.f=6;floorLabels.push(l1);
+    [60,61,62,63,64,65].forEach(function(c){put(box(.8,.7,.6,0x34C27A),cxp(c),.35,zf);});
+    var l2=mkLabel('Зарядка РИЧ',new THREE.Vector3(cxp(62.5),1.3,zf),'fl');l2.f=6;floorLabels.push(l2);
+    put(box(2.2,.04,1.6,0xffffff,{transparent:true,opacity:.7}),cxp(67),.05,zf);
+    var l3=mkLabel('Проход в мезонин',new THREE.Vector3(cxp(67),1.2,zf),'fl');l3.f=6;floorLabels.push(l3);
+    [16,35].forEach(function(c){var t=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,1.1,16),stdMat(0xFF9800));put(t,cxp(c),.55,zf);
+      var l=mkLabel('Ловушка для тары с мезонина',new THREE.Vector3(cxp(c),1.5,zf),'fl');l.f=6;floorLabels.push(l);});
+  }
+  [2,3,4,5].forEach(function(f){var F=FL[f];if(!F)return;F.blocks.forEach(function(b){if(!b.z.sch)return;
+    var lb=mkLabel(b.z.note.replace('схема Excel · ','')+' · '+b.z.secs+' секц.',new THREE.Vector3((b.x0+b.x1)/2,F.baseY+.2,ZB+.4),'fl');lb.f=f;floorLabels.push(lb);});});
+})();
 var guardLb=[mkLabel('🛡 охрана',null,'guard',gdPick.g),mkLabel('🛡 охрана',null,'guard',gdSort.g),mkLabel('🛡 охрана',null,'guard',gdHub.g)];
 ['pick','sort','hub'].forEach(function(z,i){var q=zst(z);guardLb[i].d.style.display=(q.idle&&!q.nodata)?'':'none';});
 trucks.forEach(function(tr){tr.label=mkLabel('Рейс '+(tr.t.n||'')+' · '+fmt(tr.t.qty)+' шт'+(tr.t.done?' · отгружен':''),null,'tr',tr.g);tr.label.dy=3.9;});
@@ -5197,7 +5241,7 @@ function recolor(){
   buildLegend();
 }
 function buildLegend(){
-  var h='',T=FLSTAT.T;
+  var h='',T0=FLSTAT.T,P_=FLSTAT[6]||{tot:0,occ:0},T={tot:T0.tot+P_.tot,occ:T0.occ+P_.occ};
   if(HL){h='<span><i style="background:#00E5FF"></i>найдено</span><span><i style="background:'+(DARK?'#2c3454':'#b9c0d6')+'"></i>остальные занятые</span>';}
   else if(MODE==='fill'){h='<span><i style="background:#34C27A"></i>занята: '+fmt(T.occ)+'</span><span><i style="background:#E5484D;opacity:.5"></i>пустая: '+fmt(T.tot-T.occ)+'</span>';}
   else if(MODE==='empty'){h='<span><i style="background:#FF2D55"></i>пустая: '+fmt(T.tot-T.occ)+'</span><span><i style="background:'+(DARK?'#2c3454':'#b9c0d6')+'"></i>занята</span>';}
@@ -5239,7 +5283,7 @@ function updateTrucks(dt){
 
 /* ───── камера ───── */
 var tgt=new THREE.Vector3(0,3,2),sph={th:.5,ph:.95,r:105},goal=null;
-var PRE={all:[new THREE.Vector3(0,3,2),.5,.95,105],face:[new THREE.Vector3(-8,4,26),.18,1.3,58],mez:[new THREE.Vector3(0,6,-10),.35,1.02,66],
+var PRE={all:[new THREE.Vector3(0,3,-6),.5,.95,118],pal:[new THREE.Vector3(0,3,-33),.1,.9,92],face:[new THREE.Vector3(-8,4,26),.18,1.3,58],mez:[new THREE.Vector3(0,6,-10),.35,1.02,66],
   sort:[new THREE.Vector3(15,1,16),.35,.85,38],hub:[new THREE.Vector3(-18,1,15),-.35,.9,36],gate:[new THREE.Vector3(-18,1,28),.3,1.18,32],top:[new THREE.Vector3(0,0,0),0,.1,105]};
 try{var sv=window.parent.__whcam;if(sv){tgt.set(sv.x,sv.y,sv.z);sph.th=sv.th;sph.ph=sv.ph;sph.r=sv.r;}}catch(e){}
 function saveCam(){try{window.parent.__whcam={x:tgt.x,y:tgt.y,z:tgt.z,th:sph.th,ph:sph.ph,r:sph.r};}catch(e){}}
@@ -5297,7 +5341,8 @@ function hoverAt(cx,cy){
   if(!c){hideTip();return;}
   hoverCell=c;
   var rk=(c.blk.z.rk&&c.blk.z.rk[c.r])||(c.r+1),rs=c.blk.stat[c.r]||{t:0,o:0};
-  var t='<b>'+esc(c.code)+'</b><br><span>'+c.f+' этаж · зона '+esc(c.zone)+' · ряд '+esc(rk)+' · секц. '+(c.b+1)+' · ур. '+(c.l+1)+'</span><br>';
+  var zz_=c.blk.z,pl_=c.b+1;if(zz_.pal&&c.b>zz_.aisles[0][1])pl_-=zz_.aisles[0][1]-zz_.aisles[0][0]+1;
+  var t='<b>'+esc(c.code)+'</b><br><span>'+(zz_.pal?'паллетный мезонин · ряд '+esc(rk)+' · место '+pl_+' · ур. '+(c.l+1):c.f+' этаж · зона '+esc(c.zone)+' · ряд '+esc(rk)+' · секц. '+(zz_.sch?(Math.floor(c.b/4)+1):(c.b+1))+' · ур. '+(c.l+1))+'</span><br>';
   if(c.q>0){t+='Остаток <b>'+fmt(c.q)+'</b> шт'+(c.res>0?' · резерв '+fmt(c.res):'')+'<br><span>позиций (SKU): '+c.ns+'</span>'+(c.det?'<br>'+esc(c.det):'');}
   else t+='<b style="color:#E5484D">Ячейка пустая</b>';
   t+='<br><span>ряд заполнен на '+(rs.t?Math.round(rs.o/rs.t*100):0)+'% ('+rs.o+' из '+rs.t+')</span>';
@@ -5308,7 +5353,7 @@ function hoverAt(cx,cy){
 }
 
 /* ───── этажи, режимы, стены, поиск ───── */
-function floorCenter(f){var F=FL[f];return new THREE.Vector3(0,F.g.position.y+.8,(ZA+ZB)/2);}
+function floorCenter(f){var F=FL[f];return new THREE.Vector3(0,F.g.position.y+(f===6?3:.8),f===6?Z0+7:(ZA+ZB)/2);}
 function setFloor(n){
   SELF=n;
   FLG.forEach(function(F){F.g.visible=(n===0||F.f===n);});
@@ -5316,7 +5361,7 @@ function setFloor(n){
   [].forEach.call(document.querySelectorAll('[data-fl]'),function(b){b.classList.toggle('on',+b.getAttribute('data-fl')===n);});
   [].forEach.call(document.querySelectorAll('.fr'),function(b){b.classList.toggle('on',+b.getAttribute('data-f')===n);});
   floorLabels.forEach(function(l){l.d.style.display=(n===0||l.f===n)?'':'none';});
-  if(n>0){var c=floorCenter(n);flyTo(new THREE.Vector3(c.x,c.y,c.z+1),.25,1.05,50);}
+  if(n>0){var c=floorCenter(n);flyTo(new THREE.Vector3(c.x,c.y,c.z+1),n===6?.1:.25,n===6?.9:1.0,n===6?92:50);}
   showRacks();
 }
 function showRacks(){
@@ -5325,7 +5370,7 @@ function showRacks(){
   var F=FL[SELF],list=[];
   F.blocks.forEach(function(b,bi){for(var r=0;r<b.R;r++){var s=b.stat[r];if(s&&s.t)list.push({b:b,bi:bi,r:r,t:s.t,e:s.t-s.o});}});
   list.sort(function(a,b){return (b.e/b.t)-(a.e/a.t)||b.e-a.e;});
-  var h='<div class="sec">'+SELF+' этаж · самые пустые ряды (клик — показать)</div><div class="glass note">';
+  var h='<div class="sec">'+(SELF===6?'Паллетный мезонин':SELF+' этаж')+' · самые пустые ряды (клик — показать)</div><div class="glass note">';
   if(!list.length)h+='нет ячеек';
   list.slice(0,8).forEach(function(x,i){var p=b_pct(x);h+='<div class="ln" data-rk="'+x.bi+'_'+x.r+'" style="cursor:pointer"><b>'+esc(x.b.z.z)+' · ряд '+esc((x.b.z.rk&&x.b.z.rk[x.r])||(x.r+1))+'</b><span>пусто '+x.e+' из '+x.t+' ('+p+'%)</span></div>';});
   box_.innerHTML=h+'</div>';
@@ -5354,7 +5399,7 @@ function runSearch(q){
 }
 var qT=null;el('q').addEventListener('input',function(){clearTimeout(qT);var v=this.value;qT=setTimeout(function(){runSearch(v);},250);});
 el('q').addEventListener('keydown',function(e){e.stopPropagation();});
-function preset(k){var p=PRE[k];flyTo(p[0],p[1],p[2],p[3]);if(k==='face'){wallMode=0;applyWalls();}if(k==='all'||k==='mez'){if(SELF)setFloor(0);}}
+function preset(k){var p=PRE[k];flyTo(p[0],p[1],p[2],p[3]);if(k==='face'){wallMode=0;applyWalls();}if(k==='all'||k==='mez'){if(SELF)setFloor(0);}if(k==='pal')setFloor(6);}
 [].forEach.call(document.querySelectorAll('[data-pre]'),function(b){b.addEventListener('click',function(){preset(b.getAttribute('data-pre'));});});
 [].forEach.call(document.querySelectorAll('[data-fl]'),function(b){b.addEventListener('click',function(){setFloor(+b.getAttribute('data-fl'));});});
 [].forEach.call(document.querySelectorAll('[data-md]'),function(b){b.addEventListener('click',function(){setMode(b.getAttribute('data-md'));});});
@@ -5454,6 +5499,132 @@ def _wh_master_cells():
     return out or None
 
 
+def _sch_layout(zl: str):
+    """Раскладка одной секции схемы: № ячейки (1…) -> (уровень, смещение по секции в 4-колоночной сетке, ширина в колонках)."""
+    _, _, lev, _, _ = WH_SCHEME[zl]
+    out, n = {}, 0
+    for li, k in enumerate(lev):
+        sp = 4 // k
+        for i in range(k):
+            n += 1
+            out[n] = (li, i * sp, sp)
+    return out
+
+
+def _sch_match(code: str):
+    """«2M1-A-05-03-12» (зона — ряд — стеллаж — ячейка) -> (зона, ряд0, секция0, № ячейки) или None."""
+    t = [x for x in re.split(r"[^0-9A-ZА-ЯЁ]+", str(code).upper().replace(" ", "")) if x]
+    if t and re.fullmatch(r"\dM\d", t[0]):
+        t = t[1:]
+    if len(t) != 4 or not (t[1].isdigit() and t[2].isdigit() and t[3].isdigit()):
+        return None
+    zl = WH_SCH_ZMAP.get(t[0])
+    if not zl:
+        return None
+    nm, secs, lev, off, gap = WH_SCHEME[zl]
+    r, q, n = int(t[1]), int(t[2]), int(t[3])
+    if not (1 <= r <= WH_SCH_ROWS and r not in off and 1 <= q <= secs and 1 <= n <= sum(lev)):
+        return None
+    if r in gap and gap[r][0] <= q <= gap[r][1]:
+        return None
+    return zl, r - 1, q - 1, n
+
+
+def _agg_cells(sub):
+    """Остатки по ячейкам: {код: (шт, резерв, позиций, товары, ключи поиска)}."""
+    if sub.empty:
+        return {}
+    sub = sub.sort_values("loc", ascending=False)
+    g = sub.groupby("cell", sort=False)
+    agg = pd.DataFrame({"q": g["loc"].sum(), "res": g["res"].sum(), "ns": g["sku"].nunique()})
+    top = sub.groupby("cell", sort=False).head(3)
+    det = (top["name"].str.slice(0, 46) + " × " + top["loc"].round().astype(int).astype(str)) \
+        .groupby(top["cell"]).agg(" · ".join)
+    key_ = (sub["sku"] + " " + sub["ext"] + " " + sub["wms"]).str.lower()
+    ids = key_.groupby(sub["cell"], sort=False).agg(lambda s_: " ".join(dict.fromkeys(" ".join(s_.head(6)).split()))[:90])
+    agg["det"], agg["ids"] = det, ids
+    agg = agg.fillna({"det": "", "ids": ""})
+    return {c: (float(a), float(b), int(n_), d_, i_) for c, a, b, n_, d_, i_ in
+            zip(agg.index, agg["q"], agg["res"], agg["ns"], agg["det"], agg["ids"])}
+
+
+def _cell_row(pos, code, aggd, span=1):
+    r_, b_, l_ = pos
+    if code in aggd:
+        q, rs_, ns_, dt_, id_ = aggd[code]
+        if q > 0:
+            return [r_, b_, l_, int(round(q)), int(round(max(0.0, rs_))), ns_, code, dt_, id_, span]
+    return [r_, b_, l_, 0, 0, 0, code, "", "", span]
+
+
+def _wh_scheme_zones(zname: str, fl: int, aggd: dict):
+    """Этаж 2–5 по схеме Excel: все ячейки зон A, Б, С, D, H/D (занятые — из остатков, остальные пустые).
+    Возвращает (список зон, сколько кодов остатков не нашли места на схеме)."""
+    have = {}
+    for c in aggd:
+        m_ = _sch_match(c)
+        if m_:
+            have[m_] = c
+    zones = []
+    for zl, (nm, secs, lev, off, gap) in WH_SCHEME.items():
+        lay = _sch_layout(zl)
+        cl = []
+        for r in range(WH_SCH_ROWS):
+            if (r + 1) in off:
+                continue
+            for q in range(secs):
+                if (r + 1) in gap and gap[r + 1][0] <= q + 1 <= gap[r + 1][1]:
+                    continue
+                for n_, (li, x0, sp) in lay.items():
+                    code = have.get((zl, r, q, n_)) or f"{zname}-{zl}-{r + 1:02d}-{q + 1:02d}-{n_:02d}"
+                    cl.append(_cell_row((r, q * 4 + x0, li), code, aggd, sp))
+        zones.append(dict(z=f"{zname}-{zl}", fl=fl, R=WH_SCH_ROWS, B=secs * 4, L=len(lev), rk=[str(i + 1) for i in range(WH_SCH_ROWS)],
+                          note="схема Excel · " + nm, ex=next((x[6] for x in cl if x[3] > 0), ""), c=cl, sch=1,
+                          off=[r - 1 for r in off], gap=[[r - 1, a * 4 - 4, b * 4 - 1] for r, (a, b) in gap.items()],
+                          secs=secs))
+    return zones, len(aggd) - len(have)
+
+
+def _wh_pallet(sub) -> dict:
+    """Паллетный мезонин (HP): 4 ряда (9–12) × места × 6 уровней; поперечные проезды вынесены в колонки без ячеек.
+    Колонка = место + 3 колонки проезда после 33-го места. Код ячейки: HP-ряд-место-уровень (числа через «-»)."""
+    aggd = _agg_cells(sub)
+    rk = [r for r, _ in WH_PAL_ROWS]
+    cap = {i: n for i, (_, n) in enumerate(WH_PAL_ROWS)}
+    a0, aw = WH_PAL_AISLES
+
+    def col(p):                                           # место (1…) -> колонка
+        return p - 1 if p <= a0 else p - 1 + aw
+
+    parsed = {}
+    for c in aggd:
+        nums = [int(x) for x in re.findall(r"\d+", "-".join(str(c).split("-")[1:]))]
+        if len(nums) == 3 and str(nums[0]) in rk:
+            ri = rk.index(str(nums[0]))
+            if 1 <= nums[1] <= cap[ri] and 1 <= nums[2] <= WH_PAL_L:
+                parsed[(ri, nums[1], nums[2])] = c
+    note = "схема Excel · паллетный мезонин, ряды " + "/".join(rk)
+    cl = []
+    if aggd and len(parsed) * 2 < len(aggd):             # коды HP не по схеме — раскладываем занятые по порядку
+        order = sorted(aggd, key=_nat)
+        slots = [(ri, p, lv) for ri in range(len(rk)) for p in range(1, cap[ri] + 1) for lv in range(1, WH_PAL_L + 1)]
+        for c, (ri, p, lv) in zip(order, slots):
+            cl.append(_cell_row((ri, col(p), lv - 1), c, aggd))
+        note = "коды HP не распознаны (ждём HP-ряд-место-уровень), ячейки расставлены по порядку"
+    else:
+        for ri in range(len(rk)):
+            for p in range(1, cap[ri] + 1):
+                for lv in range(1, WH_PAL_L + 1):
+                    code = parsed.get((ri, p, lv)) or f"HP-{rk[ri]}-{p:02d}-{lv}"
+                    cl.append(_cell_row((ri, col(p), lv - 1), code, aggd))
+    cl.sort(key=lambda x: (x[0], x[1], x[2]))
+    ncol = WH_PAL_ROWS[0][1] + aw * 2
+    return dict(z="HP", fl=6, R=len(rk), B=ncol, L=WH_PAL_L, rk=rk, note=note,
+                ex=next((x[6] for x in cl if x[3] > 0), ""), c=cl, pal=1, aisles=[[a0, a0 + aw - 1], [ncol - aw, ncol - 1]],
+                caps=[n for _, n in WH_PAL_ROWS])
+
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def wh_cells() -> dict:
     """Ячейки мезонина (зоны WH_MEZ_ZONES: 1M1…5M1, номер этажа — первая цифра) из Magnit Stock.
@@ -5477,8 +5648,10 @@ def wh_cells() -> dict:
     out["skip"] = int(m.loc[skip, "loc"].sum())
     m = m[~skip]                                                                   # 1ZZ1, 1ECO1 … — не учитываем совсем
     keys = {zkey(z): z for z in WH_MEZ_ZONES}
-    mez = m[m["zk"].isin(keys) & (m["cell"] != "")]
-    oth = m[~m["zk"].isin(keys)]
+    is_pal = m["zk"].str.startswith(WH_PAL_PREFIX) | pref.reindex(m.index).fillna("").str.startswith(WH_PAL_PREFIX)
+    mez = m[m["zk"].isin(keys) & (m["cell"] != "") & ~is_pal]
+    pal = m[is_pal & (m["cell"] != "")]
+    oth = m[~m["zk"].isin(keys) & ~is_pal]
     out["other"] = int(oth["loc"].sum())
     out["other_z"] = {str(k) or "?": int(v) for k, v in
                       oth.groupby(oth["zone"].replace("", "?"))["loc"].sum().sort_values(ascending=False).head(14).items()}
@@ -5487,6 +5660,16 @@ def wh_cells() -> dict:
     for zk_, zname in keys.items():
         sub = mez[mez["zk"] == zk_]
         mc = {c for c in (master or ()) if zkey(c.split("-")[0]) == zk_} if master else set()
+        fl_ = int(re.match(r"\d", zname).group())
+        if fl_ >= 2:                                     # этажи 2–5 рисуем по схеме Excel (если коды остатков на неё ложатся)
+            ag_ = _agg_cells(sub)
+            hit = sum(1 for c in ag_ if _sch_match(c))
+            if not ag_ or hit * 2 >= len(ag_):
+                zz, miss = _wh_scheme_zones(zname, fl_, ag_)
+                if miss:
+                    zz[0]["note"] += f" · {miss} кодов остатков вне схемы"
+                out["zones"].extend(zz)
+                continue
         if sub.empty and not mc:
             continue
         # по ячейкам: штуки, резерв, позиции, топ-3 товара, ключи поиска
@@ -5561,6 +5744,9 @@ def wh_cells() -> dict:
         out["zones"].append(dict(z=zname, fl=int(fl_m.group()) if fl_m else 1, R=R, B=B, L=L, rk=rk, note=note,
                                  ex=next((x[6] for x in cl if x[3] > 0), ""), c=cl))
     out["zones"].sort(key=lambda z: z["fl"])
+    if True:                            # паллетный мезонин HP — позади здания, этаж «6»
+        out["zones"].append(_wh_pallet(pal))
+        out["pal_n"] = int(pal["loc"].sum()) if not pal.empty else 0
     out["total"] = sum(len(z["c"]) for z in out["zones"])
     out["ok"] = bool(out["zones"])
     if not out["ok"]:
