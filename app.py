@@ -4984,7 +4984,7 @@ function buildFloor(f){
 
 
 /* ───── сортировка (впереди мезонина, справа) и хаб (слева) ───── */
-var palI=new Inst(UB,matWood,1400,scene,true),bx=new Inst(UB,matBox,2600,scene,false);
+var palI=new Inst(UB,matWood,1400,scene,true),bx=new Inst(UB,matBox,3400,scene,false);
 var BW=.58,BH=.38,BD=.38,CAPP=12;
 function palletAt(p){palI.add(p.x,.05,p.z-.35,1.2,.1,.1,0);palI.add(p.x,.05,p.z,1.2,.1,.1,0);palI.add(p.x,.05,p.z+.35,1.2,.1,.1,0);for(var i=0;i<5;i++)palI.add(p.x,.122,p.z-.34+i*.17,1.2,.044,.12,0);}
 function shade(col,k){CC.setHex(col).multiplyScalar(k);return CC.getHex();}
@@ -4996,7 +4996,8 @@ SCZ.forEach(function(cz,ri){SCX.forEach(function(cx,ci){[[0,0],[-1.3,0],[1.3,0],
 for(var e_=0;e_<5;e_++)EMPP.push({x:1.0,z:12.0+e_*2.4});   /* пустые паллеты у края, как на фото */
 for(var k_=0;k_<4;k_++)for(var m_=0;m_<2;m_++){LNP.push({x:-30.2+k_*2.8,z:10.0+m_*2.4});LAC.push({x:-17.6+k_*2.8,z:10.0+m_*2.4});}
 GATES.forEach(function(gx){[[-1,19.8],[1,19.8],[-1,22.2],[1,22.2]].forEach(function(o){LSTG.push({x:gx+o[0]*1.05,z:o[1]});});});
-LS.concat(LNP,LAC,LSTG,EMPP).forEach(palletAt);palI.done();
+var TOTES=[];for(var ti_=0;ti_<6;ti_++)TOTES.push({x:-30+ti_*4.6,z:7.9});      /* стойки с синими пластиковыми тарами у приёмки хаба */
+LS.concat(LNP,LAC,LSTG,EMPP,TOTES).forEach(palletAt);palI.done();
 /* единицы масштаба */
 var U={};
 var cs=S.sort?(S.sort.sorting+S.sort.sorted):0;U.sort=Math.max(1,Math.ceil(cs/(LS.length*CAPP*.8)));
@@ -5009,6 +5010,9 @@ function fillList(list,n,col){var left=n;for(var i=0;i<list.length&&left>0;i++){
   left=nGr;for(i=0;i<LS.length&&left>0;i++){p=LS[LS.length-1-i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.green);left-=c;}})();
 fillList(LAC,S.hub?Math.round(S.hub.ok/U.hub):0,CO.green);fillList(LNP,S.hub?Math.round(S.hub.no/U.hub):0,CO.red);
 fillList(LSTG,Math.min(LSTG.length*CAPP,Math.round(rem/U.ship)),CO.blue);
+TOTES.forEach(function(t){for(var ly=0;ly<4;ly++)for(var sx_=-1;sx_<=1;sx_+=2)for(var sz_=-1;sz_<=1;sz_+=2){
+  bx.add(t.x+sx_*.34,.144+.17+ly*.35,t.z+sz_*.26,.62,.32,.46,0,ly%2?0x2a74d8:0x1f64c4);       /* пластиковая тара: тёмно-/светло-синяя */
+  bx.add(t.x+sx_*.34,.144+.34+ly*.35,t.z+sz_*.26,.64,.03,.48,0,0x6fb0ff);}});                     /* светлый борт */
 bx.done();
 
 /* ───── газели у ворот ───── */
@@ -5077,6 +5081,7 @@ function Person(vest,hat,pants,cart){
   P(gTor,M(vest),0,1.15,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.27,0);P(gStrip,M(0xe8f0f0,{emissive:0x222222}),0,1.03,0);
   var armL=P(gArm,M(vest),-.28,1.42,0),armR=P(gArm,M(vest),.28,1.42,0);
   P(gHead,M(pick(skins)),0,1.57,0);P(gHat,M(hat),0,1.6,0);P(gBrim,M(hat),0,1.605,.02);
+  var sc=new THREE.Mesh(new THREE.BoxGeometry(.07,.16,.05),M(0xff2a2a,{emissive:0xff0000}));sc.position.set(0,-.55,.06);sc.visible=false;armR.add(sc);
   var cb=new THREE.Mesh(gCar,matBox.clone());cb.material.color.setHex(0xe8a24a);cb.position.set(0,1.0,.38);cb.castShadow=true;cb.visible=false;g.add(cb);
   var cartBoxes=[];
   if(cart){ /* тележка с платформой и ручкой, толкает перед собой */
@@ -5086,11 +5091,11 @@ function Person(vest,hat,pants,cart){
     [[-.34,-.22],[.34,-.22],[-.34,.22],[.34,.22]].forEach(function(o){var w=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,.04,8),M(0x15171d));w.rotation.z=Math.PI/2;w.position.set(o[0],.07,o[1]);cg.add(w);});
     for(var q=0;q<4;q++){var bb=new THREE.Mesh(gCar,matBox.clone());bb.material.color.setHex(q%2?0xe8a24a:0xd9b98a);bb.scale.set(.7,.8,.8);bb.position.set(q%2?.2:-.2,.51+Math.floor(q/2)*.28,0);bb.visible=false;cg.add(bb);cartBoxes.push(bb);}
   }
-  return {g:g,legL:legL,legR:legR,armL:armL,armR:armR,cb:cb,cartBoxes:cartBoxes,nc:0};
+  return {g:g,sc:sc,legL:legL,legR:legR,armL:armL,armR:armR,cb:cb,cartBoxes:cartBoxes,nc:0};
 }
 var actors=[],guards=[];
 function mkActor(zone,vest,hat,x,z,cfg,parent,cart){
-  var p=Person(vest,hat,null,cart);p.zone=zone;p.g.position.set(x,0,z);(parent||scene).add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.1,1.5);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);p.n=0;actors.push(p);return p;}
+  var p=Person(vest,hat,null,cart);p.zone=zone;p.g.position.set(x,0,z);(parent||scene).add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.1,1.5);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);p.n=0;p.wait=rnd(0,14);actors.push(p);return p;}
 function setCarry(p,v,colr){p.carry=v;if(!p.cartBoxes.length){p.cb.visible=v;if(v&&colr!==undefined)p.cb.material.color.setHex(colr);}}
 function setCart(p,k){p.nc=k;p.cartBoxes.forEach(function(b,i){b.visible=i<k;});}
 /* сборщики на этажах мезонина */
@@ -5099,11 +5104,12 @@ if(!pickFloors.length)pickFloors=[1,2,3,4,5];
 function floorAt(i){return FL[pickFloors[i%pickFloors.length]];}
 function randCell(F){var occ=F.cells.filter(function(c){return c.q>0;});var pool=occ.length?occ:F.cells;return pool.length?pick(pool):null;}
 var PAX=-20.7,PDZ=-9.5;                                  /* локальные координаты этажа: проход у фронта и место, где паллет ставят на кару */
+function farthest(F,a,cands){var best=null,bd=-1;cands.forEach(function(c){if(!c)return;var m=1e9;actors.forEach(function(o){if(o===a||!o.pickP||o.F!==F)return;var d=Math.hypot(o.g.position.x-c.x,o.g.position.z-c.z);if(d<m)m=d;});if(m>bd){bd=m;best=c;}});return best;}
 function planPick(a){
   var F=a.F,p=a.g.position;
   if(a.n>=a.need){a.n=0;a.need=2+Math.floor(Math.random()*3);
     a.route=[{x:PAX,z:p.z},{x:PAX,z:PDZ},{x:PAX-.6,z:PDZ,act:'put',dur:1.0},{x:PAX,z:PDZ}];return;}
-  var c=randCell(F);
+  var c=farthest(F,a,[randCell(F),randCell(F),randCell(F),randCell(F),randCell(F)]);
   if(!c){a.route=[{x:p.x,z:p.z,act:'wait',dur:3}];return;}
   var tz=c.z+1.15;
   a.route=[{x:PAX,z:p.z},{x:PAX,z:tz},{x:c.x,z:tz,act:'pick',dur:1.1,face:c.z-tz}];
@@ -5113,20 +5119,27 @@ for(var pi=0;pi<WK.pick;pi++){
   a_.F=F_;a_.need=2+Math.floor(Math.random()*3);a_.pickP=true;
 }
 function planSort(a){
-  var ci=Math.floor(Math.random()*CL_.length),c=CL_[ci],k=1+Math.floor(Math.random()*4),sx,sz;
-  if(k===1){sx=c.cx-2.5;sz=c.cz;}else if(k===2){sx=c.cx+2.5;sz=c.cz;}else if(k===3){sx=c.cx;sz=c.cz-1.85;}else{sx=c.cx;sz=c.cz+1.85;}
+  var c=CL_[a.cfg.ci],k=a.cfg.side===1?1:2,sx,sz;
+  if(k===1){sx=c.cx-2.5;sz=c.cz;}else{sx=c.cx+2.5;sz=c.cz;}
   var ax=(k===2)?c.cx+3.3:c.cx-3.3;
-  a.route=[{x:RCV.x+1.1,z:RCV.z+.1,act:'pick',dur:1.0,c:CO.orange},{x:ax,z:10.6},{x:ax,z:sz},{x:sx,z:sz,act:'put',dur:1.2},{x:ax,z:sz},{x:ax,z:10.6}];}
-function planHub(a){var za=pick([10.0,12.4]),zb=pick([10.0,12.4]),sg=pick(GATES);
-  a.route=[{x:-16.2+rnd(-1,1),z:za+1.2,act:'pick',dur:1.0,c:CO.red},{x:-16.2,z:15.5},{x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.blue},{x:sg,z:15.5},{x:-24,z:15.5},{x:-24,z:zb+1.2,act:'put',dur:.8}];}
+  a.route=[{x:RCV.x+1.1+rnd(-.5,.5),z:RCV.z+.1+rnd(-.4,.4),act:'pick',dur:1.0,c:CO.orange},{x:ax,z:10.6},{x:ax,z:sz},{x:sx,z:sz,act:'scan',dur:rnd(1.4,2.2),face:(k===1?1:-1)*0+1},{x:sx,z:sz,act:'put',dur:1.2},{x:ax,z:sz},{x:ax,z:10.6}];}
+var DESKS=[{x:-26.5,z:16.4,busy:false},{x:-14.5,z:16.4,busy:false}];
+function planHub(a){
+  var cf=a.cfg;if(cf.d){cf.d.busy=false;cf.d=null;}
+  var t=TOTES[cf.ti],d=DESKS[cf.di],r=[{x:t.x,z:t.z+1.5,act:'pick',dur:1.3,c:0x1f64c4,face:-1}];   /* берёт товар из синей тары */
+  if(!d.busy){d.busy=true;cf.d=d;r.push({x:d.x,z:d.z-1.0,act:'print',dur:2.6,face:1});}            /* печатает наклейку на ПК */
+  var dest=Math.random()<.35?pick(LNP):pick(LAC);
+  r.push({x:dest.x,z:dest.z+1.5,act:'put',dur:1.0,face:-1});                                      /* раскладывает по коробам */
+  if(Math.random()<.3){var sg=pick(GATES);r.push({x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.blue},{x:sg,z:15.5});}  /* разносит коробки */
+  a.route=r;}
 function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi],tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
   if(!tr||tr.t.done||tr.state!=='dock'){a.route=[{x:gx,z:17.4,act:'wait',dur:rnd(2,5)},{x:gx+2.2,z:17.4}];return;}
   a.route=[{x:gx,z:18.4,act:'pick',dur:.9,c:CO.blue},{x:gx+1.9,z:18.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:18.4}];}
 function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
 var PLAN={sort:planSort,hub:planHub,ship:planShip};
-for(var ai=0;ai<WK.sort;ai++)mkActor('sort',0xD7E83A,pick([0xffffff,0xf5d142]),rnd(0,28),10.6,{row:ai%rows});
-for(ai=0;ai<WK.hub;ai++)mkActor('hub',0x3B9CFF,0xffffff,-16,15.5,{});
-for(ai=0;ai<WK.ship;ai++)mkActor('ship',0xff9a3d,pick([0xffffff,0xf5d142]),GATES[ai%4],17.5,{gate:ai});
+for(var ai=0;ai<WK.sort;ai++){var ci_=ai%CL_.length;mkActor('sort',0xD7E83A,pick([0xffffff,0xf5d142]),CL_[ci_].cx+(ai<CL_.length?-3.3:3.3),CL_[ci_].cz,{ci:ci_,side:ai<CL_.length?1:2});}
+for(ai=0;ai<WK.hub;ai++)mkActor('hub',0x3B9CFF,0xffffff,TOTES[ai%TOTES.length].x,9.4,{ti:ai%TOTES.length,di:ai%2});
+for(ai=0;ai<WK.ship;ai++)mkActor('ship',0xff9a3d,pick([0xffffff,0xf5d142]),GATES[ai%4]+(ai>=4?1.6:0),17.5,{gate:ai});
 function mkGuard(zone,way,parent){var p=Person(0x1a2030,0x141824,0x141824,false);p.zone=zone;p.g.position.set(way[0][0],0,way[0][1]);(parent||scene).add(p.g);p.ph=0;p.speed=.6;p.route=[];p.wait=0;p.cfg={way:way,i:0};p.yaw=0;
   var cone=new THREE.Mesh(new THREE.ConeGeometry(.9,3.4,16,1,true),new THREE.MeshBasicMaterial({color:0xfff2a8,transparent:true,opacity:.16,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
   cone.rotation.x=-Math.PI/2+.25;cone.position.set(0,1.1,1.8);p.g.add(cone);
@@ -5134,12 +5147,12 @@ function mkGuard(zone,way,parent){var p=Person(0x1a2030,0x141824,0x141824,false)
 var gdPick=mkGuard('pick',[[PAX,-16],[PAX,0],[PAX,16],[PAX,0]],FL[1].g);
 var gdSort=mkGuard('sort',[[0,9],[14,9],[28,9],[14,26.5-2],[0,16]]);
 var gdHub=mkGuard('hub',[[-28,16],[-18,16],[-8,16],[-18,12]]);
-/* кара: стоит перед мезонином и спускает паллеты вниз; к сортировке не ездит */
+/* кары: боковой проезд между паллетным и ячеечным мезонином (спуск груза сбоку) и кара в проходе паллетного */
 function mkPallet(loaded){var g=new THREE.Group();g.add(box(1.2,.12,.8,0xb98b55));
   if(loaded)for(var q=0;q<8;q++){var bb=new THREE.Mesh(new THREE.BoxGeometry(.5,.36,.36),stdMat(q<4?CO.orange:0xd9b98a,{}));bb.position.set(q%2?.28:-.28,.24+Math.floor(q/4)*.37,q%4<2?-.18:.18);bb.castShadow=true;g.add(bb);}
   return g;}
-var fk=new THREE.Group(),car=new THREE.Group(),mastIn,fkPl=mkPallet(true),dropP=mkPallet(true);
-(function(){
+function mkForkMesh(){
+  var fk=new THREE.Group(),car=new THREE.Group(),fkPl=mkPallet(true),mastIn;
   var b=box(1.1,.9,1.8,0xf2b01e);b.position.set(0,.7,-.2);fk.add(b);
   var cab=box(1.0,.05,1.0,0x222222);cab.position.set(0,1.9,-.25);fk.add(cab);
   [[-.5,-.7],[.5,-.7],[-.5,.1],[.5,.1]].forEach(function(p){var po=box(.05,1.0,.05,0x222222);po.position.set(p[0],1.4,p[1]);fk.add(po);});
@@ -5150,21 +5163,46 @@ var fk=new THREE.Group(),car=new THREE.Group(),mastIn,fkPl=mkPallet(true),dropP=
   [[-.55,-.75],[.55,-.75],[-.55,.35],[.55,.35]].forEach(function(p){var w=new THREE.Mesh(new THREE.CylinderGeometry(.22,.22,.18,12),M(0x15171d));w.rotation.z=Math.PI/2;w.position.set(p[0],.22,p[1]);fk.add(w);});
   var dr=Person(0xD7E83A,0xffffff);dr.g.position.set(0,.45,-.25);dr.g.scale.set(.85,.85,.85);dr.legL.rotation.x=-1.4;dr.legR.rotation.x=-1.4;fk.add(dr.g);
   fkPl.position.set(0,.31,1.45);fkPl.rotation.y=Math.PI/2;fkPl.visible=false;car.add(fkPl);fk.add(car);
-  fk.traverse(function(o){if(o.isMesh)o.castShadow=true;});})();
-fk.rotation.y=Math.PI;fk.position.set(3.0,0,6.4);scene.add(fk);
-dropP.position.set(3.0,0,4.95);dropP.rotation.y=Math.PI/2;dropP.visible=false;scene.add(dropP);
-var FK={ph:0,t:0,h:FLH},FKZ0=6.4,FKZ1=8.3,forkOn=!(zst('pick').idle&&zst('sort').idle);fk.visible=forkOn;
+  fk.traverse(function(o){if(o.isMesh)o.castShadow=true;});
+  return {fk:fk,car:car,fkPl:fkPl,mast:mastIn,yaw:0,ph:0,t:0,h:3};}
+function turnTo(F,ty,dt){var d=ty-F.yaw;while(d>Math.PI)d-=6.283;while(d<-Math.PI)d+=6.283;F.yaw+=d*Math.min(1,dt*3);return Math.abs(d)<.06;}
+function fkMast(F){var hh=1.6+F.car.position.y;F.mast.scale.y=hh;F.mast.position.set(0,.4+hh/2,.85);F.fk.rotation.y=F.yaw;}
+var FKX=-10.1,FKZ_HI=3.4,forkOn=!(zst('pick').idle&&zst('sort').idle);
+var FK=mkForkMesh();FK.yaw=Math.PI/2;FK.wz=-14;FK.h=FLH*2;FK.fk.position.set(FKX,0,-14);FK.fk.visible=forkOn;scene.add(FK.fk);
+var dropP=mkPallet(true);dropP.rotation.y=Math.PI/2;dropP.visible=false;scene.add(dropP);
 function updateFork(dt){
-  if(!forkOn)return;FK.t+=dt;var p=fk.position,ph=FK.ph;
-  if(ph===0){car.position.y=Math.min(FK.h,car.position.y+dt*2.2);if(car.position.y>=FK.h-.01){FK.ph=1;FK.t=0;fkPl.visible=true;}}
-  else if(ph===1){if(FK.t>.7)FK.ph=2;}
-  else if(ph===2){car.position.y=Math.max(0,car.position.y-dt*1.3);if(car.position.y<=.001){FK.ph=3;FK.t=0;}}
-  else if(ph===3){if(FK.t>.5){fkPl.visible=false;dropP.visible=true;FK.ph=4;}}
-  else if(ph===4){p.z=Math.min(FKZ1,p.z+dt*1.6);if(p.z>=FKZ1){FK.ph=5;FK.t=0;}}
-  else if(ph===5){if(FK.t>7){dropP.visible=false;FK.ph=6;}}
-  else if(ph===6){p.z=Math.max(FKZ0,p.z-dt*1.6);if(p.z<=FKZ0){FK.ph=0;FK.h=FLH*pick([1,2]);}}
-  var hh=1.6+car.position.y;mastIn.scale.y=hh;mastIn.position.set(0,.4+hh/2,.85);
-}
+  if(!forkOn)return;var F=FK,p=F.fk.position,car=F.car;F.t+=dt;
+  if(F.ph===0){if(turnTo(F,Math.PI/2,dt)){car.position.y=Math.min(F.h,car.position.y+dt*2.2);if(car.position.y>=F.h-.01){F.ph=1;F.t=0;F.fkPl.visible=true;}}}      /* стоит боком к мезонину, забирает груз с этажа */
+  else if(F.ph===1){if(F.t>.7)F.ph=2;}
+  else if(F.ph===2){car.position.y=Math.max(0,car.position.y-dt*1.3);if(car.position.y<=.001){F.ph=3;F.t=0;}}                                   /* спускает вниз */
+  else if(F.ph===3){if(F.t>.5)F.ph=4;}
+  else if(F.ph===4){if(turnTo(F,0,dt)){p.z=Math.min(FKZ_HI,p.z+dt*1.7);if(p.z>=FKZ_HI){F.fkPl.visible=false;dropP.position.set(FKX,0,p.z+1.5);dropP.visible=true;F.ph=5;F.t=0;}}}
+  else if(F.ph===5){if(F.t>6){dropP.visible=false;F.ph=6;F.wz=-rnd(6,32);}}
+  else if(F.ph===6){if(turnTo(F,Math.PI,dt)){p.z=Math.max(F.wz,p.z-dt*1.7);if(p.z<=F.wz){F.ph=7;F.h=FLH*pick([1,2,3,4]);}}}
+  else if(F.ph===7){if(turnTo(F,Math.PI/2,dt))F.ph=0;}
+  fkMast(F);}
+/* кара на паллетном мезонине: едет по среднему проходу, поднимает/опускает паллеты на разные уровни */
+var FK2=null,pal6=FL[6]&&FL[6].blocks[0];
+if(pal6){FK2=mkForkMesh();FK2.fk.visible=forkOn;FL[6].g.add(FK2.fk);FK2.fk.position.set(-8,0,0);FK2.yaw=Math.PI/2;FK2.tx=8;FK2.side=1;FK2.lvl=3;}
+function updateFork2(dt){
+  var F=FK2;if(!F||!forkOn||!FL[6].g.visible)return;var p=F.fk.position,car=F.car;F.t+=dt;
+  if(F.ph===0){var dir=F.tx>p.x?1:-1;if(turnTo(F,dir>0?Math.PI/2:-Math.PI/2,dt)){p.x+=dir*dt*2.4;if(Math.abs(p.x-F.tx)<.1){F.ph=1;}}}      /* едет по проходу */
+  else if(F.ph===1){if(turnTo(F,F.side>0?0:Math.PI,dt)){F.ph=2;F.h=(F.lvl-.4)*1.35;}}                                                  /* разворот к стеллажу */
+  else if(F.ph===2){car.position.y=Math.min(F.h,car.position.y+dt*1.6);if(car.position.y>=F.h-.01){F.ph=3;F.t=0;F.fkPl.visible=!F.fkPl.visible;}}
+  else if(F.ph===3){if(F.t>.9)F.ph=4;}
+  else if(F.ph===4){car.position.y=Math.max(0,car.position.y-dt*1.6);if(car.position.y<=.001){F.ph=5;F.t=0;}}
+  else if(F.ph===5){if(F.t>.6){F.ph=0;F.tx=-rnd(-16,16);F.side=Math.random()<.5?1:-1;F.lvl=1+Math.floor(Math.random()*6);}}
+  fkMast(F);}
+/* люди на паллетном мезонине (с тележками) */
+var CROSSX=pal6?pal6.rx0+pal6.cw*34.5:0,FRONTX=pal6?pal6.rx0-1.2:0;
+function planPal(a){
+  var F=a.F,p=a.g.position;
+  if(a.n>=a.need){a.n=0;a.need=2+Math.floor(Math.random()*3);a.route=[{x:CROSSX,z:p.z},{x:CROSSX,z:0},{x:FRONTX,z:0},{x:FRONTX,z:0,act:'put',dur:1.0}];return;}
+  var c=farthest(F,a,[randCell(F),randCell(F),randCell(F),randCell(F),randCell(F)]);
+  if(!c){a.route=[{x:p.x,z:p.z,act:'wait',dur:3}];return;}
+  var az=Math.max(-8.8,Math.min(8.8,c.z+(Math.random()<.5?-2.2:2.2)));
+  a.route=[{x:CROSSX,z:p.z},{x:CROSSX,z:az},{x:c.x,z:az,act:'pick',dur:1.1,face:c.z-az}];}
+if(pal6)for(var pp_=0;pp_<3;pp_++){var a2=mkActor('pick',0x3B9CFF,pick([0xffffff,0xf5d142]),CROSSX,-6+pp_*6,{},FL[6].g,true);a2.F=FL[6];a2.need=2+Math.floor(Math.random()*3);a2.pickP=true;a2.palP=true;}
 /* затемнение зон без операций */
 function dim(x0,z0,x1,z1){var m=new THREE.Mesh(new THREE.PlaneGeometry(x1-x0,z1-z0),new THREE.MeshBasicMaterial({color:0x05070f,transparent:true,opacity:.32,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set((x0+x1)/2,.04,(z0+z1)/2);scene.add(m);return m;}
 var dimZ={sort:dim(-3.2,6.2,33,25.4),hub:dim(-32.6,6.2,-4.6,17),ship:dim(-32.6,17,-4.6,25.4)};
@@ -5184,6 +5222,14 @@ var lbSort=mkLabel(zoneLabel('sort','СОРТИРОВКА'),new THREE.Vector3(15
 GATES.forEach(function(gx,i){mkLabel('Ворота '+GNUM[i],new THREE.Vector3(gx,6.2,Z1+.3),'gt');});
 var floorLabels=[];
 [1,2,3,4,5,6].forEach(function(f){var o=FLSTAT[f];var lb=mkLabel((f===6?'Паллетный мезонин':f+' эт')+' · '+(o.zn.join('+')||'—')+' · '+pctOf(o.occ,o.tot)+'%',new THREE.Vector3(f===6?PCX:MX1+1.8,0,f===6?ZB+1:ZB-1),'fl');lb.f=f;floorLabels.push(lb);});
+/* ───── хаб: два рабочих места ПК + принтер ───── */
+DESKS.forEach(function(d,i){
+  var t=box(1.6,.07,.8,0xb9bec9);add(t,d.x,.78,d.z,false);
+  [[-.7,-.32],[.7,-.32],[-.7,.32],[.7,.32]].forEach(function(o){add(box(.06,.78,.06,0x6b7384),d.x+o[0],.39,d.z+o[1],false);});
+  add(box(.52,.34,.04,0x151b28),d.x-.35,1.14,d.z+.1,false);add(box(.08,.2,.08,0x454b5a),d.x-.35,.92,d.z+.1,false);add(box(.45,.02,.16,0xe6e9ef),d.x-.35,.83,d.z-.18,false);
+  add(box(.5,.24,.34,0xf4f6f9),d.x+.45,.93,d.z,false);add(box(.1,.02,.1,0xff4d4d),d.x+.6,1.06,d.z-.12,false);
+  mkLabel('ПК + принтер',new THREE.Vector3(d.x,1.9,d.z),'fl');});
+mkLabel('Синие пластиковые тары',new THREE.Vector3(-18,2.4,7.4),'fl');
 /* ───── паллетный мезонин (сзади) и схема этажей 2–5: проезды, оборудование, подписи зон ───── */
 (function(){
   var F6=FL[6];
@@ -5254,19 +5300,32 @@ recolor();
 function stepActor(a,dt){
   if(a.wait>0){a.wait-=dt;a.moving=false;}
   else{
-    if(!a.route.length){if(a.guard)planGuard(a);else if(a.pickP)planPick(a);else PLAN[a.zone](a);}
+    if(!a.route.length){if(a.guard)planGuard(a);else if(a.pickP)(a.palP?planPal:planPick)(a);else PLAN[a.zone](a);}
     var t=a.route[0],p=a.g.position,dx=t.x-p.x,dz=t.z-p.z,d=Math.hypot(dx,dz),sp=a.speed*dt;
     if(d<=sp+.02){p.x=t.x;p.z=t.z;a.route.shift();a.moving=false;
-      if(t.act==='pick'){if(a.pickP){a.n++;setCart(a,Math.min(4,a.nc+1));}else setCarry(a,true,t.c);a.wait=t.dur;if(t.face!==undefined){a.yaw=t.face>0?0:Math.PI;a.g.rotation.y=a.yaw;}}
+      a.actNow=null;
+      if(t.face!==undefined){a.yaw=t.face>0?0:Math.PI;a.g.rotation.y=a.yaw;}
+      if(t.act==='pick'){if(a.pickP){a.n++;setCart(a,Math.min(4,a.nc+1));}else setCarry(a,true,t.c);a.wait=t.dur;}
       else if(t.act==='put'){if(a.pickP)setCart(a,0);else setCarry(a,false);a.wait=t.dur;}
+      else if(t.act==='scan'){a.wait=t.dur;a.actNow='scan';}
+      else if(t.act==='print'){a.wait=t.dur;a.actNow='print';}
       else if(t.act==='wait'){a.wait=t.dur;}}
     else{p.x+=dx/d*sp;p.z+=dz/d*sp;a.moving=true;var ty=Math.atan2(dx,dz),dy=ty-a.yaw;while(dy>Math.PI)dy-=6.283;while(dy<-Math.PI)dy+=6.283;a.yaw+=dy*Math.min(1,dt*8);a.g.rotation.y=a.yaw;}
   }
   var sw=0;if(a.moving){a.ph+=dt*a.speed*4.6;sw=Math.sin(a.ph)*.7;}
   a.legL.rotation.x=sw;a.legR.rotation.x=-sw;
-  if(a.carry&&!a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.25;}else if(a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.0;}else{a.armL.rotation.x=-sw*.8;a.armR.rotation.x=sw*.8;}
+  a.sc.visible=false;
+  if(a.wait>0&&a.actNow==='scan'){a.armL.rotation.x=-1.2;a.armR.rotation.x=-1.35+Math.sin(a.ph*3+performance.now()*.01)*.12;a.sc.visible=Math.floor(performance.now()/180)%2===0;}
+  else if(a.wait>0&&a.actNow==='print'){a.armL.rotation.x=-1.0+Math.sin(performance.now()*.02)*.12;a.armR.rotation.x=-1.0+Math.sin(performance.now()*.02+2)*.12;}
+  else if(a.carry&&!a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.25;}else if(a.cartBoxes.length){a.armL.rotation.x=a.armR.rotation.x=-1.0;}else{a.armL.rotation.x=-sw*.8;a.armR.rotation.x=sw*.8;}
   a.g.position.y=a.moving?Math.abs(Math.sin(a.ph))*.03:0;
 }
+function separate(dt){
+  var k=Math.min(1,dt*5);
+  for(var i=0;i<actors.length;i++){var a=actors[i];if(a.guard||!a.g.visible||(a.pickP&&!a.F.g.visible))continue;
+    for(var j=i+1;j<actors.length;j++){var b=actors[j];if(b.guard||!b.g.visible||b.g.parent!==a.g.parent||(b.pickP&&!b.F.g.visible))continue;
+      var dx=b.g.position.x-a.g.position.x,dz=b.g.position.z-a.g.position.z,d=Math.hypot(dx,dz);
+      if(d<2.2){if(d<.01){dx=1;dz=0;d=1;}var m=(2.2-d)*.5*k/d;a.g.position.x-=dx*m;a.g.position.z-=dz*m;b.g.position.x+=dx*m;b.g.position.z+=dz*m;}}}}
 function updateTrucks(dt){
   if(shipIdle)return;
   trucks.forEach(function(tr){
@@ -5438,7 +5497,7 @@ function loop(now){
     if(tgt.distanceTo(goal.t)<.05&&Math.abs(sph.r-goal.r)<.1){goal=null;saveCam();}}
   if(Math.abs(EXPL-EXPLT)>.002){EXPL+=(EXPLT-EXPL)*Math.min(1,dt*3);FLG.forEach(function(F){F.g.position.y=F.baseY*(1+EXPL*1.1);});}
   for(var i=0;i<actors.length;i++){var a=actors[i];if(a.g.visible){if(a.pickP&&!a.F.g.visible)continue;stepActor(a,dt);}}
-  updateTrucks(dt);updateFork(dt);
+  updateTrucks(dt);updateFork(dt);updateFork2(dt);separate(dt);
   if(TOUR&&!goal&&!dragging0()){sph.th+=dt*.12;}
   applyCam();placeLabels();
   renderer.render(scene,cam);
