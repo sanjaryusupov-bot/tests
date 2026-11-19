@@ -4709,7 +4709,7 @@ var WK=S.workers||{pick:12,sort:10,hub:5,ship:6};
 /* ───── размеры здания ───── */
 var X0=-34,X1=34,Z0=-40,Z1=26,WHT=16.6,YARD=-1.1,FLH=3.0;
 var SCX=[6.0,12.6,19.2,25.8],SCZ=[13.6,18.4,23.2],RCV={x:4.5,z:5.0};  /* сортировка: паллеты крестом (5 шт.), центры кластеров */
-var MX0=-7,MX1=32,ZA=-37.4,ZB=2.6,PX0=-32,PX1=-12,PCX=-22,PCZ=(-37.4+2.6)/2;                 /* ячеечная область мезонина */
+var MX0=-7,MX1=32,ZA=-37.4,ZB=2.6,PX0=-32,PX1=-12,BALZ=-16,PCX=-22,PCZ=(-37.4+2.6)/2;                 /* ячеечная область мезонина */
 var GATES=[-27,-21,-15,-9],GNUM=[4,5,6,7];
 var LIFT={x:-3.6,z:4.6};
 
@@ -4923,27 +4923,37 @@ function buildFloor(f){
     [[x0,z0,x1,z0],[x1,z0,x1,z1],[x1,z1,x0,z1],[x0,z1,x0,z0]].forEach(function(s){pts.push(s[0],yy,s[1],s[2],yy,s[3]);pts.push(s[0],.5,s[1],s[2],.5,s[3]);});
     var lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
     g.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xffc107})));
+    var bxl=F.cz-BALZ,bzl=-(WID/2+1.3)-1.0;                                    /* балкончик: выступает из борта этажа в проезд, куда кара спускает груз */
+    var bp=new THREE.Mesh(new THREE.BoxGeometry(2.8,.16,2.0),new THREE.MeshStandardMaterial({color:0x8e97a8,roughness:.6}));bp.position.set(bxl,-.08,bzl);g.add(bp);
+    [[0,-1.0,2.8,.05],[-1.4,0,.05,2.0],[1.4,0,.05,2.0]].forEach(function(r){var rl=box(r[2]||.05,.05,r[3]||.05,0xffc107);rl.position.set(bxl+r[0],1.0,bzl+r[1]);g.add(rl);
+      var rl2=box(r[2]||.05,.05,r[3]||.05,0xffc107);rl2.position.set(bxl+r[0],.5,bzl+r[1]);g.add(rl2);});
+    var pw=box(2.8,.5,.1,0x34C27A);pw.position.set(bxl,.25,bzl-1.0);g.add(pw);   /* зелёная кромка: место выгрузки */
   }
   /* раскладка блоков */
   var tot=0;zs.forEach(function(z){tot+=Math.max(z.c.length,1);});
   var shelves=[],ups=[],placed=[];
-  var za_=-WID/2,cur=-LEN/2,D_=WID,Wall=LEN,stairs=[],wS=0;zs.forEach(function(z){wS+=Math.max(z.c.length,.1*tot);});
+  var za_=-WID/2,cur=-LEN/2,D_=WID,Wall=LEN,stairs=[],wS=0;
+  var wf=function(z){return z.sch?z.B+1.5:Math.max(z.c.length,.1*tot);};zs.forEach(function(z){wS+=wf(z);});
+  /* ряды схемы: 1 | 2-3 | 4-5 | 6-7 | 8-9 | 10-11 | 12-13 | 14, пары вплотную, между группами проход */
+  var SZr=[],grp=[0,1,1,2,2,3,3,4,4,5,5,6,6,7],gsz=[1,2,2,2,2,2,2,1],cdS=.95,inP=1.05,aiS=2.6,gw=gsz.map(function(n){return (n-1)*inP+cdS;}),
+      totS=gw.reduce(function(a,b){return a+b;},0)+aiS*7,cz_=-totS/2,ks=[],cnt=[0,0,0,0,0,0,0,0];
+  gw.forEach(function(w,g){ks.push(cz_+cdS/2);cz_+=w+aiS;});grp.forEach(function(g){SZr.push(ks[g]+cnt[g]*inP);cnt[g]++;});
   zs.forEach(function(z,zi){
     var share=Math.max(z.c.length,1)/Math.max(tot,1);
-    var bw=zs.length===1?Wall:Wall*Math.max(z.c.length,.1*tot)/wS;
+    var bw=zs.length===1?Wall:Wall*wf(z)/wS;
     var bx0=cur+1.2,Wb=bw-2.4;cur+=bw;
     var R=Math.max(1,z.R),B=Math.max(1,z.B),L=Math.max(1,Math.min(z.L,10));
-    var pz=z.pal?4.4:2.5,nz=Math.max(1,Math.floor((D_-0.8)/pz)+1),sections=Math.ceil(R/nz);nz=Math.ceil(R/sections);if(z.pal){nz=R;sections=1;}
+    var pz=z.pal?4.4:2.5,nz=Math.max(1,Math.floor((D_-0.8)/pz)+1),sections=Math.ceil(R/nz);nz=Math.ceil(R/sections);if(z.pal||z.sch){nz=R;sections=1;}
     var gap=.2,Wsec=(Wb-(sections-1)*gap)/sections;
-    var cw=Math.max(.04,Math.min(1.15,Wsec/B)),secOff=Math.max(0,(Wb-(sections*B*cw+(sections-1)*gap))/2),secX=function(sc){return bx0+secOff+sc*(B*cw+gap);},ch=z.pal?1.35:Math.max(.24,Math.min(.62,2.5/L)),cd=z.pal?1.15:.8;
+    var cw=Math.max(.04,Math.min(1.15,Wsec/B)),secOff=Math.max(0,(Wb-(sections*B*cw+(sections-1)*gap))/2),secX=function(sc){return bx0+secOff+sc*(B*cw+gap);},ch=z.pal?1.35:Math.max(.24,Math.min(.62,2.5/L)),cd=z.pal?1.15:(z.sch?.95:.8);
     var blk={z:z,x0:bx0,x1:bx0+Wb,cw:cw,ch:ch,L:L,R:R,B:B,pz:pz,nz:nz,sections:sections,Wsec:Wsec,xa:bx0-.8,rackPos:[],rx0:secX(0)};
     F.blocks.push(blk);
     for(var r=0;r<R;r++){
       var sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
-      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz;
+      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=z.sch?SZr[r]:zc0+rin*pz;
       var rx0=secX(sec),len=B*cw;
       blk.rackPos.push({x:rx0+len/2,z:rz,x0:rx0,len:len});
-      if(z.off&&z.off.indexOf(r)>=0){stairs.push([rx0+len/2,rz,len,L*ch,.95,0xFF8A3D,.5]);continue;}      /* ряд занят подъёмом для персонала */
+      if(z.off&&z.off.indexOf(r)>=0){stairs.push([rx0+len/2,rz,len,L*ch,1.05,0xFF8A3D,.55]);continue;}      /* ряд занят подъёмом для персонала */
       (z.gap||[]).forEach(function(gp){if(gp[0]===r)stairs.push([rx0+(gp[1]+gp[2]+1)/2*cw,rz,(gp[2]-gp[1]+1)*cw,L*ch*.9,.95,0xFFC107,.9]);});   /* лестница вместо стеллажей */
       for(var l=0;l<=L;l++)shelves.push([rx0+len/2,.1+ch*l-.025,rz,len,.045,cd+.12]);
       var step=Math.max(1,Math.round(4/Math.max(cw,.3)));
@@ -4952,12 +4962,15 @@ function buildFloor(f){
     }
     z.c.forEach(function(c){
       var r=c[0],sec=Math.floor(r/nz),rin=r%nz,nIn=Math.min(nz,R-sec*nz);
-      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=zc0+rin*pz,rx0=secX(sec);
+      var zc0=za_+(D_-(nIn-1)*pz)/2,rz=z.sch?SZr[r]:zc0+rin*pz,rx0=secX(sec);
       var spn=c[9]||1;var o={bi:F.blocks.length-1,zone:z.z,f:f,r:r,b:c[1],l:Math.min(c[2],L-1),q:c[3],res:c[4],ns:c[5],code:c[6],det:c[7],ids:(c[8]||'').toLowerCase(),
              x:rx0+cw*(c[1]+spn/2),y:.1+ch*(Math.min(c[2],L-1)+.5),z:rz,cw:cw*spn,ch:ch,cd:cd,blk:blk,hl:false,inst:-1,mesh:null};
       placed.push(o);
     });
   });
+  if(f<6&&F.blocks.length>=4&&F.blocks[0].z.sch){for(var gi_=0;gi_<3;gi_++){var b0_=F.blocks[gi_],b1_=F.blocks[gi_+1],xa_=b0_.rx0+b0_.B*b0_.cw,xb_=b1_.rx0;
+    for(var l_=0;l_<=b0_.L;l_++)shelves.push([(xa_+xb_)/2,.1+b0_.ch*l_-.025,SZr[13],xb_-xa_,.045,1.07]);
+    ups.push([xa_+.05,(b0_.L*b0_.ch+.2)/2,SZr[13]-.5,b0_.L*b0_.ch+.2],[xb_-.05,(b0_.L*b0_.ch+.2)/2,SZr[13]-.5,b0_.L*b0_.ch+.2],[xa_+.05,(b0_.L*b0_.ch+.2)/2,SZr[13]+.5,b0_.L*b0_.ch+.2],[xb_-.05,(b0_.L*b0_.ch+.2)/2,SZr[13]+.5,b0_.L*b0_.ch+.2]);}}
   stairs.forEach(function(s){var m=box(s[2],s[3],s[4],s[5],{transparent:true,opacity:s[6]});m.position.set(s[0],s[3]/2+.1,s[1]);g.add(m);});
   /* каркас стеллажей */
   var shI=new Inst(UB,matBeam,shelves.length,g,false);shelves.forEach(function(s){shI.add(s[0],s[1],s[2],s[3],s[4],s[5],0);});shI.done();F.shelf=shI;
@@ -5095,7 +5108,7 @@ function Person(vest,hat,pants,cart){
 }
 var actors=[],guards=[];
 function mkActor(zone,vest,hat,x,z,cfg,parent,cart){
-  var p=Person(vest,hat,null,cart);p.zone=zone;p.g.position.set(x,0,z);(parent||scene).add(p.g);p.ph=rnd(0,6);p.speed=rnd(1.1,1.5);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);p.n=0;p.wait=rnd(0,14);actors.push(p);return p;}
+  var p=Person(vest,hat,null,cart);p.zone=zone;p.g.position.set(x,0,z);(parent||scene).add(p.g);p.ph=rnd(0,6);p.speed=rnd(.9,1.65);p.route=[];p.wait=0;p.carry=false;p.moving=false;p.cfg=cfg||{};p.yaw=rnd(0,6.28);p.n=0;p.wait=rnd(0,14);actors.push(p);return p;}
 function setCarry(p,v,colr){p.carry=v;if(!p.cartBoxes.length){p.cb.visible=v;if(v&&colr!==undefined)p.cb.material.color.setHex(colr);}}
 function setCart(p,k){p.nc=k;p.cartBoxes.forEach(function(b,i){b.visible=i<k;});}
 /* сборщики на этажах мезонина */
@@ -5119,11 +5132,9 @@ for(var pi=0;pi<WK.pick;pi++){
   a_.F=F_;a_.need=2+Math.floor(Math.random()*3);a_.pickP=true;
 }
 function planSort(a){
-  var c=CL_[a.cfg.ci],k=a.cfg.side===1?1:2,sx,sz;
-  if(k===1){sx=c.cx-2.5;sz=c.cz;}else{sx=c.cx+2.5;sz=c.cz;}
-  var ax=(k===2)?c.cx+3.3:c.cx-3.3;
-  a.route=[{x:RCV.x+1.1+rnd(-.5,.5),z:RCV.z+.1+rnd(-.4,.4),act:'pick',dur:1.0,c:CO.orange},{x:ax,z:10.6},{x:ax,z:sz},{x:sx,z:sz,act:'scan',dur:rnd(1.4,2.2),face:(k===1?1:-1)*0+1},{x:sx,z:sz,act:'put',dur:1.2},{x:ax,z:sz},{x:ax,z:10.6}];}
-var DESKS=[{x:-26.5,z:16.4,busy:false},{x:-14.5,z:16.4,busy:false}];
+  var c=CL_[a.cfg.ci],k=a.cfg.side===1?1:2,sx=k===1?c.cx-2.5:c.cx+2.5,sz=c.cz;
+  a.route=[{x:c.cx,z:c.cz+2.0,act:'pick',dur:1.0,c:CO.orange,face:-1},{x:sx,z:c.cz+1.4},{x:sx,z:sz,act:'scan',dur:rnd(1.4,2.2),face:1},{x:sx,z:sz,act:'put',dur:1.2},{x:sx,z:c.cz+1.4}];}
+var DESKS=[{x:-9.0,z:15.2,busy:false},{x:-5.6,z:15.2,busy:false}];
 function planHub(a){
   var cf=a.cfg;if(cf.d){cf.d.busy=false;cf.d=null;}
   var t=TOTES[cf.ti],d=DESKS[cf.di],r=[{x:t.x,z:t.z+1.5,act:'pick',dur:1.3,c:0x1f64c4,face:-1}];   /* берёт товар из синей тары */
@@ -5132,7 +5143,7 @@ function planHub(a){
   r.push({x:dest.x,z:dest.z+1.5,act:'put',dur:1.0,face:-1});                                      /* раскладывает по коробам */
   if(Math.random()<.3){var sg=pick(GATES);r.push({x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.blue},{x:sg,z:15.5});}  /* разносит коробки */
   a.route=r;}
-function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi],tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
+function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi]+(Math.floor(a.cfg.gate/GATES.length)-.5)*1.4,tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
   if(!tr||tr.t.done||tr.state!=='dock'){a.route=[{x:gx,z:17.4,act:'wait',dur:rnd(2,5)},{x:gx+2.2,z:17.4}];return;}
   a.route=[{x:gx,z:18.4,act:'pick',dur:.9,c:CO.blue},{x:gx+1.9,z:18.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:18.4}];}
 function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
@@ -5167,8 +5178,8 @@ function mkForkMesh(){
   return {fk:fk,car:car,fkPl:fkPl,mast:mastIn,yaw:0,ph:0,t:0,h:3};}
 function turnTo(F,ty,dt){var d=ty-F.yaw;while(d>Math.PI)d-=6.283;while(d<-Math.PI)d+=6.283;F.yaw+=d*Math.min(1,dt*3);return Math.abs(d)<.06;}
 function fkMast(F){var hh=1.6+F.car.position.y;F.mast.scale.y=hh;F.mast.position.set(0,.4+hh/2,.85);F.fk.rotation.y=F.yaw;}
-var FKX=-10.1,FKZ_HI=3.4,forkOn=!(zst('pick').idle&&zst('sort').idle);
-var FK=mkForkMesh();FK.yaw=Math.PI/2;FK.wz=-14;FK.h=FLH*2;FK.fk.position.set(FKX,0,-14);FK.fk.visible=forkOn;scene.add(FK.fk);
+var FKX=-11.6,FKZ_HI=3.4,forkOn=!(zst('pick').idle&&zst('sort').idle);
+var FK=mkForkMesh();FK.yaw=Math.PI/2;FK.wz=BALZ;FK.h=FLH*2;FK.fk.position.set(FKX,0,BALZ);FK.fk.visible=forkOn;scene.add(FK.fk);
 var dropP=mkPallet(true);dropP.rotation.y=Math.PI/2;dropP.visible=false;scene.add(dropP);
 function updateFork(dt){
   if(!forkOn)return;var F=FK,p=F.fk.position,car=F.car;F.t+=dt;
@@ -5177,7 +5188,7 @@ function updateFork(dt){
   else if(F.ph===2){car.position.y=Math.max(0,car.position.y-dt*1.3);if(car.position.y<=.001){F.ph=3;F.t=0;}}                                   /* спускает вниз */
   else if(F.ph===3){if(F.t>.5)F.ph=4;}
   else if(F.ph===4){if(turnTo(F,0,dt)){p.z=Math.min(FKZ_HI,p.z+dt*1.7);if(p.z>=FKZ_HI){F.fkPl.visible=false;dropP.position.set(FKX,0,p.z+1.5);dropP.visible=true;F.ph=5;F.t=0;}}}
-  else if(F.ph===5){if(F.t>6){dropP.visible=false;F.ph=6;F.wz=-rnd(6,32);}}
+  else if(F.ph===5){if(F.t>6){dropP.visible=false;F.ph=6;F.wz=BALZ;}}
   else if(F.ph===6){if(turnTo(F,Math.PI,dt)){p.z=Math.max(F.wz,p.z-dt*1.7);if(p.z<=F.wz){F.ph=7;F.h=FLH*pick([1,2,3,4]);}}}
   else if(F.ph===7){if(turnTo(F,Math.PI/2,dt))F.ph=0;}
   fkMast(F);}
@@ -5243,8 +5254,8 @@ mkLabel('Синие пластиковые тары',new THREE.Vector3(-18,2.4,7
     var caps=b.z.caps||[];
     b.z.rk.forEach(function(r,i){lab6(r+' ряд · '+(caps[i]||'')+' мест',b.rx0-1.6,b.ch*6+.4,zr(i));});
     var xf=b.rx0-2.4;                                                       /* у переднего края (к хабу): оборудование */
-    put(box(1.6,.04,2.2,0xffffff,{transparent:true,opacity:.7}),xf,.05,6);lab6('Проход в мезонин',xf,1.3,6);
   }
+  [2,3,4,5].forEach(function(f){var lb=mkLabel('Место выгрузки',new THREE.Vector3(-9.3,0,BALZ),'fl');lb.f=f;floorLabels.push(lb);});
   [2,3,4,5].forEach(function(f){var F=FL[f];if(!F)return;F.blocks.forEach(function(b){if(!b.z.sch)return;
     var lb=mkLabel(b.z.note.replace('схема Excel · ','')+' · '+b.z.secs+' секц.',new THREE.Vector3(MX0-1.4,F.baseY+.2,F.cz-(b.x0+b.x1)/2),'fl');lb.f=f;floorLabels.push(lb);});});
 })();
@@ -5299,8 +5310,9 @@ recolor();
 /* ───── движение людей ───── */
 function stepActor(a,dt){
   if(a.wait>0){a.wait-=dt;a.moving=false;}
+  else if(a.hold>0){a.hold-=dt;a.moving=false;}
   else{
-    if(!a.route.length){if(a.guard)planGuard(a);else if(a.pickP)(a.palP?planPal:planPick)(a);else PLAN[a.zone](a);}
+    if(!a.route.length){if(a.guard)planGuard(a);else if(a.pickP)(a.palP?planPal:planPick)(a);else PLAN[a.zone](a);if(!a.guard)a.wait=rnd(0,3.5);}
     var t=a.route[0],p=a.g.position,dx=t.x-p.x,dz=t.z-p.z,d=Math.hypot(dx,dz),sp=a.speed*dt;
     if(d<=sp+.02){p.x=t.x;p.z=t.z;a.route.shift();a.moving=false;
       a.actNow=null;
@@ -5325,7 +5337,9 @@ function separate(dt){
   for(var i=0;i<actors.length;i++){var a=actors[i];if(a.guard||!a.g.visible||(a.pickP&&!a.F.g.visible))continue;
     for(var j=i+1;j<actors.length;j++){var b=actors[j];if(b.guard||!b.g.visible||b.g.parent!==a.g.parent||(b.pickP&&!b.F.g.visible))continue;
       var dx=b.g.position.x-a.g.position.x,dz=b.g.position.z-a.g.position.z,d=Math.hypot(dx,dz);
-      if(d<2.2){if(d<.01){dx=1;dz=0;d=1;}var m=(2.2-d)*.5*k/d;a.g.position.x-=dx*m;a.g.position.z-=dz*m;b.g.position.x+=dx*m;b.g.position.z+=dz*m;}}}}
+      if(d<5.5){if(b.moving&&!(b.hold>0)&&Math.random()<dt*2.5)b.hold=rnd(1,3);          /* рядом кто-то — подождать, чтобы не идти вместе */
+        if(a.moving&&!(a.hold>0)&&d<3&&Math.random()<dt*2.5)a.hold=rnd(.6,1.6);}
+      if(d<3.2){if(d<.01){dx=1;dz=0;d=1;}var m=(3.2-d)*.5*k/d;a.g.position.x-=dx*m;a.g.position.z-=dz*m;b.g.position.x+=dx*m;b.g.position.z+=dz*m;}}}}
 function updateTrucks(dt){
   if(shipIdle)return;
   trucks.forEach(function(tr){
