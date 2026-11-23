@@ -151,6 +151,7 @@ HOLIDAYS_EXTRA = set()               # даты, которые двигаютс
 # Metabase: ID таблиц (можно переопределить в Secrets: stock_table, magnit_table, hub_table)
 MB_STOCK_T = 48     # «Stock Invoice Sku Cell» — история снимков остатков
 MB_MAGNIT_T = 58    # «Magnit Stock»
+MB_ACCEPT_T = 70    # «Приёмка Магнит» (bi.antria.uz/table/70) — поставки: ворота, статус, этап
 MB_HUB_T = 61       # «Хаб отгрузка ББ» — приёмка коробок (биг-бэгов) на хабе
 MB_STOCK_DAYS = 90  # за сколько последних дней можно выбирать период
 MB_CAT_DAYS = 14    # за сколько последних дней собирать каталог товаров
@@ -167,8 +168,8 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MODES = ["Все", "Не собрано", "Собрано", "Прочие заказы", "Маршрутизация", "Рейсы"]
 ORDINALS = ["Первая", "Вторая", "Третья", "Четвёртая", "Пятая", "Шестая", "Седьмая", "Восьмая", "Девятая", "Десятая"]
 
-PAGES = ["Сводка по дням", "Заказы", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
-NAV_ICONS = {"Сводка по дням": "🏠", "Заказы": "📋", "Поиск заказа": "🔍",
+PAGES = ["Сводка по дням", "Заказы", "Приёмка", "Поиск заказа", "Пустые короба", "Движения по остаткам", "Аналитика"]
+NAV_ICONS = {"Сводка по дням": "🏠", "Заказы": "📋", "Приёмка": "📥", "Поиск заказа": "🔍",
              "Пустые короба": "📦", "Движения по остаткам": "🔄", "Аналитика": "📊"}
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 # Контакты внизу бокового меню
@@ -295,7 +296,7 @@ _ICONS = {
     "history": "<path d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/><path d='M3 3v5h5'/><path d='M12 7v5l4 2'/>",
     "close": "<path d='M18 6 6 18M6 6l12 12'/>",
 }
-NAV_ICON_NAMES = ["home", "list", "search", "box", "swap", "chart"]
+NAV_ICON_NAMES = ["home", "list", "download", "search", "box", "swap", "chart"]
 
 
 def _svg(name, color="currentColor", size=20, sw=2):
@@ -2224,6 +2225,119 @@ def hub_card(g, today: date, err: str = "", note: str = "") -> str:
             f"<div class='hubt'>{body}</div></div>")
 
 
+# ───────────────────────── Metabase: «Приёмка Магнит» (таблица 70) ─────────────────────────
+_RU_MON = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5, "июн": 6, "июл": 7,
+           "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
+ACC_COLS = ["Номер поставки", "ID в системе", "Партнёр", "Продавец", "День", "Ворота", "Статус поставки", "Этап сейчас"]
+
+
+def _acc_one(v):
+    """«июнь 19, 2026» (так показывает Metabase) -> дата."""
+    m = re.match(r"^\s*([А-Яа-яЁё]+)\.?\s+(\d{1,2}),?\s+(\d{4})", str(v))
+    if not m:
+        return None
+    mo = _RU_MON.get(m.group(1).lower()[:3])
+    try:
+        return date(int(m.group(3)), mo, int(m.group(2))) if mo else None
+    except ValueError:
+        return None
+
+
+def _acc_date(ser: pd.Series) -> pd.Series:
+    s = ser.fillna("").astype(str).str.strip()
+    out = _to_date(s)
+    miss = out.isna()
+    if miss.any():
+        out[miss] = s[miss].map(_acc_one)
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_accept() -> pd.DataFrame:
+    """«Приёмка Магнит» (Metabase, таблица 70). Колонка «Режим часов» убрана (она только дублировала строки
+    календарные / рабочие), «День» — настоящая дата. Результат: ACC_COLS, одна строка = одна поставка."""
+    cfg, _, _ = _mb_cfg()
+    tid = int(cfg.get("accept_table", MB_ACCEPT_T) or MB_ACCEPT_T)
+    db, _f = mb_meta(tid)
+    raw = mb_run(db, {"source-table": tid})
+    if raw.empty:
+        raise ValueError("Таблица «Приёмка Магнит» вернула 0 строк.")
+    cols = {_hk(c): c for c in raw.columns}
+
+    def find(*keys, no=()):
+        for k, c in cols.items():
+            if all(x in k for x in keys) and not any(x in k for x in no):
+                return c
+        return None
+
+    c_num = find("номер", "постав") or find("supply", "number") or find("номер")
+    c_id = find("idвсистем") or find("idвсист") or next((c for k, c in cols.items() if k.startswith("id")), None)
+    c_par = find("партнер") or find("partner")
+    c_sel = find("продав") or find("seller") or find("vendor")
+    c_day = find("день") or find("дата") or find("day") or find("date")
+    c_gate = find("ворота") or find("gate")
+    c_st = find("статус", "постав") or find("статус") or find("status")
+    c_stg = find("этап") or find("stage")
+    miss = [t for t, c in (("Номер поставки", c_num), ("День", c_day), ("Статус поставки", c_st)) if c is None]
+    if miss:
+        raise ValueError("В таблице приёмки нет колонок: " + ", ".join(miss) + ". Есть: " + ", ".join(map(str, raw.columns)))
+
+    def txt(c):
+        if c is None:
+            return pd.Series("", index=raw.index)
+        return raw[c].fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+
+    d = pd.DataFrame({"Номер поставки": txt(c_num), "ID в системе": txt(c_id), "Партнёр": txt(c_par),
+                      "Продавец": txt(c_sel), "День": _acc_date(raw[c_day]), "Ворота": txt(c_gate),
+                      "Статус поставки": txt(c_st), "Этап сейчас": txt(c_stg)})
+    d = d[d["Номер поставки"] != ""].drop_duplicates().reset_index(drop=True)
+    d["_ord"] = d["День"].map(lambda x: x if pd.notna(x) else date.min)
+    d = d.sort_values(["_ord", "Номер поставки"], ascending=[False, True]).drop(columns="_ord")
+    return d.reset_index(drop=True)
+
+
+def accept_search(q: str) -> pd.DataFrame:
+    """Поиск по приёмке: номер поставки, ID, продавец, партнёр. Ошибка Metabase не ломает поиск заказов."""
+    q = (q or "").strip().lower()
+    if not q:
+        return pd.DataFrame(columns=ACC_COLS)
+    try:
+        a = load_accept()
+    except Exception:
+        return pd.DataFrame(columns=ACC_COLS)
+    m = pd.Series(False, index=a.index)
+    for c in ("Номер поставки", "ID в системе", "Продавец", "Партнёр"):
+        m |= a[c].str.lower().str.contains(q, regex=False)
+    return a[m]
+
+
+def acc_day(d) -> str:
+    return f"{d:%d.%m.%Y}" if d is not None and pd.notna(d) else "—"
+
+
+def acc_badge(v: str, good: tuple) -> str:
+    v = str(v or "")
+    if not v:
+        return "—"
+    ok = any(g in v.lower() for g in good)
+    return f"<span class='badge {'ok' if ok else 'no'}'>{esc(v)}</span>"
+
+
+def accept_table(frame: pd.DataFrame, limit: int = 1500) -> str:
+    rows = [[f"<b>{esc(r['Номер поставки'])}</b>", esc(r["ID в системе"] or "—"), esc(r["Партнёр"] or "—"),
+             esc(r["Продавец"] or "—"), acc_day(r["День"]), esc(r["Ворота"] or "—"),
+             acc_badge(r["Статус поставки"], ("accepted",)), acc_badge(r["Этап сейчас"], ("заверш",))]
+            for r in frame.head(limit).to_dict("records")]
+    return simple_table(ACC_COLS, rows)
+
+
+def accept_excel(frame: pd.DataFrame) -> bytes:
+    f = frame.copy()
+    f["День"] = f["День"].map(acc_day)
+    return to_xlsx({"Приёмка": f})
+
+
+
 def _xl_safe(df: pd.DataFrame) -> pd.DataFrame:
     """Очень длинные целые (ID по 19 цифр) Excel округляет — пишем их текстом."""
     df = df.copy()
@@ -3314,12 +3428,14 @@ def go_comment(key: str):
         ss.page, ss.hub_open = PAGES[0], True
     elif key.startswith("pl_"):
         ss.page, ss.f_mode = PAGES[1], "Маршрутизация"
+    elif key.startswith("ac_"):
+        ss.page = PAGES[2]
     elif key.startswith("bx_"):
-        ss.page = PAGES[3]
-    elif key.startswith("mg_"):
         ss.page = PAGES[4]
-    elif key.startswith("an_"):
+    elif key.startswith("mg_"):
         ss.page = PAGES[5]
+    elif key.startswith("an_"):
+        ss.page = PAGES[6]
     else:
         ss.page = PAGES[0]
         if key.startswith("w_day_"):
@@ -6111,10 +6227,10 @@ def on_gsearch():
     st.session_state.hub_open = False
     st.session_state.ship_open = False
     if re.match(r"^\s*(\w{1,3}-\d+|\d{3,9})\s*$", q_):
-        st.session_state.page = PAGES[2]
+        st.session_state.page = PAGES[3]
         st.session_state.q_order = q_
     else:
-        st.session_state.page = PAGES[4]
+        st.session_state.page = PAGES[5]
         st.session_state.mv_q = q_
         st.session_state.mg_q = q_
 
@@ -6783,10 +6899,75 @@ if page == PAGES[1]:
             if len(sub) > 1500:
                 st.caption("Показаны первые 1500 заказов, уточните дату.")
 
-# ───────────────────────── 3. Поиск ─────────────────────────
+# ───────────────────────── Приёмка (Metabase, таблица 70) ─────────────────────────
 if page == PAGES[2]:
-    q = st.text_input("Номер заказа или магазин", key="q_order",
-                      placeholder="например, 1M-0024629, 0024629 или Узуммаркет").strip()
+    st.markdown("<div class='sec'>Приёмка Магнит</div>", unsafe_allow_html=True)
+    acc = None
+    try:
+        acc = load_accept()
+    except Exception as e:
+        st.warning("Не удалось прочитать «Приёмка Магнит» из Metabase. Проверьте блок [metabase] в Secrets "
+                   "(url, api_key; ID таблицы по умолчанию 70, можно задать accept_table) и доступ к таблице.")
+        st.caption(str(e))
+    if acc is not None:
+        days_ = sorted({d_ for d_ in acc["День"] if pd.notna(d_)}, reverse=True)
+        opts = [ALL] + days_
+        if st.session_state.get("ac_date") not in opts:
+            st.session_state.ac_date = now.date() if now.date() in days_ else ALL
+        sts = sorted({x for x in acc["Статус поставки"] if x})
+        stg = sorted({x for x in acc["Этап сейчас"] if x})
+        f1_, f2_, f3_, f4_ = st.columns([1.2, 1.2, 1.2, 1.6])
+        with f1_:
+            st.selectbox("День", opts, key="ac_date",
+                         format_func=lambda x: "Все дни" if x == ALL else f"{x:%d.%m.%Y}, {WEEKDAYS[x.weekday()]}")
+        with f2_:
+            st.selectbox("Статус поставки", [ALL] + sts, key="ac_status",
+                         format_func=lambda x: "Все статусы" if x == ALL else x)
+        with f3_:
+            st.selectbox("Этап сейчас", [ALL] + stg, key="ac_stage",
+                         format_func=lambda x: "Все этапы" if x == ALL else x)
+        with f4_:
+            acq = st.text_input("Поставка, ID, продавец", key="ac_q", placeholder="например, 1M-0017028 или SMART PLAST").strip().lower()
+        sub = acc
+        if st.session_state.ac_date != ALL:
+            sub = sub[sub["День"] == st.session_state.ac_date]
+        if st.session_state.get("ac_status") not in (None, ALL):
+            sub = sub[sub["Статус поставки"] == st.session_state.ac_status]
+        if st.session_state.get("ac_stage") not in (None, ALL):
+            sub = sub[sub["Этап сейчас"] == st.session_state.ac_stage]
+        if acq:
+            mm = pd.Series(False, index=sub.index)
+            for c in ("Номер поставки", "ID в системе", "Продавец", "Партнёр", "Ворота"):
+                mm |= sub[c].str.lower().str.contains(acq, regex=False)
+            sub = sub[mm]
+
+        n_acc = int(sub["Статус поставки"].str.upper().eq("ACCEPTED").sum())
+        n_gate = int(sub["Этап сейчас"].str.lower().str.contains("ворот").sum())
+        n_done = int(sub["Этап сейчас"].str.lower().str.contains("заверш").sum())
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            an_widget("ac_total", n(len(sub)), "поставок", f"продавцов: {n(sub['Продавец'].nunique())}", "all", "box")
+        with k2:
+            an_widget("ac_acc", n(n_acc), "принято (ACCEPTED)", "", "ok")
+        with k3:
+            an_widget("ac_gate", n(n_gate), "на воротах", "", "left" if n_gate else "ok")
+        with k4:
+            an_widget("ac_done", n(n_done), "завершено", "", "blue")
+        if sub.empty:
+            st.info("По выбранным фильтрам поставок нет.")
+        else:
+            xl_button("Скачать приёмку в Excel", lambda: accept_excel(sub),
+                      f"priemka_{now:%Y%m%d_%H%M}.xlsx", "dl_accept")
+            st.markdown(accept_table(sub), unsafe_allow_html=True)
+            if len(sub) > 1500:
+                st.caption("Показаны первые 1500 строк, уточните фильтры. В Excel выгружаются все.")
+        st.caption("Источник: Metabase, «Приёмка Магнит» (таблица 70), обновляется раз в 5 минут. Колонка «Режим часов» "
+                   "убрана, повторяющиеся строки (календарные / рабочие) объединены. Поиск заказа тоже ищет по приёмке.")
+
+# ───────────────────────── 3. Поиск ─────────────────────────
+if page == PAGES[3]:
+    q = st.text_input("Номер заказа / поставки, магазин или продавец", key="q_order",
+                      placeholder="например, 1M-0024629, 0024629, Узуммаркет или SMART PLAST").strip()
     if q:
         hits = df_all[df_all["Заказ"].str.contains(q, case=False, regex=False)]
         by_store = False
@@ -6795,8 +6976,10 @@ if page == PAGES[2]:
             if kq:
                 hits = df_all[df_all["Магазин"].map(lambda s: kq in norm_store(s))]
                 by_store = not hits.empty
+        acc_hits = accept_search(q)
         if hits.empty:
-            st.warning(f"«{q}» не найдено. Можно вводить последние цифры номера заказа или название магазина.")
+            if acc_hits.empty:
+                st.warning(f"«{q}» не найдено. Можно вводить последние цифры номера заказа или поставки, название магазина или продавца.")
         else:
             hits = (hits.assign(_d=hits["Дата"].map(lambda x: x if pd.notna(x) else date.min))
                     .sort_values(["_d", "Заказ"], ascending=[False, True]).drop(columns="_d"))
@@ -6879,11 +7062,16 @@ if page == PAGES[2]:
                     xl_button(f"Акты заказа в Excel ({len(recs_)})",
                               lambda rr=recs_: acts_excel(pd.DataFrame(rr)),
                               f"akty_{str(r['Заказ']).strip()}.xlsx", f"dl_act_{i_}_{zlib.crc32(str(r['Заказ']).encode())}")
+        if not acc_hits.empty:
+            st.markdown(f"<div class='sec'>Приёмка: найдено поставок {n(len(acc_hits))}</div>", unsafe_allow_html=True)
+            st.markdown(accept_table(acc_hits, 200), unsafe_allow_html=True)
+            if len(acc_hits) > 200:
+                st.caption("Показаны первые 200 поставок, уточните запрос.")
     else:
-        st.info("Введите номер заказа (или его часть) либо название магазина, например «Узуммаркет».")
+        st.info("Введите номер заказа или поставки (или его часть), название магазина или продавца.")
 
 # ───────────────────────── 4. Пустые короба ─────────────────────────
-if page == PAGES[3]:
+if page == PAGES[4]:
     bx = None
     try:
         bx = load_boxes()
@@ -6993,7 +7181,7 @@ if page == PAGES[3]:
                         unsafe_allow_html=True)
 
 # ───────────────────────── 5. Движения по остаткам ─────────────────────────
-if page == PAGES[4]:
+if page == PAGES[5]:
     st.markdown("<div class='sec'>Движения по остаткам</div>", unsafe_allow_html=True)
 
     # ── Остаток позиции по Magnit Stock ──
@@ -7427,7 +7615,7 @@ def store_dynamics(frame: pd.DataFrame, weekly: bool) -> pd.DataFrame:
     return g.sort_values("p").reset_index(drop=True)
 
 
-if page == PAGES[5]:
+if page == PAGES[6]:
     import altair as alt
     st.markdown("<div class='sec'>Аналитика</div>", unsafe_allow_html=True)
 
