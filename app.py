@@ -358,7 +358,21 @@ def trend_pct(vals, k=7):
     return (a - b) / b * 100 if b else None
 
 
-WMS_STATUSES = [("PACKING", "#3B9CFF"), ("SORTED", "#34C27A"), ("SORTING", "#F2A23D"),
+# Статус WMS -> «Собран»: IN_DELIVERY, PACKING, SORTED; CANCEL — отмена (не считается ни собранным, ни несобранным);
+# все остальные статусы — «не собран»
+COLLECTED_STATUSES = {"IN_DELIVERY", "PACKING", "SORTED"}
+
+
+def wms_key(v) -> str:
+    return re.sub(r"[\s\-]+", "_", str(v or "").strip().upper())
+
+
+def is_cancel_status(v) -> bool:
+    k = wms_key(v)
+    return "CANCEL" in k or "ОТМЕН" in k
+
+
+WMS_STATUSES = [("IN_DELIVERY", "#17B8A6"), ("PACKING", "#3B9CFF"), ("SORTED", "#34C27A"), ("SORTING", "#F2A23D"),
                 ("PARTIALLY_RESERVED", "#E0338F"), ("RESERVED", "#8B3DFF")]
 
 
@@ -978,7 +992,7 @@ def _client_rw():
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
-def load() -> pd.DataFrame:
+def load_all_orders() -> pd.DataFrame:
     sheet = _client().open_by_key(SHEET_ID)
     ws = next(w for w in sheet.worksheets() if str(w.id) == GID)
     rows = ws.get_all_values()
@@ -1012,8 +1026,23 @@ def load() -> pd.DataFrame:
         "Сборка": raw[c_pick].str.strip(),
         "Статус WMS": raw[c_wms].str.strip(),
     })
-    df["Собран"] = df["Сборка"].str.lower().str.contains("в сборке")
+    df["Отмена"] = df["Статус WMS"].map(is_cancel_status)
+    df["Собран"] = df["Статус WMS"].map(lambda v: wms_key(v) in COLLECTED_STATUSES) & ~df["Отмена"]
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
+def load() -> pd.DataFrame:
+    """Активные заказы: без отменённых. Собран = статус WMS IN_DELIVERY / PACKING / SORTED, остальные — не собран."""
+    d = load_all_orders()
+    return d[~d["Отмена"]].reset_index(drop=True)
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
+def load_cancelled() -> pd.DataFrame:
+    """Отменённые заказы (статус CANCEL): в подсчётах не участвуют, но находятся в поиске."""
+    d = load_all_orders()
+    return d[d["Отмена"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
@@ -1048,6 +1077,7 @@ def load_new_orders() -> pd.DataFrame:
         "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
         "Магазин": raw[c_shop].str.strip() if c_shop else "",
     })
+    d = d[~d["Статус"].map(is_cancel_status)]
     return d.drop_duplicates("Заказ").reset_index(drop=True)
 
 
@@ -3527,7 +3557,9 @@ def acts_downloads(part: pd.DataFrame, acts_df: pd.DataFrame, store: str = UZ_ST
                + (" Нажмите на номер заказа в таблице ниже, чтобы раскрыть его акты." if expand else ""))
 
 
-def badge(collected: bool, new: bool = False) -> str:
+def badge(collected: bool, new: bool = False, cancel: bool = False) -> str:
+    if cancel:
+        return '<span class="badge no">отмена</span>'
     if new:
         return '<span class="badge no">не маршрутизирован</span>'
     return '<span class="badge ok">собран</span>' if collected else '<span class="badge no">не собран</span>'
@@ -6448,7 +6480,7 @@ new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
 
 # общий список для страницы «Заказы»: обычные + новые (не собраны, статус «не маршрутизирован»)
 new_rows = (new_orders.rename(columns={"Статус": "Статус WMS"})
-            .assign(Адрес="", Город="", Сборка="", Собран=False, Новый=True))
+            .assign(Адрес="", Город="", Сборка="", Собран=False, Отмена=False, Новый=True))
 df_all = pd.concat([df, new_rows], ignore_index=True)
 all_dates = sorted(set(dates) | {x for x in new_orders["Дата"] if pd.notna(x)})
 
@@ -7050,12 +7082,16 @@ if page == PAGES[3]:
     q = st.text_input("Номер заказа / поставки, магазин или продавец", key="q_order",
                       placeholder="например, 1M-0024629, 0024629, Узуммаркет или SMART PLAST").strip()
     if q:
-        hits = df_all[df_all["Заказ"].str.contains(q, case=False, regex=False)]
+        try:
+            search_all = pd.concat([df_all, load_cancelled().assign(Новый=False)], ignore_index=True)
+        except Exception:
+            search_all = df_all
+        hits = search_all[search_all["Заказ"].str.contains(q, case=False, regex=False)]
         by_store = False
         if hits.empty:                                   # не нашли по номеру — ищем по названию магазина
             kq = norm_store(q)
             if kq:
-                hits = df_all[df_all["Магазин"].map(lambda s: kq in norm_store(s))]
+                hits = search_all[search_all["Магазин"].map(lambda s: kq in norm_store(s))]
                 by_store = not hits.empty
         acc_hits = accept_search(q)
         if hits.empty:
@@ -7106,7 +7142,7 @@ if page == PAGES[3]:
                     ("Дата отгрузки", date_txt), ("Штук", n(r["Штук"])),
                     ("Статус WMS", r.get("Статус WMS")),
                     ("Сборка", r.get("Сборка") or ("не маршрутизирован" if new else
-                                                  ("собран" if r["Собран"] else "не собран")))])]
+                                                  ("отмена" if r.get("Отмена") else "собран" if r["Собран"] else "не собран")))])]
                 sh = ship_map.get(key)
                 if sh:
                     fact = sh.get("Факт")
@@ -7133,7 +7169,7 @@ if page == PAGES[3]:
                 if recs:
                     body += (f"<div class='dsec'>Акты на отгрузку · {len(recs)}</div>"
                              f"<div class='actbox'>{acts_mini(recs)}</div>")
-                return (f"<div class='hit'><div class='n'>{esc(r['Заказ'])} &nbsp;{badge(r['Собран'], new)}</div>"
+                return (f"<div class='hit'><div class='n'>{esc(r['Заказ'])} &nbsp;{badge(r['Собран'], new, bool(r.get('Отмена', False)))}</div>"
                         f"<div class='s'>{esc(r.get('Магазин') or '')} · {esc(r.get('Город') or '—')}</div>{body}</div>")
 
             for i_, r in enumerate(hits.head(30).to_dict("records")):
