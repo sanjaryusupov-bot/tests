@@ -2238,7 +2238,7 @@ ACC_DROP = {_hk(x) for x in (
     "Последняя паллета", "Пересчёт", "Время закрытия", "Размещение последней", "Конец", "Срок", "Часов SLA",
     "Часов приёмка", "Часов размещение", "Просрочка, ч", "Осталось, ч", "Ч: ворота → разгрузка", "Ч: разгрузка",
     "Ч: до пересчёта", "Ч: пересчёт → закрытие", "Ч: закрытие → размещение", "Хеш строки", "Впервые выгружен",
-    "Изменён")}
+    "Изменён", "Ключ строки", "SLA")}
 
 
 def _acc_one(v):
@@ -2366,11 +2366,31 @@ def _acc_cell(col: str, v):
     return esc(v) if str(v).strip() else "—"
 
 
+ACC_CSS = """<style>
+.acc-wrap { max-height:72vh; overflow:auto; border:1px solid $line; border-radius:14px; background:$card; }
+table.acc { border-collapse:collapse; width:100%; font-size:.64rem; line-height:1.25; color:$ink; table-layout:auto; }
+.acc th { position:sticky; top:0; z-index:1; background:$head; text-align:left; padding:5px 4px; font-size:.56rem;
+          font-weight:700; line-height:1.15; white-space:normal; vertical-align:bottom; color:$ink; }
+.acc td { padding:3px 4px; border-top:1px solid $line; vertical-align:middle; color:$ink; }
+.acc .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.acc td.nw { white-space:nowrap; }
+.acc .badge { padding:0 6px; font-size:.58rem; }
+</style>"""
+
+
 def accept_table(frame: pd.DataFrame, limit: int = 1500) -> str:
+    """Компактная таблица приёмки (мелкий шрифт, узкие отступы, переносы в заголовках) — чтобы не прокручивать вправо."""
     cols = list(frame.columns)
-    num = {i for i, c in enumerate(cols) if pd.api.types.is_numeric_dtype(frame[c])}
-    rows = [[_acc_cell(c, r[c]) for c in cols] for r in frame.head(limit).to_dict("records")]
-    return simple_table(cols, rows, num_cols=num)
+    isnum = [pd.api.types.is_numeric_dtype(frame[c]) for c in cols]
+    nowrap = {"Номер поставки", "ID в системе", "День", "Ворота"}
+    th = "".join(f"<th class='{'num' if m else ''}'>{esc(c)}</th>" for c, m in zip(cols, isnum))
+    body = []
+    for r in frame.head(limit).to_dict("records"):
+        tds = "".join(f"<td class='{'num' if m else ('nw' if c in nowrap else '')}'>{_acc_cell(c, r[c])}</td>"
+                      for c, m in zip(cols, isnum))
+        body.append(f"<tr>{tds}</tr>")
+    css = Template(ACC_CSS).safe_substitute(P)
+    return f"{css}<div class='acc-wrap'><table class='acc'><tr>{th}</tr>{''.join(body)}</table></div>"
 
 
 def accept_excel(frame: pd.DataFrame) -> bytes:
