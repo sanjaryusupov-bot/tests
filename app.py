@@ -2290,6 +2290,18 @@ def load_accept() -> pd.DataFrame:
     d = pd.DataFrame({"Номер поставки": txt(c_num), "ID в системе": txt(c_id), "Партнёр": txt(c_par),
                       "Продавец": txt(c_sel), "День": _acc_date(raw[c_day]), "Ворота": txt(c_gate),
                       "Статус поставки": txt(c_st), "Этап сейчас": txt(c_stg)})
+    # остальные колонки таблицы (SKU / штуки план-факт, расхождения, паллеты…) — в исходном порядке, без «Режима часов»
+    used = {c for c in (c_num, c_id, c_par, c_sel, c_day, c_gate, c_st, c_stg) if c}
+    for c in raw.columns:
+        nm = " ".join(str(c).split())
+        if c in used or "режимчасов" in _hk(c) or nm in d.columns:
+            continue
+        col = raw[c]
+        num = pd.to_numeric(col, errors="coerce")
+        if col.notna().any() and num.notna().sum() >= col.notna().sum() * 0.9:
+            d[nm] = num
+        else:
+            d[nm] = col.fillna("").astype(str).str.strip()
     d = d[d["Номер поставки"] != ""].drop_duplicates().reset_index(drop=True)
     d["_ord"] = d["День"].map(lambda x: x if pd.notna(x) else date.min)
     d = d.sort_values(["_ord", "Номер поставки"], ascending=[False, True]).drop(columns="_ord")
@@ -2323,12 +2335,32 @@ def acc_badge(v: str, good: tuple) -> str:
     return f"<span class='badge {'ok' if ok else 'no'}'>{esc(v)}</span>"
 
 
+def _acc_cell(col: str, v):
+    """Ячейка таблицы приёмки: статусы — плашки, числа — с пробелами, флаги «Есть …» — «да» / «—»."""
+    if col == "Номер поставки":
+        return f"<b>{esc(v)}</b>"
+    if col == "День":
+        return acc_day(v)
+    if col == "Статус поставки":
+        return acc_badge(v, ("accepted",))
+    if col == "Этап сейчас":
+        return acc_badge(v, ("заверш",))
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        if pd.isna(v):
+            return "—"
+        if col.lower().startswith("есть"):
+            return "<span class='badge no'>да</span>" if v else "—"
+        if "расхожд" in col.lower() and v:
+            return f"<b style='color:#E5484D'>{n(v)}</b>"
+        return n(v)
+    return esc(v) if str(v).strip() else "—"
+
+
 def accept_table(frame: pd.DataFrame, limit: int = 1500) -> str:
-    rows = [[f"<b>{esc(r['Номер поставки'])}</b>", esc(r["ID в системе"] or "—"), esc(r["Партнёр"] or "—"),
-             esc(r["Продавец"] or "—"), acc_day(r["День"]), esc(r["Ворота"] or "—"),
-             acc_badge(r["Статус поставки"], ("accepted",)), acc_badge(r["Этап сейчас"], ("заверш",))]
-            for r in frame.head(limit).to_dict("records")]
-    return simple_table(ACC_COLS, rows)
+    cols = list(frame.columns)
+    num = {i for i, c in enumerate(cols) if pd.api.types.is_numeric_dtype(frame[c])}
+    rows = [[_acc_cell(c, r[c]) for c in cols] for r in frame.head(limit).to_dict("records")]
+    return simple_table(cols, rows, num_cols=num)
 
 
 def accept_excel(frame: pd.DataFrame) -> bytes:
@@ -6953,6 +6985,19 @@ if page == PAGES[2]:
             an_widget("ac_gate", n(n_gate), "на воротах", "", "left" if n_gate else "ok")
         with k4:
             an_widget("ac_done", n(n_done), "завершено", "", "blue")
+        if {"Шт план", "Шт факт"} <= set(sub.columns):
+            p_plan, p_fact = int(sub["Шт план"].fillna(0).sum()), int(sub["Шт факт"].fillna(0).sum())
+            dif = sub["Расхождение, шт"].fillna(0) if "Расхождение, шт" in sub.columns else None
+            bad_n = int((dif != 0).sum()) if dif is not None else 0
+            q1, q2, q3, q4 = st.columns(4)
+            with q1:
+                an_widget("ac_plan", n(p_plan), "штук по плану", "", "all")
+            with q2:
+                an_widget("ac_fact", n(p_fact), "штук по факту", "", "ok")
+            with q3:
+                an_widget("ac_diff", n(p_fact - p_plan), "расхождение, шт", "факт − план", "left" if p_fact != p_plan else "ok")
+            with q4:
+                an_widget("ac_bad", n(bad_n), "поставок с расхождением", "", "left" if bad_n else "ok")
         if sub.empty:
             st.info("По выбранным фильтрам поставок нет.")
         else:
@@ -6962,7 +7007,7 @@ if page == PAGES[2]:
             if len(sub) > 1500:
                 st.caption("Показаны первые 1500 строк, уточните фильтры. В Excel выгружаются все.")
         st.caption("Источник: Metabase, «Приёмка Магнит» (таблица 70), обновляется раз в 5 минут. Колонка «Режим часов» "
-                   "убрана, повторяющиеся строки (календарные / рабочие) объединены. Поиск заказа тоже ищет по приёмке.")
+                   "убрана, повторяющиеся строки (календарные / рабочие) объединены. Таблица широкая — прокручивайте вправо: SKU и штуки план/факт, расхождения, паллеты. Поиск заказа тоже ищет по приёмке.")
 
 # ───────────────────────── 3. Поиск ─────────────────────────
 if page == PAGES[3]:
