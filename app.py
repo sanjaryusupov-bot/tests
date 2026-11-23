@@ -2241,6 +2241,12 @@ ACC_DROP = {_hk(x) for x in (
     "Изменён", "Ключ строки", "SLA")}
 
 
+def _acc_drop(c) -> bool:
+    """Колонка не показывается: точное совпадение из списка, а также любые «Ключ строки…», «SLA…», «Хеш…»."""
+    k = _hk(c)
+    return k in ACC_DROP or "ключстроки" in k or k.startswith("sla") or k.startswith("хеш") or "режимчасов" in k
+
+
 def _acc_one(v):
     """«июнь 19, 2026» (так показывает Metabase) -> дата."""
     m = re.match(r"^\s*([А-Яа-яЁё]+)\.?\s+(\d{1,2}),?\s+(\d{4})", str(v))
@@ -2304,7 +2310,7 @@ def load_accept() -> pd.DataFrame:
     used = {c for c in (c_num, c_id, c_par, c_sel, c_day, c_gate, c_st, c_stg) if c}
     for c in raw.columns:
         nm = " ".join(str(c).split())
-        if c in used or "режимчасов" in _hk(c) or _hk(c) in ACC_DROP or nm in d.columns:
+        if c in used or "режимчасов" in _hk(c) or _acc_drop(c) or nm in d.columns:
             continue
         col = raw[c]
         num = pd.to_numeric(col, errors="coerce")
