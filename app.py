@@ -373,7 +373,7 @@ def is_cancel_status(v) -> bool:
     return "CANCEL" in k or "ОТМЕН" in k
 
 
-WMS_STATUSES = [("IN_DELIVERY", "#17B8A6"), ("PACKING", "#3B9CFF"), ("SORTED", "#34C27A"), ("SORTING", "#F2A23D"),
+WMS_STATUSES = [("IN_DELIVERY", "#17B8A6"), ("PACKING", "#8B3DFF"), ("SORTED", "#34C27A"), ("SORTING", "#3B9CFF"),
                 ("PARTIALLY_RESERVED", "#E0338F"), ("RESERVED", "#8B3DFF")]
 
 
@@ -5066,7 +5066,7 @@ function buildLeft(){
   h+='<div class="sec">Операции</div>';
   var a='',b='',c='',d='';
   if(S.pick){a='<div class="ln"><b class="g">Собрано</b><span>'+fmt(S.pick.pcs_done)+' шт · '+fmt(S.pick.o_done)+' зак.</span></div><div class="ln"><b class="o">Осталось</b><span>'+fmt(S.pick.pcs_left)+' шт · '+fmt(S.pick.o_left)+' зак.</span></div>';}
-  if(S.sort){b='<div class="ln"><b class="o">SORTING</b><span>'+fmt(S.sort.sorting)+' шт · '+fmt(S.sort.o_sorting)+' зак.</span></div><div class="ln"><b class="g">SORTED</b><span>'+fmt(S.sort.sorted)+' шт · '+fmt(S.sort.o_sorted)+' зак.</span></div>';}
+  if(S.sort){b='<div class="ln"><b class="bl">SORTING</b><span>'+fmt(S.sort.sorting)+' шт · '+fmt(S.sort.o_sorting)+' зак.</span></div><div class="ln"><b class="g">SORTED</b><span>'+fmt(S.sort.sorted)+' шт · '+fmt(S.sort.o_sorted)+' зак.</span></div>';}
   if(S.hub){c='<div class="ln"><b class="g">Принято</b><span>'+fmt(S.hub.ok)+' кор.</span></div><div class="ln"><b class="r">Не принято</b><span>'+fmt(S.hub.no)+' кор.</span></div>'+(S.hub.period?'<div class="ln"><b>Даты</b><span>'+S.hub.period+'</span></div>':'');}
   if(S.ship){var p=S.ship.pcs?Math.round(S.ship.pcs_done/S.ship.pcs*100):0,tr=S.ship.trips||[],td=0;for(var i=0;i<tr.length;i++)if(tr[i].done)td++;
     d='<div class="ln"><b class="bl">Отгружено</b><span>'+fmt(S.ship.pcs_done)+' из '+fmt(S.ship.pcs)+' шт ('+p+'%)</span></div><div class="ln"><b>Рейсов</b><span>'+td+' из '+tr.length+'</span></div>';}
@@ -5132,6 +5132,8 @@ var matWood=stdMat(0xb98b55,{roughness:.95});
 var matSteel=stdMat(0x2f6fd6,{roughness:.5,metalness:.4});
 var matBeam=stdMat(0xff8a1f,{roughness:.5,metalness:.3});
 var CO={orange:0xF2A23D,green:0x34C27A,red:0xE5484D,blue:0x3B9CFF};
+CO.sorting=CO.blue;   /* статус SORTING — синие короба в зоне сортировки */
+CO.ship=CO.orange;    /* буфер «к отгрузке» у ворот — оранжевые */
 
 /* ───── пол и двор ───── */
 function floorTex(){
@@ -5319,13 +5321,12 @@ function shade(col,k){CC.setHex(col).multiplyScalar(k);return CC.getHex();}
 function boxOn(p,k,col){var layer=Math.floor(k/4),s=k%4,sx=rnd(.86,1.08),sh=rnd(.8,1.12);
   bx.add(p.x+(s%2?.3:-.3)+rnd(-.05,.05),.144+BH*sh/2+layer*BH*.96,p.z+(s<2?-.2:.2)+rnd(-.04,.04),BW*sx,BH*sh,BD*rnd(.9,1.05),rnd(-.16,.16),shade(col,rnd(.86,1.08)));}
 var LS=[],LNP=[],LAC=[],LSTG=[],CL_=[];SCZ.forEach(function(cz){SCX.forEach(function(cx){CL_.push({cx:cx,cz:cz});});});
-var rows=3,EMPP=[];
+var rows=3;
 SCZ.forEach(function(cz,ri){SCX.forEach(function(cx,ci){[[0,0],[-1.3,0],[1.3,0],[0,-.9],[0,.9]].forEach(function(o){LS.push({x:cx+o[0],z:cz+o[1]});});});});
-for(var e_=0;e_<5;e_++)EMPP.push({x:1.0,z:12.0+e_*2.4});   /* пустые паллеты у края, как на фото */
 for(var k_=0;k_<4;k_++)for(var m_=0;m_<2;m_++){LNP.push({x:-30.2+k_*2.8,z:10.0+m_*2.4});LAC.push({x:-17.6+k_*2.8,z:10.0+m_*2.4});}
-for(var ls_=0;ls_<16;ls_++)LSTG.push({x:-6.5+ls_*1.55,z:4.5});     /* «к отгрузке»: ряд под надписью «Мезонин · ячеечное хранение», не на хабе */
+GATES.forEach(function(gx){[[-1,19.8],[1,19.8],[-1,22.2],[1,22.2]].forEach(function(o){LSTG.push({x:gx+o[0]*1.05,z:o[1]});});});   /* буфер «к отгрузке» — на хабе у ворот */
 var TOTES=[];for(var ti_=0;ti_<6;ti_++)TOTES.push({x:-30+ti_*4.6,z:7.9});      /* стойки с синими пластиковыми тарами у приёмки хаба */
-LS.concat(LNP,LAC,LSTG,EMPP,TOTES).forEach(palletAt);palI.done();
+LS.concat(LNP,LAC,LSTG,TOTES).forEach(palletAt);palI.done();
 /* единицы масштаба */
 var U={};
 var cs=S.sort?(S.sort.sorting+S.sort.sorted):0;U.sort=Math.max(1,Math.ceil(cs/(LS.length*CAPP*.8)));
@@ -5334,10 +5335,19 @@ var rem=S.ship?Math.max(0,S.ship.pcs-S.ship.pcs_done):0;U.ship=Math.max(1,Math.c
 function fillList(list,n,col){var left=n;for(var i=0;i<list.length&&left>0;i++){var c=Math.min(CAPP,left);for(var q=0;q<c;q++)boxOn(list[i],q,col);left-=c;}}
 (function(){var nOr=S.sort?Math.round(S.sort.sorting/U.sort):0,nGr=S.sort?Math.round(S.sort.sorted/U.sort):0,cap=LS.length*CAPP;
   if(nOr+nGr>cap){var f=cap/(nOr+nGr);nOr=Math.floor(nOr*f);nGr=Math.floor(nGr*f);}
-  var left=nOr,i,p,c,q;for(i=0;i<LS.length&&left>0;i++){p=LS[i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.orange);left-=c;}
+  var left=nOr,i,p,c,q;for(i=0;i<LS.length&&left>0;i++){p=LS[i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.sorting);left-=c;}
   left=nGr;for(i=0;i<LS.length&&left>0;i++){p=LS[LS.length-1-i];c=Math.min(CAPP,left);for(q=0;q<c;q++)boxOn(p,q,CO.green);left-=c;}})();
 fillList(LAC,S.hub?Math.round(S.hub.ok/U.hub):0,CO.green);fillList(LNP,S.hub?Math.round(S.hub.no/U.hub):0,CO.red);
-fillList(LSTG,Math.min(LSTG.length*CAPP,Math.round(rem/U.ship)),CO.blue);
+fillList(LSTG,Math.min(LSTG.length*CAPP,Math.round(rem/U.ship)),CO.ship);
+/* пустые коробки: ~80 шт. вразброс над надписью «СОРТИРОВКА» (не на паллетах), часть сложена по 2 */
+(function(){var N_=80,k_,placed=[];
+  for(k_=0;k_<N_;k_++){var w_=rnd(.4,.78),h_=rnd(.22,.5),d_=rnd(.32,.55),x_,z_,ok=0,t_=0,top=null;
+    if(placed.length>8&&Math.random()<.22){top=placed[Math.floor(Math.random()*placed.length)];if(top.st)top=null;}
+    if(top){top.st=1;x_=top.x+rnd(-.1,.1);z_=top.z+rnd(-.1,.1);}
+    else{do{x_=rnd(-2.7,3.3);z_=rnd(13.0,23.4);ok=1;placed.forEach(function(p_){if(Math.abs(p_.x-x_)<.55&&Math.abs(p_.z-z_)<.5)ok=0;});t_++;}while(!ok&&t_<30);}
+    var y0=top?top.y+top.h:.0;
+    bx.add(x_,y0+h_/2,z_,w_,h_,d_,rnd(-1.5,1.5),shade(0xc9a46a,rnd(.82,1.1)));
+    placed.push({x:x_,z:z_,y:y0,h:h_,st:top?1:0});}})();
 TOTES.forEach(function(t){for(var ly=0;ly<4;ly++)for(var sx_=-1;sx_<=1;sx_+=2)for(var sz_=-1;sz_<=1;sz_+=2){
   bx.add(t.x+sx_*.34,.144+.17+ly*.35,t.z+sz_*.26,.62,.32,.46,0,ly%2?0x2a74d8:0x1f64c4);       /* пластиковая тара: тёмно-/светло-синяя */
   bx.add(t.x+sx_*.34,.144+.34+ly*.35,t.z+sz_*.26,.64,.03,.48,0,0x6fb0ff);}});                     /* светлый борт */
@@ -5364,7 +5374,7 @@ function Gazelle(color){
   return g;
 }
 function fillTruck(t,n){var cg=t.userData.cargo;cg.n=0;n=Math.min(TCAP,Math.max(0,Math.round(n)));
-  for(var q=0;q<n;q++){var sl=Math.floor(q/15),rest=q%15,ly=Math.floor(rest/3),ix=rest%3;cg.add((ix-1)*.64,1.0+BH/2+ly*BH,3.95-sl*.42,BW,BH,.4,0,CO.blue);}cg.done();}
+  for(var q=0;q<n;q++){var sl=Math.floor(q/15),rest=q%15,ly=Math.floor(rest/3),ix=rest%3;cg.add((ix-1)*.64,1.0+BH/2+ly*BH,3.95-sl*.42,BW,BH,.4,0,CO.ship);}cg.done();}
 var trips=((S.ship&&S.ship.trips)||[]).slice();
 var pend=trips.filter(function(t){return !t.done;}),dn=trips.filter(function(t){return t.done;});
 var shownT=[],tQueue0=[],shipIdle=!!zst('ship').idle;
@@ -5448,7 +5458,7 @@ for(var pi=0;pi<WK.pick;pi++){
 }
 function planSort(a){
   var c=CL_[a.cfg.ci],k=a.cfg.side===1?1:2,sx=k===1?c.cx-2.5:c.cx+2.5,sz=c.cz;
-  a.route=[{x:c.cx,z:c.cz+2.0,act:'pick',dur:1.0,c:CO.orange,face:-1},{x:sx,z:c.cz+1.4},{x:sx,z:sz,act:'scan',dur:rnd(1.4,2.2),face:1},{x:sx,z:sz,act:'put',dur:1.2},{x:sx,z:c.cz+1.4}];}
+  a.route=[{x:c.cx,z:c.cz+2.0,act:'pick',dur:1.0,c:CO.sorting,face:-1},{x:sx,z:c.cz+1.4},{x:sx,z:sz,act:'scan',dur:rnd(1.4,2.2),face:1},{x:sx,z:sz,act:'put',dur:1.2},{x:sx,z:c.cz+1.4}];}
 var DESKS=[{x:-9.0,z:15.2,busy:false},{x:-5.6,z:15.2,busy:false}];
 function planHub(a){
   var cf=a.cfg;if(cf.d){cf.d.busy=false;cf.d=null;}
@@ -5456,13 +5466,11 @@ function planHub(a){
   if(!d.busy){d.busy=true;cf.d=d;r.push({x:d.x,z:d.z-1.0,act:'print',dur:2.6,face:1});}            /* печатает наклейку на ПК */
   var dest=Math.random()<.35?pick(LNP):pick(LAC);
   r.push({x:dest.x,z:dest.z+1.5,act:'put',dur:1.0,face:-1});                                      /* раскладывает по коробам */
-  if(Math.random()<.3){var sp_=pick(LSTG);r.push({x:-9.3,z:13.0},{x:-9.3,z:6.4},{x:-5.4,z:6.4},{x:sp_.x,z:sp_.z+1.2,act:'put',dur:1.0,c:CO.blue,face:-1},{x:-5.4,z:6.4},{x:-9.3,z:6.4});}  /* относит коробки в ряд «к отгрузке» */
+  if(Math.random()<.3){var sg=pick(GATES);r.push({x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.ship},{x:sg,z:15.5});}  /* разносит коробки к воротам */
   a.route=r;}
-var SHIPW=[-27.7,-23.1,-13.9,-9.3];      /* проходы между стойками с тарами (z≈7.9): по ним идут к воротам */
 function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi]+(Math.floor(a.cfg.gate/GATES.length)-.5)*1.4,tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
   if(!tr||tr.t.done||tr.state!=='dock'){a.route=[{x:gx,z:17.4,act:'wait',dur:rnd(2,5)},{x:gx+2.2,z:17.4}];return;}
-  var sp=pick(LSTG),wx=SHIPW[gi];
-  a.route=[{x:sp.x,z:sp.z+1.2,act:'pick',dur:.9,c:CO.blue,face:-1},{x:-5.4,z:6.4},{x:wx,z:6.4},{x:wx,z:17.4},{x:gx+1.9,z:17.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:17.4},{x:wx,z:17.4},{x:wx,z:6.4},{x:-5.4,z:6.4}];}
+  a.route=[{x:gx,z:18.4,act:'pick',dur:.9,c:CO.ship},{x:gx+1.9,z:18.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:18.4}];}
 function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
 var PLAN={sort:planSort,hub:planHub,ship:planShip};
 for(var ai=0;ai<WK.sort;ai++){var ci_=ai%CL_.length;mkActor('sort',0xD7E83A,pick([0xffffff,0xf5d142]),CL_[ci_].cx+(ai<CL_.length?-3.3:3.3),CL_[ci_].cz,{ci:ci_,side:ai<CL_.length?1:2});}
@@ -5550,7 +5558,6 @@ var labels=[],lbEl=el('labels');
 function mkLabel(txt,pos,cls,follow){var d=document.createElement('div');d.className='lb '+(cls||'');d.innerHTML=txt;lbEl.appendChild(d);var o={d:d,pos:pos,follow:follow||null};labels.push(o);return o;}
 function zoneLabel(k,t){var s=zst(k);return t+' · '+(s.nodata?'нет данных':(s.idle?(k==='ship'?'нет операций':'🛡 охрана'):(WK[k]||0)+' чел.'));}
 var lbSort=mkLabel(zoneLabel('sort','СОРТИРОВКА'),new THREE.Vector3(15,.3,25.3),'zone'),
-    lbBuf=mkLabel('К ОТГРУЗКЕ · буфер',new THREE.Vector3(1.5,.3,5.9),'zone'),
     lbHub=mkLabel(zoneLabel('hub','ХАБ'),new THREE.Vector3(-18,.3,8.2),'zone'),
     lbShip=mkLabel(zoneLabel('ship','ОТГРУЗКА'),new THREE.Vector3(-18,.3,24.6),'zone'),
     lbPick=mkLabel(zoneLabel('pick','МЕЗОНИН · СБОРКА'),new THREE.Vector3((MX0+MX1)/2,17.4,ZB),'zone');
@@ -5581,7 +5588,7 @@ mkLabel('Синие пластиковые тары',new THREE.Vector3(-18,2.4,7
     var xf=b.rx0-2.4;                                                       /* у переднего края (к хабу): оборудование */
   }
   [2,3,4,5].forEach(function(f){var lb=mkLabel('Место выгрузки',new THREE.Vector3(-9.3,0,BALZ),'fl');lb.f=f;floorLabels.push(lb);});
-  [2,3,4,5].forEach(function(f){var F=FL[f];if(!F)return;F.blocks.forEach(function(b){if(!b.z.sch)return;
+  [1,2,3,4,5].forEach(function(f){var F=FL[f];if(!F)return;F.blocks.forEach(function(b){if(!b.z.sch)return;
     var lb=mkLabel(b.z.note.replace('схема Excel · ','')+' · '+b.z.secs+' секц.',new THREE.Vector3(MX0-1.4,F.baseY+.2,F.cz-(b.x0+b.x1)/2),'fl');lb.f=f;floorLabels.push(lb);});});
 })();
 var guardLb=[mkLabel('🛡 охрана',null,'guard',gdPick.g),mkLabel('🛡 охрана',null,'guard',gdSort.g),mkLabel('🛡 охрана',null,'guard',gdHub.g)];
@@ -5627,7 +5634,7 @@ function buildLegend(){
   else if(MODE==='rows'){h='<span>ряд пустой<span class="grad" style="background:linear-gradient(90deg,#E5484D,#F2A23D,#34C27A)"></span>ряд полный</span>';}
   else if(MODE==='qty'){h='<span>мало<span class="grad" style="background:linear-gradient(90deg,#2b3a8f,#8B3DFF,#E0338F,#F2A23D)"></span>много (до '+fmt(QMAX)+' шт)</span><span><i style="background:#6b7390;opacity:.5"></i>пустая</span>';}
   else{h='<span><i style="background:#4c6a8c"></i>без резерва</span><span>резерв<span class="grad" style="background:linear-gradient(90deg,#34C27A,#E0338F)"></span>почти весь</span><span><i style="background:#6b7390;opacity:.5"></i>пустая</span>';}
-  h+='<span><i style="background:#F2A23D"></i>SORTING</span><span><i style="background:#34C27A"></i>SORTED / принято</span><span><i style="background:#E5484D"></i>не принято</span><span><i style="background:#3B9CFF"></i>к отгрузке</span>';
+  h+='<span><i style="background:#3B9CFF"></i>SORTING</span><span><i style="background:#34C27A"></i>SORTED / принято</span><span><i style="background:#E5484D"></i>не принято</span><span><i style="background:#F2A23D"></i>к отгрузке</span>';
   el('leg').innerHTML=h;
 }
 recolor();
@@ -5954,7 +5961,7 @@ def _cell_row(pos, code, aggd, span=1):
 
 
 def _wh_scheme_zones(zname: str, fl: int, aggd: dict):
-    """Этаж 2–5 по схеме Excel: все ячейки зон A, Б, С, D, H/D (занятые — из остатков, остальные пустые).
+    """Этаж 1–5 по схеме Excel: все ячейки зон A, Б, С, D, H/D (занятые — из остатков, остальные пустые).
     Возвращает (список зон, сколько кодов остатков не нашли места на схеме)."""
     have = {}
     for c in aggd:
@@ -6057,7 +6064,7 @@ def wh_cells() -> dict:
         sub = mez[mez["zk"] == zk_]
         mc = {c for c in (master or ()) if zkey(c.split("-")[0]) == zk_} if master else set()
         fl_ = int(re.match(r"\d", zname).group())
-        if fl_ >= 2:                                     # этажи 2–5 рисуем по схеме Excel (если коды остатков на неё ложатся)
+        if fl_ >= 1:                                     # этажи 1–5 рисуем по одной схеме Excel (если коды остатков на неё ложатся)
             ag_ = _agg_cells(sub)
             hit = sum(1 for c in ag_ if _sch_match(c))
             if not ag_ or hit * 2 >= len(ag_):
