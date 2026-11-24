@@ -5323,7 +5323,7 @@ var rows=3,EMPP=[];
 SCZ.forEach(function(cz,ri){SCX.forEach(function(cx,ci){[[0,0],[-1.3,0],[1.3,0],[0,-.9],[0,.9]].forEach(function(o){LS.push({x:cx+o[0],z:cz+o[1]});});});});
 for(var e_=0;e_<5;e_++)EMPP.push({x:1.0,z:12.0+e_*2.4});   /* пустые паллеты у края, как на фото */
 for(var k_=0;k_<4;k_++)for(var m_=0;m_<2;m_++){LNP.push({x:-30.2+k_*2.8,z:10.0+m_*2.4});LAC.push({x:-17.6+k_*2.8,z:10.0+m_*2.4});}
-GATES.forEach(function(gx){[[-1,19.8],[1,19.8],[-1,22.2],[1,22.2]].forEach(function(o){LSTG.push({x:gx+o[0]*1.05,z:o[1]});});});
+for(var ls_=0;ls_<16;ls_++)LSTG.push({x:-6.5+ls_*1.55,z:4.5});     /* «к отгрузке»: ряд под надписью «Мезонин · ячеечное хранение», не на хабе */
 var TOTES=[];for(var ti_=0;ti_<6;ti_++)TOTES.push({x:-30+ti_*4.6,z:7.9});      /* стойки с синими пластиковыми тарами у приёмки хаба */
 LS.concat(LNP,LAC,LSTG,EMPP,TOTES).forEach(palletAt);palI.done();
 /* единицы масштаба */
@@ -5456,11 +5456,13 @@ function planHub(a){
   if(!d.busy){d.busy=true;cf.d=d;r.push({x:d.x,z:d.z-1.0,act:'print',dur:2.6,face:1});}            /* печатает наклейку на ПК */
   var dest=Math.random()<.35?pick(LNP):pick(LAC);
   r.push({x:dest.x,z:dest.z+1.5,act:'put',dur:1.0,face:-1});                                      /* раскладывает по коробам */
-  if(Math.random()<.3){var sg=pick(GATES);r.push({x:sg,z:15.5},{x:sg,z:18.4,act:'put',dur:1.0,c:CO.blue},{x:sg,z:15.5});}  /* разносит коробки */
+  if(Math.random()<.3){var sp_=pick(LSTG);r.push({x:-9.3,z:13.0},{x:-9.3,z:6.4},{x:-5.4,z:6.4},{x:sp_.x,z:sp_.z+1.2,act:'put',dur:1.0,c:CO.blue,face:-1},{x:-5.4,z:6.4},{x:-9.3,z:6.4});}  /* относит коробки в ряд «к отгрузке» */
   a.route=r;}
+var SHIPW=[-27.7,-23.1,-13.9,-9.3];      /* проходы между стойками с тарами (z≈7.9): по ним идут к воротам */
 function planShip(a){var gi=a.cfg.gate%GATES.length,gx=GATES[gi]+(Math.floor(a.cfg.gate/GATES.length)-.5)*1.4,tr=null;trucks.forEach(function(t){if(t.gate===gi&&t.state!=='gone')tr=t;});
   if(!tr||tr.t.done||tr.state!=='dock'){a.route=[{x:gx,z:17.4,act:'wait',dur:rnd(2,5)},{x:gx+2.2,z:17.4}];return;}
-  a.route=[{x:gx,z:18.4,act:'pick',dur:.9,c:CO.blue},{x:gx+1.9,z:18.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:18.4}];}
+  var sp=pick(LSTG),wx=SHIPW[gi];
+  a.route=[{x:sp.x,z:sp.z+1.2,act:'pick',dur:.9,c:CO.blue,face:-1},{x:-5.4,z:6.4},{x:wx,z:6.4},{x:wx,z:17.4},{x:gx+1.9,z:17.4},{x:gx+1.9,z:Z1-.2},{x:gx,z:Z1+.8,act:'put',dur:1.0},{x:gx+1.9,z:Z1-.2},{x:gx+1.9,z:17.4},{x:wx,z:17.4},{x:wx,z:6.4},{x:-5.4,z:6.4}];}
 function planGuard(a){var w=a.cfg.way,i=a.cfg.i=(a.cfg.i+1)%w.length;a.route=[{x:w[i][0],z:w[i][1],act:'wait',dur:rnd(2,5)}];}
 var PLAN={sort:planSort,hub:planHub,ship:planShip};
 for(var ai=0;ai<WK.sort;ai++){var ci_=ai%CL_.length;mkActor('sort',0xD7E83A,pick([0xffffff,0xf5d142]),CL_[ci_].cx+(ai<CL_.length?-3.3:3.3),CL_[ci_].cz,{ci:ci_,side:ai<CL_.length?1:2});}
@@ -5494,18 +5496,25 @@ function mkForkMesh(){
 function turnTo(F,ty,dt){var d=ty-F.yaw;while(d>Math.PI)d-=6.283;while(d<-Math.PI)d+=6.283;F.yaw+=d*Math.min(1,dt*3);return Math.abs(d)<.06;}
 function fkMast(F){var hh=1.6+F.car.position.y;F.mast.scale.y=hh;F.mast.position.set(0,.4+hh/2,.85);F.fk.rotation.y=F.yaw;}
 var FKX=-11.6,FKZ_HI=3.4,forkOn=!(zst('pick').idle&&zst('sort').idle);
-var FK=mkForkMesh();FK.yaw=Math.PI/2;FK.wz=BALZ;FK.h=FLH*2;FK.fk.position.set(FKX,0,BALZ);FK.fk.visible=forkOn;scene.add(FK.fk);
+/* кара забирает паллету только с балкончика этажа, где есть товар (занятые ячейки) и где паллета реально стоит */
+var FKFL=[2,3,4,5].filter(function(f){return FLSTAT[f]&&FLSTAT[f].occ>0;});
+var balPal={},balT={};
+FKFL.forEach(function(f){var bp_=mkPallet(true);bp_.rotation.y=Math.PI/2;bp_.position.set(-9.6,(f-1)*FLH+.07,BALZ);scene.add(bp_);balPal[f]=bp_;balT[f]=0;});
+if(!FKFL.length)forkOn=false;
+var FK=mkForkMesh();FK.yaw=Math.PI/2;FK.wz=BALZ;FK.f=FKFL.length?FKFL[0]:2;FK.h=FLH*(FK.f-1);FK.fk.position.set(FKX,0,BALZ);FK.fk.visible=forkOn;scene.add(FK.fk);
 var dropP=mkPallet(true);dropP.rotation.y=Math.PI/2;dropP.visible=false;scene.add(dropP);
 function updateFork(dt){
   if(!forkOn)return;var F=FK,p=F.fk.position,car=F.car;F.t+=dt;
-  if(F.ph===0){if(turnTo(F,Math.PI/2,dt)){car.position.y=Math.min(F.h,car.position.y+dt*2.2);if(car.position.y>=F.h-.01){F.ph=1;F.t=0;F.fkPl.visible=true;}}}      /* стоит боком к мезонину, забирает груз с этажа */
+  FKFL.forEach(function(f){if(balT[f]>0){balT[f]-=dt;if(balT[f]<=0)balPal[f].visible=true;}});      /* на балкончик выставляют новую паллету */
+  if(F.ph===0){if(turnTo(F,Math.PI/2,dt)){car.position.y=Math.min(F.h,car.position.y+dt*2.2);if(car.position.y>=F.h-.01){F.ph=1;F.t=0;F.fkPl.visible=true;balPal[F.f].visible=false;balT[F.f]=14+Math.random()*8;}}}  /* поднялась к паллете — забрала её с балкончика */      /* стоит боком к мезонину, забирает груз с этажа */
   else if(F.ph===1){if(F.t>.7)F.ph=2;}
   else if(F.ph===2){car.position.y=Math.max(0,car.position.y-dt*1.3);if(car.position.y<=.001){F.ph=3;F.t=0;}}                                   /* спускает вниз */
   else if(F.ph===3){if(F.t>.5)F.ph=4;}
   else if(F.ph===4){if(turnTo(F,0,dt)){p.z=Math.min(FKZ_HI,p.z+dt*1.7);if(p.z>=FKZ_HI){F.fkPl.visible=false;dropP.position.set(FKX,0,p.z+1.5);dropP.visible=true;F.ph=5;F.t=0;}}}
   else if(F.ph===5){if(F.t>6){dropP.visible=false;F.ph=6;F.wz=BALZ;}}
-  else if(F.ph===6){if(turnTo(F,Math.PI,dt)){p.z=Math.max(F.wz,p.z-dt*1.7);if(p.z<=F.wz){F.ph=7;F.h=FLH*pick([1,2,3,4]);}}}
-  else if(F.ph===7){if(turnTo(F,Math.PI/2,dt))F.ph=0;}
+  else if(F.ph===6){if(turnTo(F,Math.PI,dt)){p.z=Math.max(F.wz,p.z-dt*1.7);if(p.z<=F.wz){F.ph=7;}}}
+  else if(F.ph===7){if(turnTo(F,Math.PI/2,dt)){var fs_=FKFL.filter(function(f){return balPal[f].visible;});   /* едет только к этажу, где на балкончике стоит паллета */
+      if(fs_.length){F.f=pick(fs_);F.h=FLH*(F.f-1);F.ph=0;}}}
   fkMast(F);}
 /* кара на паллетном мезонине: едет по среднему проходу, поднимает/опускает паллеты на разные уровни */
 var FK2=null,pal6=FL[6]&&FL[6].blocks[0];
@@ -5541,6 +5550,7 @@ var labels=[],lbEl=el('labels');
 function mkLabel(txt,pos,cls,follow){var d=document.createElement('div');d.className='lb '+(cls||'');d.innerHTML=txt;lbEl.appendChild(d);var o={d:d,pos:pos,follow:follow||null};labels.push(o);return o;}
 function zoneLabel(k,t){var s=zst(k);return t+' · '+(s.nodata?'нет данных':(s.idle?(k==='ship'?'нет операций':'🛡 охрана'):(WK[k]||0)+' чел.'));}
 var lbSort=mkLabel(zoneLabel('sort','СОРТИРОВКА'),new THREE.Vector3(15,.3,25.3),'zone'),
+    lbBuf=mkLabel('К ОТГРУЗКЕ · буфер',new THREE.Vector3(1.5,.3,5.9),'zone'),
     lbHub=mkLabel(zoneLabel('hub','ХАБ'),new THREE.Vector3(-18,.3,8.2),'zone'),
     lbShip=mkLabel(zoneLabel('ship','ОТГРУЗКА'),new THREE.Vector3(-18,.3,24.6),'zone'),
     lbPick=mkLabel(zoneLabel('pick','МЕЗОНИН · СБОРКА'),new THREE.Vector3((MX0+MX1)/2,17.4,ZB),'zone');
