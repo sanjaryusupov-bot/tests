@@ -39,6 +39,7 @@ import base64
 import html
 import json
 import re
+import traceback
 from datetime import datetime, date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -642,6 +643,11 @@ section[data-testid="stSidebar"] { width:250px !important; min-width:250px !impo
 .bell-pop .empty { font-size:.76rem; color:$mute; padding:8px 0; }
 .bell-pop .bp-f { margin-top:8px; font-size:.66rem; color:$mute; line-height:1.4; }
 .bell-pop .bp-cm { margin-bottom:10px; }
+.bell-pop .bp-err { margin-bottom:10px; padding:8px 10px; border-radius:10px; background:rgba(255,59,59,.10);
+                    border:1px solid #FF3B3B; }
+.bell-pop .bp-err .er { font-size:.7rem; color:$ink; margin-top:4px; line-height:1.35; word-break:break-word; }
+.bell-pop .bp-err .er b { display:block; color:#FF3B3B; font-size:.72rem; }
+.bell-pop .bp-err small { display:block; margin-top:6px; font-size:.62rem; color:$mute; }
 .bell-pop .cm { padding:6px 10px; margin-top:5px; border-radius:10px; background:$head; border:1px solid $line;
                 border-left:3px solid $accent; font-size:.74rem; color:$ink; line-height:1.4;
                 cursor:pointer; transition:border-color .15s, background .15s; }
@@ -973,6 +979,78 @@ _ir.append(_icon_rule(".st-key-winclose button", "close", 16))
 st.markdown("<style>" + "".join(_ir) + "</style>", unsafe_allow_html=True)
 
 
+# ───────────────────────── Ошибки для колокольчика ─────────────────────────
+def err_set(src: str, e=None):
+    """Запоминает ошибку источника данных (e) или снимает её (e=None). Ошибки горят в колокольчике, пока их не устранят:
+    источник читается снова при каждом обновлении, и если ошибки нет — запись исчезает сама."""
+    try:
+        d = st.session_state.setdefault("app_errors", {})
+        if e is None or e == "":
+            d.pop(src, None)
+            return
+        where = ""
+        tb = getattr(e, "__traceback__", None)
+        if tb is not None:
+            fr = [x for x in traceback.extract_tb(tb) if x.filename.endswith(".py")]
+            if fr:
+                where = f" (стр. {fr[-1].lineno})"
+        msg = " ".join(str(e).split())[:260]
+        name = type(e).__name__ if isinstance(e, BaseException) else ""
+        d[src] = (f"{name}: {msg}" if name and name not in msg else msg or name) + where
+    except Exception:
+        pass
+
+
+def _cell_share(ser: pd.Series, test) -> float:
+    """Доля непустых значений колонки, прошедших проверку test."""
+    v = ser.fillna("").astype(str).str.strip()
+    v = v[v != ""]
+    if v.empty:
+        return 0.0
+    return float(v.map(test).mean())
+
+
+def col_by_content(raw: pd.DataFrame, test, skip=(), min_share: float = 0.5):
+    """Колонка с наибольшей долей значений, подходящих под test (названия колонок не используются)."""
+    best, best_s = None, 0.0
+    for c in raw.columns:
+        if c in skip:
+            continue
+        sh = _cell_share(raw[c], test)
+        if sh > best_s:
+            best, best_s = c, sh
+    return best if best_s >= min_share else None
+
+
+_ORDER_RX = re.compile(r"^\s*\w{1,3}-\d{4,}")
+_WMS_TOKENS = ("PACKING", "SORT", "RESERV", "DELIVER", "CANCEL", "PICK", "NEW", "CREATED", "SHIPPED", "ОТМЕН")
+
+
+def _is_order(v) -> bool:
+    return bool(_ORDER_RX.match(str(v)))
+
+
+def _is_wms(v) -> bool:
+    k = wms_key(v)
+    return any(t in k for t in _WMS_TOKENS)
+
+
+def _is_date(v) -> bool:
+    return pd.notna(pd.to_datetime(str(v).strip(), dayfirst=True, errors="coerce")) and bool(re.search(r"\d", str(v)))
+
+
+def _is_int(v) -> bool:
+    return bool(re.fullmatch(r"\d[\d\s,.]*", str(v).strip()))
+
+
+def _sget(raw: pd.DataFrame, col, default=""):
+    """Колонка как строки; если колонки нет — пустые значения (чтобы загрузка не падала с KeyError)."""
+    if col is None or col not in raw.columns:
+        return pd.Series(default, index=raw.index, dtype="object")
+    return raw[col].fillna("").astype(str).str.strip()
+
+
+
 # ───────────────────────── Данные ─────────────────────────
 def _client():
     creds = Credentials.from_service_account_info(
@@ -999,35 +1077,41 @@ def load_all_orders() -> pd.DataFrame:
     head = [(h.strip() or f"col{i}") for i, h in enumerate(rows[0])]
     raw = pd.DataFrame(rows[1:], columns=head, dtype=str).fillna("")
 
-    def find(*keys):
+    def find(*keys):                       # название колонки — только запасной вариант для необязательных полей
         for c in raw.columns:
             if all(k in c.lower() for k in keys):
                 return c
         return None
 
-    c_order, c_shop, c_addr = find("№"), find("название"), find("адрес")
-    c_city, c_qty = find("город"), find("кол-во")
-    c_date, c_wms = find("дата"), find("wms")
-
-    # колонка «в сборке» без заголовка: ищем по содержимому, запасной вариант — 9-я колонка (I)
+    # обязательные колонки определяются по СОДЕРЖИМОМУ, а не по названию заголовка
+    c_order = col_by_content(raw, _is_order, min_share=0.2) or find("№")
+    if c_order is None:
+        raise ValueError("В основной таблице не найдена колонка с номерами заказов (вида 1M-0012345).")
     c_pick = next((c for c in raw.columns
-                   if raw[c].str.lower().str.contains("в сборке").any()), raw.columns[8])
+                   if raw[c].str.lower().str.contains("в сборке").any()), None)
+    c_wms = col_by_content(raw, _is_wms, skip=(c_order,), min_share=0.3) or find("wms")
+    c_date = col_by_content(raw, _is_date, skip=(c_order, c_wms), min_share=0.5) or find("дата")
+    if c_date is None:
+        raise ValueError("В основной таблице не найдена колонка с датой.")
+    used = {c_order, c_wms, c_date, c_pick}
+    c_qty = find("кол-во") or col_by_content(raw, _is_int, skip=used, min_share=0.8)
+    c_shop, c_addr, c_city = find("название"), find("адрес"), find("город")
 
     # оставляем только строки с заказами (без разделителей вида «13/10/2026 (заказы на вт)»)
-    raw = raw[raw[c_order].str.match(r"^\s*\w{1,3}-\d{4,}")].copy()
+    raw = raw[raw[c_order].map(_is_order)].copy()
 
     df = pd.DataFrame({
-        "Заказ": raw[c_order].str.strip(),
-        "Магазин": raw[c_shop].str.strip(),
-        "Адрес": raw[c_addr].str.strip() if c_addr else "",
-        "Город": raw[c_city].str.strip(),
-        "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
-        "Дата": pd.to_datetime(raw[c_date], dayfirst=True, errors="coerce").dt.date,
-        "Сборка": raw[c_pick].str.strip(),
-        "Статус WMS": raw[c_wms].str.strip(),
+        "Заказ": _sget(raw, c_order),
+        "Магазин": _sget(raw, c_shop),
+        "Адрес": _sget(raw, c_addr),
+        "Город": _sget(raw, c_city),
+        "Штук": pd.to_numeric(_sget(raw, c_qty).str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
+        "Дата": pd.to_datetime(_sget(raw, c_date), dayfirst=True, errors="coerce").dt.date,
+        "Сборка": _sget(raw, c_pick),
+        "Статус WMS": _sget(raw, c_wms),
     })
-    df["Отмена"] = df["Статус WMS"].map(is_cancel_status)
-    df["Собран"] = df["Статус WMS"].map(lambda v: wms_key(v) in COLLECTED_STATUSES) & ~df["Отмена"]
+    df["Отмена"] = df["Статус WMS"].map(is_cancel_status).astype(bool)
+    df["Собран"] = df["Статус WMS"].map(lambda v: wms_key(v) in COLLECTED_STATUSES).astype(bool) & ~df["Отмена"]
     return df.dropna(subset=["Дата"]).reset_index(drop=True)
 
 
@@ -1058,26 +1142,33 @@ def load_new_orders() -> pd.DataFrame:
     head = [(" ".join(h.split()) or f"col{i}") for i, h in enumerate(rows[0])]
     raw = pd.DataFrame(rows[1:], columns=head, dtype=str).fillna("")
 
-    def find(*keys):
+    def find(*keys):                       # название — только запасной вариант
         return next((c for c in raw.columns if all(k in c.lower() for k in keys)), None)
 
-    c_order = find("номер") or find("заказ")
-    c_stat = find("статус")
-    c_date = find("дата")
-    c_qty = find("зарезерв") or find("товар") or find("кол-во")
-    c_shop = find("магазин")
-    if not all([c_order, c_date, c_qty]):
-        raise ValueError("Во вкладке «Новые заказы» не найдены колонки: номер заказа, дата доставки, товаров зарезервировано.")
+    def at(i):                             # колонка по позиции (A=0, B=1 …)
+        return raw.columns[i] if i < len(raw.columns) else None
 
-    raw = raw[raw[c_order].str.match(r"^\s*\w{1,3}-\d{4,}")].copy()
+    # Номер_заказа / Статус_заказа / Дата_доставки / Товаров_зарезервировано / Точка_доставки / Магазин = A…F.
+    # Номер, статус и дату определяем по содержимому; если не вышло — по позиции; название заголовка не нужно.
+    c_order = col_by_content(raw, _is_order, min_share=0.2) or at(0)
+    c_stat = col_by_content(raw, _is_wms, skip=(c_order,), min_share=0.3) or at(1)
+    c_date = col_by_content(raw, _is_date, skip=(c_order, c_stat), min_share=0.5) or at(2)
+    c_qty = at(3) if at(3) not in (c_order, c_stat, c_date) else find("зарезерв")
+    if c_qty is not None and _cell_share(raw[c_qty], _is_int) < 0.5:
+        c_qty = col_by_content(raw, _is_int, skip=(c_order, c_stat, c_date), min_share=0.8) or c_qty
+    c_shop = at(5) if len(raw.columns) > 5 else find("магазин")
+    if c_order is None or c_date is None or c_qty is None:
+        raise ValueError("Во вкладке «Новые заказы» не удалось определить колонки (номер, дата, количество).")
+
+    raw = raw[raw[c_order].map(_is_order)].copy()
     d = pd.DataFrame({
-        "Заказ": raw[c_order].str.strip(),
-        "Статус": raw[c_stat].str.strip() if c_stat else "",
-        "Дата": pd.to_datetime(raw[c_date].str.strip(), dayfirst=True, errors="coerce").dt.date,
-        "Штук": pd.to_numeric(raw[c_qty].str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
-        "Магазин": raw[c_shop].str.strip() if c_shop else "",
+        "Заказ": _sget(raw, c_order),
+        "Статус": _sget(raw, c_stat),
+        "Дата": pd.to_datetime(_sget(raw, c_date), dayfirst=True, errors="coerce").dt.date,
+        "Штук": pd.to_numeric(_sget(raw, c_qty).str.replace(r"\s", "", regex=True), errors="coerce").fillna(0).astype(int),
+        "Магазин": _sget(raw, c_shop),
     })
-    d = d[~d["Статус"].map(is_cancel_status)]
+    d = d[~d["Статус"].map(is_cancel_status).astype(bool)]
     return d.drop_duplicates("Заказ").reset_index(drop=True)
 
 
@@ -2324,6 +2415,12 @@ def load_accept() -> pd.DataFrame:
     c_gate = find("ворота") or find("gate")
     c_st = find("статус", "постав") or find("статус") or find("status")
     c_stg = find("этап") or find("stage")
+    # если названия колонок изменились — определяем ключевые колонки по содержимому
+    c_num = c_num or col_by_content(raw, lambda v: bool(re.match(r"^\s*\d?M-\d+", str(v), re.I)), min_share=0.5)
+    c_day = c_day or col_by_content(raw, lambda v: _acc_one(v) is not None or _is_date(v), skip=(c_num,), min_share=0.5)
+    c_st = c_st or col_by_content(raw, lambda v: str(v).strip().upper() in ("ACCEPTED", "READY_FOR_PLACEMENT", "CREATED", "REJECTED", "CANCELLED", "CANCELED", "PLACED"), skip=(c_num, c_day), min_share=0.5)
+    c_gate = c_gate or col_by_content(raw, lambda v: bool(re.match(r"^[A-Za-zА-Яа-я]{1,2}\d{0,2}-\d{1,2}$", str(v).strip())), skip=(c_num, c_day, c_st), min_share=0.5)
+    c_stg = c_stg or col_by_content(raw, lambda v: any(t in str(v).lower() for t in ("заверш", "ворот", "разгруз", "размещ", "пересчет", "пересчёт")), skip=(c_num, c_day, c_st, c_gate), min_share=0.5)
     miss = [t for t, c in (("Номер поставки", c_num), ("День", c_day), ("Статус поставки", c_st)) if c is None]
     if miss:
         raise ValueError("В таблице приёмки нет колонок: " + ", ".join(miss) + ". Есть: " + ", ".join(map(str, raw.columns)))
@@ -4186,7 +4283,9 @@ def an_widget(key: str, value, label: str, sub: str = "", cls: str = "ok", icon:
 # ───────────────────────── Загрузка и шапка ─────────────────────────
 try:
     df = load()
+    err_set("Основная таблица заказов")
 except Exception as e:
+    err_set("Основная таблица заказов", e)
     st.error("Не удалось прочитать таблицу. Проверьте, что таблица открыта для почты "
              "сервисного аккаунта (роль «Читатель») и ключ добавлен в Secrets.")
     st.exception(e)
@@ -6257,7 +6356,8 @@ def bell_html() -> str:
         except Exception:
             age = None
     fresh = last is not None and age is not None and age < CHAT_FRESH_SEC
-    red = unread > 0 or typing_me or (fresh and last["by"] == me)
+    errs = dict(st.session_state.get("app_errors") or {})
+    red = unread > 0 or typing_me or (fresh and last["by"] == me) or bool(errs)
     dot = "<i class='bdot'></i>" if (red or comments) else ""
     toast = ""
     if fresh:
@@ -6290,7 +6390,13 @@ def bell_html() -> str:
         cm_rows.append("<div class='empty'>Комментариев пока нет. Добавьте их под любым виджетом кнопкой "
                        "«Комментарий».</div>")
 
-    pop = (f"<div class='bell-pop'><div class='bp-h'>Уведомления</div>"
+    err_box = ""
+    if errs:
+        items = "".join(f"<div class='er'><b>{esc(k)}</b>{esc(v)}</div>" for k, v in errs.items())
+        err_box = (f"<div class='bp-err'><div class='bp-h' style='font-size:.82rem;margin:0 0 4px;color:#FF3B3B'>"
+                   f"Ошибки: {len(errs)}</div>{items}"
+                   f"<small>Исправьте источник данных, и запись исчезнет сама при следующем обновлении.</small></div>")
+    pop = (f"<div class='bell-pop'><div class='bp-h'>Уведомления</div>{err_box}"
            f"<div class='bp-box'>{chat_line}{now_box}<br>{td}</div>"
            f"<div class='bp-cm'><div class='bp-h' style='font-size:.82rem;margin:2px 0 0'>Комментарии к виджетам</div>"
            f"{''.join(cm_rows)}</div>"
@@ -6467,6 +6573,9 @@ try:
     ship = build_ship(load_ship_tabs())
 except Exception as e:                      # дашборд работает и без таблицы отгрузок
     ship_err = str(e)
+    err_set("Таблица отгрузок", e)
+else:
+    err_set("Таблица отгрузок")
 
 # новые (не маршрутизированные) заказы; те, что уже есть в основной таблице, не считаем повторно
 new_orders, new_err = pd.DataFrame(columns=["Заказ", "Статус", "Дата", "Штук", "Магазин"]), ""
@@ -6475,6 +6584,12 @@ try:
     new_orders = new_orders[~new_orders["Заказ"].isin(df["Заказ"])].reset_index(drop=True)
 except Exception as e:                      # дашборд работает и без вкладки «Новые заказы»
     new_err = str(e)
+    err_set("Новые заказы", e)
+else:
+    err_set("Новые заказы")
+for _c, _dt in (("Заказ", "object"), ("Статус", "object"), ("Дата", "object"), ("Штук", "int64"), ("Магазин", "object")):
+    if _c not in new_orders.columns:        # страховка: колонки всегда на месте, даже если таблица пустая
+        new_orders[_c] = pd.Series(dtype=_dt)
 new_cnt = len(new_orders)
 new_pcs = int(new_orders["Штук"].sum()) if new_cnt else 0
 
@@ -6639,6 +6754,9 @@ def ship_view():
         fc_store, fc_sd = fc_lookup(load_mb_backlog())
     except Exception as e:
         fc_err = str(e)
+        err_set("Прогноз готовности (Metabase)", e)
+    else:
+        err_set("Прогноз готовности (Metabase)")
     for r in rows:
         k = norm_store(r["shop"])
         r["fc"] = ((fc_sd.get((k, r["date"])) if not overall else None) or fc_store.get(k, ""))
@@ -6749,6 +6867,9 @@ if page == PAGES[0] and not hub_open and not ship_open:
         hub_g = hub_by_date(load_hub())
     except Exception as e:                  # дашборд работает и без Metabase
         hub_err = str(e)
+        err_set("Хаб ББ (Metabase)", e)
+    else:
+        err_set("Хаб ББ (Metabase)")
 
     ser = summary.tail(14)
     s_pcs = (ser["Штук"] - ser["Штук собрано"]).tolist()
@@ -6869,7 +6990,9 @@ if page == PAGES[1]:
             if is_ux:
                 try:
                     cpmap, ux_heads = load_cat_prio()
+                    err_set("«Лист1» (категории, приоритеты)")
                 except Exception as e:
+                    err_set("«Лист1» (категории, приоритеты)", e)
                     cpmap, ux_heads = {}, [t for _, t in UX_COLS]
                     st.warning("Не удалось прочитать категории, приоритеты и колонки D / I / O из «Лист1». "
                                "Откройте таблицу для почты сервисного аккаунта (роль «Читатель»).")
@@ -6877,7 +7000,9 @@ if page == PAGES[1]:
                 try:
                     acts_df = load_acts()
                     acts_by_order = {k: g.to_dict("records") for k, g in acts_df.groupby("Ключ")}
+                    err_set("Таблица актов")
                 except Exception as e:
+                    err_set("Таблица актов", e)
                     st.warning("Не удалось прочитать таблицу актов. Откройте её для почты сервисного аккаунта "
                                "(роль «Читатель»).")
                     st.caption(str(e))
@@ -7005,7 +7130,9 @@ if page == PAGES[2]:
     acc = None
     try:
         acc = load_accept()
+        err_set("Приёмка (Metabase)")
     except Exception as e:
+        err_set("Приёмка (Metabase)", e)
         st.warning("Не удалось прочитать «Приёмка Магнит» из Metabase. Проверьте блок [metabase] в Secrets "
                    "(url, api_key; ID таблицы по умолчанию 70, можно задать accept_table) и доступ к таблице.")
         st.caption(str(e))
@@ -7384,7 +7511,9 @@ if page == PAGES[5]:
     cat = None
     try:
         cat = load_stock_catalog()
+        err_set("Остатки (Metabase)")
     except Exception as e:
+        err_set("Остатки (Metabase)", e)
         st.warning("Не удалось прочитать остатки из Metabase. Проверьте блок [metabase] в Secrets "
                    "(url, api_key, stock_table) и доступность Metabase из интернета.")
         st.caption(str(e))
